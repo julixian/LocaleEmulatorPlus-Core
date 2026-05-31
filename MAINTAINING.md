@@ -138,26 +138,27 @@ x64 当前写 PEB 私有字段：
 - `PEB + 0x34C`：ACP
 - `PEB + 0x34E`：OEMCP
 
-随后 `LepSetupAnsiOemCodeHashNodes()` 会重新调用 kernelbase 内部 NLS 初始化链，
-让 ANSI/OEM codepage hash/cache 按 LEP 写入的 ACP/OEMCP 重建。当前 x64
-`KernelBase_x64.dll` 中观察到的链路是：
+随后均进入 `LepSetupAnsiOemCodeHashNodes()` ，其重新调用 kernelbase 内部 NLS 初始化链，
+让 ANSI/OEM codepage hash/cache 按 LEP 写入的 ACP/OEMCP 重建。这一步的重点是找到
+`SetupAnsiOemCodeHashNodes()` 的地址。
+比如当前样本 x64 `KernelBase.dll` 中的寻找链路是：
 
 ```text
 kernelbase!KernelBaseDllInitialize
-  +0x9A0E8: E8 -> kernelbase+0x9A250  ; KernelBaseBaseDllInitialize wrapper
+  +0x9A0E8: E8 -> kernelbase+0x9A250  ; KernelBaseBaseDllInitialize wrapper，入口点后第一个 E8
 
 kernelbase+0x9A250
-  +0x9A294: E9 -> kernelbase+0x29FC0  ; _KernelBaseBaseDllInitialize/internal body
+  +0x9A294: E9 -> kernelbase+0x29FC0  ; _KernelBaseBaseDllInitialize/internal body，第二个 E8/E9
 
 kernelbase+0x29FC0
-  +0x2A495: B8 90 01 00 00            ; mov eax, 190h
+  +0x2A495: B8 90 01 00 00            ; mov eax, 190h  // 从 kernelbase+0x29FC0 处开始扫描此行汇编
   +0x2A4A1: E8 -> kernelbase+0x2910C  ; BaseNlsDllInitialize
 
 kernelbase+0x2910C
   +0x29123: E8 -> kernelbase+0x28FB0  ; NlsProcessInitialize
 
 kernelbase+0x28FB0
-  +0x28FEB: E8 -> kernelbase+0x288F8  ; SetupAnsiOemCodeHashNodes
+  +0x28FEB: E8 -> kernelbase+0x288F8  ; SetupAnsiOemCodeHashNodes // 紧接 mov eax, 190h 后的第三个 E8 call
 ```
 
 这里的 `_KernelBaseBaseDllInitialize` 不是公开导出名，而是 IDA/反编译导出中给
@@ -202,7 +203,7 @@ build.bat x86
 构建脚本使用：
 
 - `cl.exe` / `lib.exe`：来自 `%VS_ROOT%\VC\Tools\MSVC\%MSVC_VER%`
-- `link.exe`：来自 `dep\tools\link.exe`，这是打过补丁的 linker
+- `link.exe`：来自 `dep\tools\link.exe`，这是打过补丁的 linker，下文会介绍
 - SDK headers/libs：来自 `C:\Program Files (x86)\Windows Kits\10\Include|Lib\%SDK_VER%`
 
 - 编译和生成 import lib 使用本机安装的 MSVC：`%VS_ROOT%\VC\Tools\MSVC\%MSVC_VER%`。
@@ -215,7 +216,7 @@ build.bat x86
 2. 复制自己本机 MSVC toolset 中与 `cl.exe` / `lib.exe` 配套的 linker 目录，例如
    `%VS_ROOT%\VC\Tools\MSVC\%MSVC_VER%\bin\Hostx64\x86`，作为新的 `dep\tools`
    基础。
-3. 在这份本机工具链副本上 patch `link.exe`。
+3. 在这份本机工具链副本上 patch `link.exe`。 patch 方法详见下文。
 4. 用 `build.bat` 顶部的 `VS_ROOT`、`MSVC_VER`、`SDK_VER` 指向自己的安装路径。
 
 原则上 `cl.exe`、`lib.exe`、`link.exe` 属于同一 MSVC toolset，最稳妥的
@@ -346,6 +347,5 @@ dep\tools\link.exe
 - `PEB + 0x34C`：x64 ACP
 - `PEB + 0x34E`：x64 OEMCP
 - `LdrInitializeThunk` 内部调用 `NtContinue` 的位置，x86 路径通过扫描定位。
-- `LdrLoadDll` 入口会被短跳或绝对跳修改。
 
 这些偏移和内部调用点均可能随 Windows build 改变。若系统升级后转区失败，优先检查 PEB/TEB 偏移、kernelbase NLS pattern、win32u 导出、ntdll syscall stub 格式。
