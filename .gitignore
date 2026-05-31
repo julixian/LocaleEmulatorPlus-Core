@@ -1,0 +1,26 @@
+# Build outputs
+/out/
+/build/
+
+# Local diagnostics and probe artifacts
+*.log
+*.dmp
+*.mdmp
+
+# Reverse-engineering scratch files
+/kernelbase_x86/
+/kernelbase_x64/
+/*.i64
+/KernelBase_x86.dll
+/KernelBase_x64.dll
+
+# Visual Studio and editor state
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# Python/cache miscellany
+__pycache__/
+*.pyc
