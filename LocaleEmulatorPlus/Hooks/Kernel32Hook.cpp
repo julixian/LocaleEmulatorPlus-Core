@@ -80,6 +80,79 @@ PVOID FASTCALL LepGetNamedLocaleHashNode(PWSTR LocaleName, LANGID LangId)
     return StubGetNamedLocaleHashNode(LocaleName, LangId);
 }
 
+static PVOID FindGetNamedLocaleHashNode(PVOID GetNLSVersionEx)
+{
+    PVOID FirstCall;
+    PVOID MatchedCall;
+    BOOLEAN HasCurrentNlsCacheFastPath;
+
+    FirstCall = nullptr;
+    MatchedCall = nullptr;
+    HasCurrentNlsCacheFastPath = FALSE;
+
+    WalkOpCodeT(GetNLSVersionEx, 0x20,
+        WalkOpCodeM(Buffer, OpLength, Ret)
+        {
+            UNREFERENCED_PARAMETER(Ret);
+
+            for (ULONG_PTR i = 0; i + sizeof(ULONG) <= OpLength; ++i)
+            {
+                if (*(PULONG)&Buffer[i] == 0x8001)
+                    HasCurrentNlsCacheFastPath = TRUE;
+            }
+
+            if (Buffer[0] != CALL)
+                return STATUS_NOT_FOUND;
+
+            if (FirstCall == nullptr)
+                FirstCall = GetCallDestination(Buffer);
+
+            return STATUS_NOT_FOUND;
+        }
+    );
+
+#if ML_AMD64
+    if (HasCurrentNlsCacheFastPath)
+    {
+        WalkOpCodeT(GetNLSVersionEx, 0x60,
+            WalkOpCodeM(Buffer, OpLength, Ret)
+            {
+                PBYTE Scan;
+                PBYTE ScanBegin;
+
+                UNREFERENCED_PARAMETER(OpLength);
+                UNREFERENCED_PARAMETER(Ret);
+
+                if (Buffer[0] != CALL)
+                    return STATUS_NOT_FOUND;
+
+                // Newer x64 kernelbase checks GetNLSVersionEx(0x8001, ...) first.
+                // In that layout, GetNamedLocaleHashNode is the call where the
+                // second argument is prepared as zero shortly before the call.
+                ScanBegin = (PBYTE)GetNLSVersionEx;
+                if (Buffer >= PtrAdd(GetNLSVersionEx, 12))
+                    ScanBegin = Buffer - 12;
+
+                for (Scan = Buffer; Scan > ScanBegin; --Scan)
+                {
+                    if (Scan[-1] != 0xD2 || Scan[-2] != 0x33)
+                        continue;
+
+                    MatchedCall = GetCallDestination(Buffer);
+                    return STATUS_SUCCESS;
+                }
+
+                return STATUS_NOT_FOUND;
+            }
+        );
+
+        return MatchedCall;
+    }
+#endif
+
+    return FirstCall;
+}
+
 NTSTATUS LepGlobalData::HackUserDefaultLCID2(PVOID Kernel32)
 {
     PVOID GetNLSVersionEx, GetNamedLocaleHashNode;
@@ -92,18 +165,7 @@ NTSTATUS LepGlobalData::HackUserDefaultLCID2(PVOID Kernel32)
 
     *(PVOID *)&GetNLSVersionEx = LookupExportTable(Kernel->DllBase, KERNEL32_GetNLSVersionEx);
 
-    GetNamedLocaleHashNode = nullptr;
-
-    WalkOpCodeT(GetNLSVersionEx, 0x20,
-        WalkOpCodeM(Buffer, OpLength, Ret)
-        {
-            if (Buffer[0] != CALL)
-                return STATUS_NOT_FOUND;
-
-            *(PVOID *)&GetNamedLocaleHashNode = GetCallDestination(Buffer);
-            return STATUS_SUCCESS;
-        }
-    );
+    GetNamedLocaleHashNode = FindGetNamedLocaleHashNode(GetNLSVersionEx);
 
     if (GetNamedLocaleHashNode == nullptr)
         return STATUS_PROCEDURE_NOT_FOUND;
@@ -122,7 +184,6 @@ NTSTATUS LepGlobalData::HackUserDefaultLCID2(PVOID Kernel32)
 
     return STATUS_SUCCESS;
 }
-
 void* GetFirstCallTarget(void* start_offset, DWORD parse_range, void **next) {
     void* res = nullptr;
     WalkOpCodeT(start_offset, parse_range,
