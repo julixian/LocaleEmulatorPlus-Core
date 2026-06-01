@@ -20,6 +20,94 @@ ForceInline VOID InitUnicodeProc(PLepGlobalData GlobalData, HWND hWnd, PVOID Uni
     ResetDCCharset(GlobalData, hWnd);
 }
 
+ForceInline BOOL IsComboBoxStringMessage(UINT Message)
+{
+    switch (Message)
+    {
+        case CB_ADDSTRING:
+        case CB_INSERTSTRING:
+        case CB_GETLBTEXT:
+        case CB_GETLBTEXTLEN:
+        case CB_FINDSTRING:
+        case CB_SELECTSTRING:
+        case CB_FINDSTRINGEXACT:
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+ForceInline BOOL IsListBoxStringMessage(UINT Message)
+{
+    switch (Message)
+    {
+        case LB_ADDSTRING:
+        case LB_INSERTSTRING:
+        case LB_GETTEXT:
+        case LB_GETTEXTLEN:
+        case LB_SELECTSTRING:
+        case LB_FINDSTRING:
+        case LB_FINDSTRINGEXACT:
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+ForceInline BOOL IsWindowClass(HWND Window, PCWSTR ClassName)
+{
+    WCHAR WindowClass[16];
+    PWSTR CurrentWindowClass;
+
+    if (GetClassNameW(Window, WindowClass, countof(WindowClass)) == 0)
+        return FALSE;
+
+    CurrentWindowClass = WindowClass;
+
+    for (;;)
+    {
+        WCHAR Left = *CurrentWindowClass++;
+        WCHAR Right = *ClassName++;
+
+        if (Left >= L'a' && Left <= L'z')
+            Left -= L'a' - L'A';
+
+        if (Right >= L'a' && Right <= L'z')
+            Right -= L'a' - L'A';
+
+        if (Left != Right)
+            return FALSE;
+
+        if (Left == 0)
+            return TRUE;
+    }
+}
+
+ForceInline BOOL IsOwnerDrawItemDataMessage(HWND Window, UINT Message)
+{
+    LONG_PTR Style;
+
+    if (!IsComboBoxStringMessage(Message) && !IsListBoxStringMessage(Message))
+        return FALSE;
+
+    Style = GetWindowLongPtrW(Window, GWL_STYLE);
+
+    if (IsComboBoxStringMessage(Message))
+    {
+        if (!IsWindowClass(Window, L"ComboBox"))
+            return FALSE;
+
+        return FLAG_ON(Style, CBS_OWNERDRAWFIXED | CBS_OWNERDRAWVARIABLE) &&
+              !FLAG_ON(Style, CBS_HASSTRINGS);
+    }
+
+    if (!IsWindowClass(Window, L"ListBox"))
+        return FALSE;
+
+    return FLAG_ON(Style, LBS_OWNERDRAWFIXED | LBS_OWNERDRAWVARIABLE) &&
+          !FLAG_ON(Style, LBS_HASSTRINGS);
+}
+
 /************************************************************************
   ansi to unicode
 ************************************************************************/
@@ -312,6 +400,9 @@ LRESULT NTAPI WindowProcW(HWND Window, UINT Message, WPARAM wParam, LPARAM lPara
 
     if (Message < countof(MessageTable))
     {
+        if (IsOwnerDrawItemDataMessage(Window, Message))
+            return CallUserMessageCallA();
+
         MessageCall = gapfnMessageCall[MessageTable[Message].Function].UserCall;
         return MessageCall(PrevProc, Window, Message, wParam, lParam);
     }
@@ -615,6 +706,9 @@ LepNtUserMessageCall(
 
         if (!FLAG_ON(Flags, WINDOW_FLAG_ANSI))
             break;
+
+        if (IsOwnerDrawItemDataMessage(Window, Message))
+            return CallNtUserMessageCall();
 
         MessageCall = gapfnMessageCall[MessageTable[Message].Function].KernelCall;
         return CALLNTMSGCALL(MessageCall);

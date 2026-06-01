@@ -287,6 +287,16 @@ inline VOID InitDefaultLeb(PLEPB LEPB)
     CopyStruct(LEPB->Timezone.DaylightName, DaylightName, sizeof(DaylightName));
 }
 
+inline ULONG_PTR LepStringLengthW(PCWSTR String)
+{
+    PCWSTR Current = String;
+
+    while (*Current != 0)
+        ++Current;
+
+    return Current - String;
+}
+
 inline
 NTSTATUS
 LepOpenDirectoryObject(
@@ -300,7 +310,7 @@ LepOpenDirectoryObject(
     UNICODE_STRING               DirectoryName;
 
     DirectoryName.Buffer          = DirectoryNameBuffer;
-    DirectoryName.Length          = wcslen(DirectoryNameBuffer) * sizeof(WCHAR);
+    DirectoryName.Length          = LepStringLengthW(DirectoryNameBuffer) * sizeof(WCHAR);
     DirectoryName.MaximumLength   = DirectoryName.Length;
 
     InitializeObjectAttributes(&ObjectAttributes, &DirectoryName, OBJ_CASE_INSENSITIVE, RootHandle, nullptr);
@@ -351,6 +361,30 @@ inline ULONG_PTR FormatLepUIntDecimal(PWSTR Buffer, ULONG_PTR Value)
 
     for (ULONG_PTR i = 0; i != Length; ++i)
         Buffer[i] = Digits[Length - i - 1];
+
+    Buffer[Length] = 0;
+    return Length;
+}
+
+inline ULONG_PTR FormatLepUIntHex(PWSTR Buffer, ULONG_PTR Value)
+{
+    static const WCHAR Hex[] = L"0123456789abcdef";
+    ULONG_PTR Length;
+    BOOL LeadingZero;
+
+    Length = 0;
+    LeadingZero = TRUE;
+
+    for (LONG_PTR Shift = bitsof(Value) - 4; Shift >= 0; Shift -= 4)
+    {
+        ULONG_PTR Digit = (Value >> Shift) & 0xF;
+
+        if (Digit == 0 && LeadingZero && Shift != 0)
+            continue;
+
+        LeadingZero = FALSE;
+        Buffer[Length++] = Hex[Digit];
+    }
 
     Buffer[Length] = 0;
     return Length;
@@ -458,7 +492,7 @@ OpenOrCreateLepPeb(
     if (SessionId == INVALID_SESSION_ID)
         return nullptr;
 
-    LEP_DIAG_HEADER(L"before section root swprintf");
+    LEP_DIAG_HEADER(L"before section root format");
     FormatLepBaseNamedObjectsRoot(RootNameBuffer, SessionId);
     LEP_DIAG_HEADER(L"section root format ok");
 
@@ -578,9 +612,15 @@ OpenOrCreateLepPeb(
 inline VOID InitLog(NtFileDisk &LogFile)
 {
     WCHAR LogFilePath[MAX_NTPATH];
+    WCHAR NtLogFilePath[MAX_NTPATH + 4];
     UNICODE_STRING SelfPath;
+    UNICODE_STRING NtLogFileName;
     PLDR_MODULE Self, Target;
     PLEPPEB LEPPEB = nullptr;
+    NTSTATUS Status;
+    ULONG_PTR Offset;
+    ULONG_PTR Length;
+    ULONG_PTR ProcessId;
 
     Target = FindLdrModuleByHandle(nullptr);
     Self = FindLdrModuleByHandle(&__ImageBase);
@@ -607,22 +647,75 @@ inline VOID InitLog(NtFileDisk &LogFile)
         RtlInitUnicodeString(&SelfPath, LEPPEB->LepDllDirPath);
     }
 
-    swprintf(LogFilePath, L"%wZ\\%wZ.%p.log.txt", &SelfPath, &Target->BaseDllName, CurrentPid());
+    Offset = 0;
+    Length = ML_MIN(SelfPath.Length, sizeof(LogFilePath) - sizeof(WCHAR));
+    CopyMemory(LogFilePath, SelfPath.Buffer, Length);
+    Offset += Length / sizeof(WCHAR);
+
+    if (Offset != 0 && LogFilePath[Offset - 1] != L'\\')
+        LogFilePath[Offset++] = L'\\';
+
+    Length = ML_MIN(Target->BaseDllName.Length, sizeof(LogFilePath) - (Offset + 1) * sizeof(WCHAR));
+    CopyMemory(&LogFilePath[Offset], Target->BaseDllName.Buffer, Length);
+    Offset += Length / sizeof(WCHAR);
+
+    LogFilePath[Offset++] = L'.';
+    ProcessId = CurrentPid();
+
+    for (LONG_PTR Shift = bitsof(ProcessId) - 4; Shift >= 0; Shift -= 4)
+    {
+        ULONG_PTR Digit = (ProcessId >> Shift) & 0xF;
+
+        if (Digit == 0 && LogFilePath[Offset - 1] == L'.' && Shift != 0)
+            continue;
+
+        LogFilePath[Offset++] = (WCHAR)(Digit < 10 ? L'0' + Digit : L'A' + Digit - 10);
+    }
+
+    static const WCHAR LogSuffix[] = L".log.txt";
+    Length = ML_MIN(sizeof(LogSuffix), sizeof(LogFilePath) - Offset * sizeof(WCHAR));
+    CopyMemory(&LogFilePath[Offset], LogSuffix, Length);
 
     if (LEPPEB != nullptr)
     {
         CloseLepPeb(LEPPEB);
     }
 
+    static const WCHAR DosDevicesPrefix[] = L"\\??\\";
+    CopyMemory(NtLogFilePath, DosDevicesPrefix, sizeof(DosDevicesPrefix) - sizeof(WCHAR));
+    RtlInitUnicodeString(&NtLogFileName, LogFilePath);
+    Length = ML_MIN(NtLogFileName.Length + sizeof(WCHAR), sizeof(NtLogFilePath) - sizeof(DosDevicesPrefix) + sizeof(WCHAR));
+    CopyMemory(&NtLogFilePath[countof(DosDevicesPrefix) - 1], LogFilePath, Length);
+    RtlInitUnicodeString(&NtLogFileName, NtLogFilePath);
+
     ULONG BOM = BOM_UTF16_LE;
-    LogFile.Create(LogFilePath);
-    LogFile.Write(&BOM, 2);
+    Status = LogFile.Create(
+        NtLogFileName.Buffer,
+        NFD_NOT_RESOLVE_PATH,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        GENERIC_WRITE,
+        FILE_OVERWRITE_IF,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SYNCHRONOUS_IO_NONALERT
+    );
+    if (NT_FAILED(Status))
+    {
+        LogFile = 0;
+        return;
+    }
+
+    Status = LogFile.Write(&BOM, 2);
+    if (NT_FAILED(Status))
+    {
+        LogFile = 0;
+        return;
+    }
 
     PROCESS_IMAGE_FILE_NAME2 proc;
     //NtQueryInformationProcess(CurrentProcess, ProcessImageFileName, &proc, sizeof(proc), NULL);
     proc.ImageFileName = Target->FullDllName;
     LogFile.Write(proc.ImageFileName.Buffer, proc.ImageFileName.Length);
-    LogFile.Write(L"\r\n", 4);
+    LogFile.Write((PVOID)L"\r\n", 4);
 }
 
 #define WriteLog(...) { if (LepGetGlobalData() != nullptr && LepGetGlobalData()->LogFile) LepGetGlobalData()->LogFile.Print(NULL, __VA_ARGS__), LepGetGlobalData()->LogFile.Print(NULL, L"\r\n"); }
@@ -748,11 +841,6 @@ public:
         ZeroMemory(this, sizeof(*this));
 
         new (&this->TextMetricCache) TYPE_OF(this->TextMetricCache);
-
-        IF_EXIST(LepGlobalData::LogFile)
-        {
-            InitLog(this->LogFile);
-        }
     }
 
     ~LepGlobalData()

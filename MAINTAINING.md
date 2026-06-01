@@ -200,6 +200,35 @@ set SDK_VER=10.0.26100.0
 build.bat x86
 ```
 
+临时开启诊断开关时，推荐通过 `EXTRA_CL` 传给构建脚本：
+
+```bat
+set EXTRA_CL=/DENABLE_LOG=1
+build.bat
+set EXTRA_CL=
+```
+
+`ENABLE_LOG=1` 会启用 `WriteLog`，日志文件通常位于 LEP DLL 同目录，文件名形如 `<目标进程模块名>.<pid>.log.txt`。
+注意开启 log 会改变早期执行路径，定位完问题后应恢复默认关闭。
+
+如果目标进程在 log 能建立之前就失败，可以改用弹框阶段诊断：
+
+```bat
+set EXTRA_CL=/DLEP_DIAG_INIT=1
+build.bat
+set EXTRA_CL=
+```
+
+`LEP_DIAG_INIT=1` 会在 `LocaleEmulatorPlus` 初始化关键阶段弹出 `LEP modern init diag` 消息框，适合确认崩溃卡在哪一步；它会严重打断目标进程启动，只用于本机调试。
+
+两个开关可以同时开：
+
+```bat
+set EXTRA_CL=/DENABLE_LOG=1 /DLEP_DIAG_INIT=1
+build.bat x64
+set EXTRA_CL=
+```
+
 构建脚本使用：
 
 - `cl.exe` / `lib.exe`：来自 `%VS_ROOT%\VC\Tools\MSVC\%MSVC_VER%`
@@ -267,12 +296,14 @@ build.bat x86
   - 使用 `LdrLoadDll` 和 `LdrGetProcedureAddress`。
   - 避免依赖 kernel32。
 - `dep\libs\LepCrtShim.cpp`
-  - x64 下补少量 CRT intrinsic/string helper，避免带入 ucrt/vcruntime。
+  - x64 下极小的 runtime 兜底，只提供 `abort`、`terminate`、`calloc`、`free`。
+  - `calloc`/`free` 直接走进程堆和 `RtlAllocateHeap`/`RtlFreeHeap`，避免引入普通 ucrt/vcruntime import。
 - `dep\libs\lep_ntdll_alias.def`
   - x86：把 `_LdrInitializeThunk@8` 等 stdcall 修饰名映射到 ntdll 无修饰导出。
-  - 同时导出 `_stricmp`、`_vscwprintf`、`_vsnwprintf`、`_vswprintf`、`_wcsicmp` 等 ntdll 里的 CRT 风格函数。
+  - 同时导出 `_stricmp`、`_vscwprintf`、`_vsnwprintf`、`_vswprintf`、`_wcsicmp` 等 ntdll 里的 CRT 风格字符串处理函数。
 - `dep\libs\lep_ntdll_x64.def`
   - x64：导出 `LdrInitializeThunk`、`LdrRegisterDllNotification`、`LdrUnregisterDllNotification`。
+  - 同时导出 ntdll 里的几个 CRT 风格字符串处理函数。
 - `dep\libs\lep_k32_alias.def`
   - x86：`CreateProcessInternalW=_CreateProcessInternalW@48`
 - `dep\libs\lep_k32_x64.def`

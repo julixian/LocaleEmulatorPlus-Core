@@ -278,6 +278,26 @@ HDC NTAPI LepCreateCompatibleDC(HDC hDC)
     return NewDC;
 }
 
+ForceInline WCHAR LepUpcaseAsciiW(WCHAR Character)
+{
+    return Character >= L'a' && Character <= L'z' ? Character - (L'a' - L'A') : Character;
+}
+
+ForceInline BOOL LepEqualStringInsensitiveW(PCWSTR Left, PCWSTR Right)
+{
+    for (;;)
+    {
+        WCHAR LeftCharacter = LepUpcaseAsciiW(*Left++);
+        WCHAR RightCharacter = LepUpcaseAsciiW(*Right++);
+
+        if (LeftCharacter != RightCharacter)
+            return FALSE;
+
+        if (LeftCharacter == 0)
+            return TRUE;
+    }
+}
+
 NTSTATUS
 LepGlobalData::
 GetNameRecordFromNameTable(
@@ -393,7 +413,7 @@ NTSTATUS LepGlobalData::AdjustFontDataInternal(PADJUST_FONT_DATA AdjustData)
     PCWSTR lfFaceName = AdjustData->EnumLogFontEx->elfLogFont.lfFaceName;
     BOOL Vertical = lfFaceName[0] == '@';
 
-    if (NT_FAILED(Status) || wcsicmp(FaceName.Buffer, lfFaceName + Vertical) != 0)
+    if (NT_FAILED(Status) || !LepEqualStringInsensitiveW(FaceName.Buffer, lfFaceName + Vertical))
         return STATUS_CONTEXT_MISMATCH;
 
     Status = this->GetNameRecordFromNameTable(
@@ -663,7 +683,6 @@ INT NTAPI LepEnumFontCallbackW(CONST LOGFONTW *lf, CONST TEXTMETRICW *TextMetric
             EnumLogFontEx.elfLogFont.lfCharSet = EnumParam->GlobalData->GetLepb()->DefaultCharset;
         }
 
-        //if (wcscmp(lf->lfFaceName, L"MS Gothic") == 0) _asm int 4;
         //PrintConsole(L"Original:        %s\n", lf->lfFaceName);
 
         Status = EnumParam->GlobalData->AdjustFontData(EnumParam->DC, &EnumLogFontEx, &TextMetric, FontType);

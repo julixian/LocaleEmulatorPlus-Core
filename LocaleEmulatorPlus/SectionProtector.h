@@ -54,67 +54,6 @@ private:
 };
 
 
-#if ML_KERNEL_MODE
-
-/************************************************************************
-KernelMode
-************************************************************************/
-
-template <>
-class SectionProtector<PKSPIN_LOCK> : public SectionProtectorBase
-{
-public:
-	KIRQL Irql, Irqlx;
-	PKSPIN_LOCK SpinLock;
-
-	PROTECT_SECTION_INLINE SectionProtector(PKSPIN_LOCK SpinLock)
-	{
-		Irqlx = KeGetCurrentIrql();
-		if (Irqlx > DISPATCH_LEVEL)
-			return;
-
-		KeAcquireSpinLock(SpinLock, &Irql);
-		this->SpinLock = SpinLock;
-	}
-
-	PROTECT_SECTION_INLINE ~SectionProtector()
-	{
-		if (Irqlx > DISPATCH_LEVEL)
-			return;
-
-		KeReleaseSpinLock(SpinLock, Irql);
-	}
-};
-
-template <>
-class SectionProtector<PERESOURCE> : public SectionProtectorBase
-{
-public:
-	KIRQL Irql;
-	PERESOURCE Resource;
-
-	PROTECT_SECTION_INLINE SectionProtector(PERESOURCE Resource, BOOL Shared = SectionProtectorTypes::SharedLock, BOOL Wait = TRUE)
-	{
-		Irql = KeGetCurrentIrql();
-		if (Irql > APC_LEVEL)
-			return;
-
-		KeEnterCriticalRegion();
-		(Shared == SectionProtectorTypes::SharedLock) ? ExAcquireResourceSharedLite(Resource, Wait) : ExAcquireResourceExclusiveLite(Resource, Wait);
-		this->Resource = Resource;
-	}
-
-	PROTECT_SECTION_INLINE ~SectionProtector()
-	{
-		if (Irql > APC_LEVEL)
-			return;
-
-		ExReleaseResourceLite(Resource);
-		KeLeaveCriticalRegion();
-	}
-};
-
-#else // r3
 
 template<>
 class SectionProtector<PRTL_CRITICAL_SECTION> : public SectionProtectorBase
@@ -174,6 +113,5 @@ public:
 	}
 };
 
-#endif // rx
 
 #endif // _SECTIONPROTECTOR_H_00185e71_a85a_4b7a_bc62_08ac6375404c_

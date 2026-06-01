@@ -1,21 +1,12 @@
-#ifndef _MYLIBRARY_H_9fb91137_38ac_4d5e_8572_b6e12d23cb15_
+ï»¿#ifndef _MYLIBRARY_H_9fb91137_38ac_4d5e_8572_b6e12d23cb15_
 #define _MYLIBRARY_H_9fb91137_38ac_4d5e_8572_b6e12d23cb15_
 
-#if !defined(USE_NT_VER)
-    #define USE_NT_VER 1
-#endif
 
 #define ML_DISABLE_THIRD_LIB_UCL 1
 
-#if ML_KERNEL_MODE
-
-// #include "Include\MyLibraryKernel.h"
-
-#else
 #ifndef _MYLIBRARYUSER_H_e5b0d13b_823a_4f24_88ec_6515f58a7140_
 #define _MYLIBRARYUSER_H_e5b0d13b_823a_4f24_88ec_6515f58a7140_
 
-#define ML_USER_MODE  1
 
 #define _CRT_SECURE_NO_WARNINGS
 #define _CRT_NON_CONFORMING_SWPRINTFS
@@ -485,14 +476,12 @@
     #define RESERVED
 #endif /* RESERVED */
 
-#if ML_USER_MODE
 
 #if !defined(ARGUMENT_PRESENT)
     #define ARGUMENT_PRESENT(ArgumentPointer) ((CHAR *)((ULONG_PTR)(ArgumentPointer)) != (CHAR *)(NULL) )
     #define ARGUMENT_NOT_PRESENT(ArgumentPointer) (!ARGUMENT_PRESENT(ArgumentPointer))
 #endif
 
-#endif
 
 
 #if ML_COMPILER_MSC
@@ -870,23 +859,6 @@ ForceInline int CDECL _purecall()
     #define MYAPI(funcname) funcname
 #endif
 
-#if ML_KERNEL_MODE
-/*
-    inline PVOID _KiNewAllocate(HANDLE HeapBase, ULONG Flags, SIZE_T Bytes)
-    {
-        ULONG_PTR PoolType = (ULONG_PTR)HeapBase;
-        return AllocateMemory(Bytes, PoolType);
-    }
-
-    BOOLEAN _KiDelete(HANDLE HeapBase, ULONG Flags, LPVOID Memory)
-    {
-        FreeMemory(Memory);
-    }
-*/
-    #define NEW_ALLOC_API(PoolType, Flags, Bytes) AllocateMemory(Bytes, (POOL_TYPE)(ULONG_PTR)(PoolType))
-    #define NEW_FREE_API(HeapBase, Flags, Memory) FreeMemory(Memory)
-
-#else // r3
 
     #if USE_CRT_ALLOC
         #define MY_OPNEW_ALLOC(n) malloc(n)
@@ -896,15 +868,9 @@ ForceInline int CDECL _purecall()
         #define MY_OPNEW_FREE(p)  HeapFree(GetProcessHeap(), 0, p)
     #endif
 
-    #if USE_NT_VER
         #define NEW_ALLOC_API   RtlAllocateHeap
         #define NEW_FREE_API    RtlFreeHeap
-    #else
-        #define NEW_ALLOC_API   HeapAlloc
-        #define NEW_FREE_API    HeapFree
-    #endif // USE_NT_VER
 
-#endif // r0
 
 #ifndef SAFE_DELETE
     #define SAFE_DELETE(p) if (p) \
@@ -1759,11 +1725,6 @@ struct HashStringConst<0>
 
 #endif // _MACROSPLUS_H_86ea4111_75e2_4619_8573_5f8575474b66_
 
-#if ML_KERNEL_MODE
-
-//    #include <ntddk.h>
-
-#else
 
 //    #include <winsock2.h>
     #include <Windows.h>
@@ -1775,7 +1736,6 @@ struct HashStringConst<0>
 
     #pragma warning(default:4005)
 
-#endif // MY_NT_DDK
 
 typedef void * POINTER_64 HANDLE64;
 typedef HANDLE64 *PHANDLE64;
@@ -9958,9 +9918,6 @@ long            __cdecl _InterlockedDecrement(long volatile * lpAddend);
 long            __cdecl _InterlockedCompareExchange(long volatile * Destination, long Exchange, long Comperand);
 long            __cdecl _InterlockedExchangeAdd(long volatile * Addend, long Value);
 long            __cdecl _InterlockedExchange(volatile long * Target, long Value);
-#if !LEP_MODERN_SDK_BUILD && _MSC_VER <= 1900
-char            __cdecl _InterlockedExchange8(char volatile *Destination, char ExChange);
-#endif
 
 long            _InterlockedAnd(long volatile *Destination, long Value);
 long            _InterlockedOr(long volatile *Destination, long Value);
@@ -9993,9 +9950,6 @@ long            __cdecl _InterlockedCompareExchange_rel(long volatile * Destinat
 short                   _InterlockedCompareExchange16(short volatile * Destination, short Exchange, short Comperand);
 short           __cdecl _InterlockedCompareExchange16_acq(short volatile * Destination, short Exchange, short Comperand);
 short           __cdecl _InterlockedCompareExchange16_rel(short volatile * Destination, short Exchange, short Comperand);
-#if !LEP_MODERN_SDK_BUILD
-__int64         __cdecl _InterlockedCompareExchange64(__int64 volatile * Destination, __int64 Exchange, __int64 Comperand);
-#endif
 __int64         __cdecl _InterlockedCompareExchange64_acq(__int64 volatile * Destination, __int64 Exchange, __int64 Comperand);
 __int64         __cdecl _InterlockedCompareExchange64_rel(__int64 volatile * Destination, __int64 Exchange, __int64 Comperand);
 unsigned char   __cdecl _InterlockedCompareExchange128(__int64 volatile * Destination, __int64 ExchangeHigh, __int64 ExchangeLow, __int64 * Comparand);
@@ -10088,7 +10042,6 @@ void          __vmx_vmptrst(unsigned __int64 *VmcsPhysicalAddress);
     #define _InterlockedExchangePointer(Target, Value) (PVOID)_InterlockedExchange((long *)Target, (long)Value)
 #endif
 
-    #if ML_USER_MODE
 
     inline long long _InterlockedExchange64(long long volatile *Target, long long Value)
     {
@@ -10102,7 +10055,6 @@ void          __vmx_vmptrst(unsigned __int64 *VmcsPhysicalAddress);
         return Old;
     }
 
-    #endif // r3
 
 #else
 
@@ -10164,12 +10116,6 @@ _ML_C_HEAD_
         typedef DECL_ALIGN(1) struct { ::Byte b[size]; } _SDummy; \
         *(_SDummy *)(dest) = *(_SDummy *)(src); \
     }
-#if 0
-    else \
-    { \
-        memcpy(dest, src, size); \
-    }
-#endif
 
 ForceInline void* AllocStack(size_t Size)
 {
@@ -10361,14 +10307,6 @@ ForceInline LPVoid CDECL memset2(void* dest, UInt16 c, size_t count)
 
     #define CompareMemory(Buffer1, Buffer2, SizeInBytes) memcmp((void *)(Buffer1), (void *)(Buffer2), (size_t)(SizeInBytes))
 
-#if ML_KERNEL_MODE
-
-    #define CopyMemory(Destination, Source, Length) RtlCopyMemory((void*)(Destination), (void*)(Source), (size_t)(Length))
-    #define FillMemory(Destination, Length, Fill) memset(Destination, Fill, Length)
-    #define FillMemory4(Destination, Length, Fill) memset4(Destination, Fill, Length)
-    #define ZeroMemory(Destination, Length) FillMemory(Destination, Length, 0)
-
-#endif
 
 #else //x86
 
@@ -10823,41 +10761,6 @@ _ML_C_TAIL_
 #define _NATIVETYPES_H_96405a6d_a23f_4fd6_b20a_e5821226bfc6
 
 
-#if ML_KERNEL_MODE
-#ifndef _NATIVETYPES_KERNEL_H_c07a308c_9b77_41fa_b475_9c2d5c0ae3e6
-#define _NATIVETYPES_KERNEL_H_c07a308c_9b77_41fa_b475_9c2d5c0ae3e6
-
-
-#define INFINITE ULONG_PTR_MAX
-
-typedef USHORT ATOM;
-typedef PVOID PRTL_CRITICAL_SECTION;
-
-// typedef PROCESSINFOCLASS    PROCESS_INFORMATION_CLASS;
-// typedef THREADINFOCLASS     THREAD_INFORMATION_CLASS;
-
-typedef struct _KSERVICE_TABLE_DESCRIPTOR
-{
-    PULONG_PTR  Base;       // ssdt
-    PULONG_PTR  Count;      // callout count of each system service
-    ULONG_PTR   Limit;      // count of system call
-    PUCHAR      Number;     // Size of arguments
-
-} KSERVICE_TABLE_DESCRIPTOR, *PKSERVICE_TABLE_DESCRIPTOR;
-
-///////////////////////////// apc /////////////////////////////////////
-
-typedef enum _KAPC_ENVIRONMENT
-{
-    OriginalApcEnvironment,
-    AttachedApcEnvironment,
-    CurrentApcEnvironment,
-    InsertApcEnvironment
-
-} KAPC_ENVIRONMENT;
-
-#endif // _NATIVETYPES_KERNEL_H_c07a308c_9b77_41fa_b475_9c2d5c0ae3e6
-#else // r3
 #ifndef _NATIVETYPES_USER_H_30d04cf8_0b66_4f36_a472_f9c1734240b8
 #define _NATIVETYPES_USER_H_30d04cf8_0b66_4f36_a472_f9c1734240b8
 
@@ -10988,37 +10891,6 @@ EXTCPP
     _RTL_CONSTANT_STRING_remove_const_macro(s) \
 }
 
-#if 0
-
-#pragma pack(4)
-
-#define MAXIMUM_LEADBYTES   12
-
-typedef struct _CPTABLEINFO {
-    USHORT  CodePage;                       // code page number
-    USHORT  MaximumCharacterSize;           // max Length (bytes) of a char
-    USHORT  DefaultChar;                    // default character (MB)
-    USHORT  UniDefaultChar;                 // default character (Unicode)
-    USHORT  TransDefaultChar;               // translation of default char (Unicode)
-    USHORT  TransUniDefaultChar;            // translation of Unic default char (MB)
-    USHORT  DBCSCodePage;                   // Non 0 for DBCS code pages
-    UCHAR   LepadByte[MAXIMUM_LEADBYTES];    // Lepad byte ranges
-    PUSHORT MultiByteTable;                 // pointer to MB translation table
-    PVOID   WideCharTable;                  // pointer to WC translation table
-    PUSHORT DBCSRanges;                     // pointer to DBCS ranges
-    PUSHORT DBCSOffsets;                    // pointer to DBCS offsets
-} CPTABLEINFO, *PCPTABLEINFO;
-
-typedef struct _NLSTABLEINFO {
-    CPTABLEINFO OemTableInfo;
-    CPTABLEINFO AnsiTableInfo;
-    PUSHORT     UpperCaseTable;             // 844 format upcase table
-    PUSHORT     LowerCaseTable;             // 844 format lower case table
-} NLSTABLEINFO, *PNLSTABLEINFO;
-
-#pragma pack()
-
-#endif
 
 /************************************************************************/
 /* others                                                               */
@@ -11738,7 +11610,6 @@ _ML_C_TAIL_
 #pragma pack(pop)
 
 #endif // _NATIVETYPES_USER_H_30d04cf8_0b66_4f36_a472_f9c1734240b8
-#endif // ML_KERNEL_MODE
 
 #ifndef _NATIVETYPES_COMMON_H_e6f6abc9_91e7_452a_b418_671874fe30b3
 #define _NATIVETYPES_COMMON_H_e6f6abc9_91e7_452a_b418_671874fe30b3
@@ -11811,7 +11682,6 @@ typedef struct _RTL_UNICODE_STRING_BUFFER
 // These must be converted to LUIDs before use.
 //
 
-#if ML_USER_MODE
 
 enum
 {
@@ -11856,14 +11726,12 @@ enum
     SE_MAX_WELL_KNOWN_PRIVILEGE
 };
 
-#endif
 
 
 /************************************************************************
   afd
 ************************************************************************/
 
-#if ML_USER_MODE
 
 typedef struct _MDL
 {
@@ -11879,7 +11747,6 @@ typedef struct _MDL
 
 } MDL, *PMDL;
 
-#endif // r3
 
 typedef struct _AFD_MAPBUF
 {
@@ -12070,7 +11937,6 @@ typedef struct _TIMER_BASIC_INFORMATION
 #define DELAY_ONE_SECOND        (DELAY_ONE_MILLISECOND * 1000)
 #define DELAY_QUAD_INFINITE     0x8000000000000000ll
 
-#if !ML_KERNEL_MODE
 
 typedef enum
 {
@@ -12078,7 +11944,6 @@ typedef enum
     SynchronizationTimer    = 1,
 } TIMER_TYPE;
 
-#endif // ML_KERNEL_MODE
 
 
 _ML_C_TAIL_
@@ -12218,7 +12083,6 @@ typedef struct _DBGUI_WAIT_STATE_CHANGE
 } DBGUI_WAIT_STATE_CHANGE, *PDBGUI_WAIT_STATE_CHANGE;
 
 
-#if ML_USER_MODE
 
 NATIVE_API
 VOID
@@ -12235,7 +12099,6 @@ DbgPrint(
     ...
 );
 
-#endif // ML_USER_MODE
 
 NATIVE_API
 NTSTATUS
@@ -12371,72 +12234,6 @@ RtlDispatchException(
     PCONTEXT            Context
 );
 
-#if ML_KERNEL_MODE
-
-typedef struct _KTRAP_FRAME32
-{
-/* 0x000 */ ULONG                          DbgEbp;
-/* 0x004 */ ULONG                          DbgEip;
-/* 0x008 */ ULONG                          DbgArgMark;
-/* 0x00C */ ULONG                          DbgArgPointer;
-/* 0x010 */ USHORT                         TempSegCs;
-/* 0x012 */ UCHAR                          Logging;
-/* 0x013 */ UCHAR                          Reserved;
-/* 0x014 */ ULONG                          TempEsp;
-/* 0x018 */ ULONG                          Dr0;
-/* 0x01C */ ULONG                          Dr1;
-/* 0x020 */ ULONG                          Dr2;
-/* 0x024 */ ULONG                          Dr3;
-/* 0x028 */ ULONG                          Dr6;
-/* 0x02C */ ULONG                          Dr7;
-/* 0x030 */ ULONG                          SegGs;
-/* 0x034 */ ULONG                          SegEs;
-/* 0x038 */ ULONG                          SegDs;
-/* 0x03C */ ULONG                          Edx;
-/* 0x040 */ ULONG                          Ecx;
-/* 0x044 */ ULONG                          Eax;
-/* 0x048 */ ULONG                          PreviousPreviousMode;
-/* 0x04C */ PEXCEPTION_REGISTRATION_RECORD ExceptionList;
-/* 0x050 */ ULONG                          SegFs;
-/* 0x054 */ ULONG                          Edi;
-/* 0x058 */ ULONG                          Esi;
-/* 0x05C */ ULONG                          Ebx;
-/* 0x060 */ ULONG                          Ebp;
-/* 0x064 */ ULONG                          ErrCode;
-/* 0x068 */ ULONG                          Eip;
-/* 0x06C */ ULONG                          SegCs;
-/* 0x070 */ ULONG                          EFlags;
-/* 0x074 */ ULONG                          HardwareEsp;
-/* 0x078 */ ULONG                          HardwareSegSs;
-/* 0x07C */ ULONG                          V86Es;
-/* 0x080 */ ULONG                          V86Ds;
-/* 0x084 */ ULONG                          V86Fs;
-/* 0x088 */ ULONG                          V86Gs;
-
-} KTRAP_FRAME32, *PKTRAP_FRAME32;
-
-#if ML_AMD64
-#else // 32
-
-typedef PKTRAP_FRAME32 PKTRAP_FRAME;
-
-struct KEXCEPTION_FRAME;
-
-typedef KEXCEPTION_FRAME *PKEXCEPTION_FRAME;
-
-#endif // x86
-
-VOID
-NTAPI
-KiDispatchException(
-    IN      PEXCEPTION_RECORD    ExceptionRecord,
-    IN      PKEXCEPTION_FRAME    ExceptionFrame,
-    IN OUT  PKTRAP_FRAME         TrapFrame,
-    IN      KPROCESSOR_MODE      PreviousMode,
-    IN      BOOLEAN              FirstChance
-);
-
-#else // r3
 
 NATIVE_API
 VOID
@@ -12447,11 +12244,7 @@ KiUserExceptionDispatcher(
 );
 
 NATIVE_API
-#if LEP_MODERN_SDK_BUILD || _MSC_VER > 1900
 VOID
-#else
-NTSTATUS
-#endif
 NTAPI
 RtlRaiseException(
     PEXCEPTION_RECORD ExceptionRecord
@@ -12501,7 +12294,6 @@ RtlRemoveVectoredContinueHandler(
     IN PVOID Handler
 );
 
-#endif // !ML_KERNEL_MODE
 
 typedef enum _HARDERROR_RESPONSE_OPTION {
     OptionAbortRetryIgnore      = 0,
@@ -12712,7 +12504,6 @@ typedef struct _FILE_BOTH_DIR_INFORMATION
 
 #endif // _NTIFS_
 
-#if ML_USER_MODE
 
 typedef struct _FILE_NETWORK_OPEN_INFORMATION
 {
@@ -12756,7 +12547,6 @@ typedef struct _FILE_NETWORK_OPEN_INFORMATION
 #define FILE_PIPE_CLIENT_END 0x00000000
 #define FILE_PIPE_SERVER_END 0x00000001
 
-#endif // r3 only
 
 
 NATIVE_API
@@ -13303,7 +13093,6 @@ NtQueryIoCompletion(
     OUT PULONG                          ReturnLength OPTIONAL
 );
 
-#if !ML_KERNEL_MODE
 
 NATIVE_API
 NTSTATUS
@@ -13335,7 +13124,6 @@ RtlWow64EnableFsRedirectionEx(
     PBOOL   PreviousState
 );
 
-#endif // ML_KERNEL_MODE
 
 #endif // _NTFILEIO_H_a683f7a2_b20c_4e58_b9c8_e58a305b1315_
 #ifndef _NTLPC_H_add4da86_44d6_42e5_801f_23fe1de78ffe_
@@ -14002,13 +13790,6 @@ typedef struct _ALPC_COMPLETION_LIST_STATE
 #pragma warning(push)
 #pragma warning(disable:4324)
 
-#if ML_KERNEL_MODE
-
-typedef struct _RTL_SRWLOCK {
-    PVOID Ptr;
-} RTL_SRWLOCK, *PRTL_SRWLOCK;
-
-#endif // r0
 
 // symbols
 typedef struct DECL_ALIGN(128) _ALPC_COMPLETION_LIST_HEADER
@@ -14614,9 +14395,7 @@ typedef struct
 
 } OBJECT_HANDLE_FLAG_INFORMATION, *POBJECT_HANDLE_FLAG_INFORMATION;
 
-#if ML_USER_MODE
     typedef struct _OBJECT_TYPE *POBJECT_TYPE;
-#endif // r3
 
 typedef struct _OBJECT_TYPE_INITIALIZER *POBJECT_TYPE_INITIALIZER;
 
@@ -14692,84 +14471,6 @@ ZwClose(
     IN HANDLE Handle
 );
 
-#if ML_KERNEL_MODE
-
-NTKRNLAPI
-NTSTATUS
-ObCreateObjectType(
-    IN  PUNICODE_STRING             TypeName,
-    IN  POBJECT_TYPE_INITIALIZER    ObjectTypeInitializer,
-    IN  PSECURITY_DESCRIPTOR        SecurityDescriptor OPTIONAL,
-    OUT POBJECT_TYPE*               ObjectType
-);
-
-NTSTATUS
-NTAPI
-ObCreateObject(
-    IN      KPROCESSOR_MODE     ProbeMode           OPTIONAL,
-    IN      POBJECT_TYPE        ObjectType,
-    IN      POBJECT_ATTRIBUTES  ObjectAttributes    OPTIONAL,
-    IN      KPROCESSOR_MODE     OwnershipMode,
-    IN OUT  PVOID               ParseContext        OPTIONAL,
-    IN      ULONG               ObjectBodySize,
-    IN      ULONG               PagedPoolCharge     OPTIONAL,
-    IN      ULONG               NonPagedPoolCharge  OPTIONAL,
-    OUT     PVOID*              Object
-);
-
-NTKERNELAPI
-NTSTATUS
-NTAPI
-ObCloseHandle(
-    IN HANDLE           Handle,
-    IN KPROCESSOR_MODE  PreviousMode
-);
-
-NTKERNELAPI
-POBJECT_TYPE
-NTAPI
-ObGetObjectType(
-    IN PVOID Object
-);
-
-//
-//  A function to enumerate through the handle table of a process using a
-//  callback.
-//
-
-typedef struct HANDLE_TABLE *PHANDLE_TABLE;
-typedef struct HANDLE_TABLE_ENTRY *PHANDLE_TABLE_ENTRY;
-
-typedef
-BOOLEAN
-(NTAPI
-*EX_ENUMERATE_HANDLE_ROUTINE)(
-    IN PHANDLE_TABLE_ENTRY  HandleTableEntry,
-    IN HANDLE               Handle,
-    IN PVOID                EnumParameter
-);
-
-typedef
-BOOLEAN
-(NTAPI
-*EX_ENUMERATE_HANDLE_ROUTINE_WIN8)(
-    IN PHANDLE_TABLE        HandleTable,
-    IN PHANDLE_TABLE_ENTRY  HandleTableEntry,
-    IN HANDLE               Handle,
-    IN PVOID                EnumParameter
-);
-
-NTKERNELAPI
-BOOLEAN
-NTAPI
-ExEnumHandleTable(
-    IN  PHANDLE_TABLE               HandleTable,
-    IN  EX_ENUMERATE_HANDLE_ROUTINE EnumHandleProcedure,
-    IN  PVOID                       EnumParameter,
-    OUT PHANDLE                     Handle OPTIONAL
-);
-
-#endif // r0
 
 #endif // _NTOBJECT_H_44725294_0381_41e9_872d_92a0dd9f3ac0_
 
@@ -14786,21 +14487,6 @@ typedef enum _MEMORY_INFORMATION_CLASS
 
 } MEMORY_INFORMATION_CLASS;
 
-#if 0
-
-typedef struct _MEMORY_BASIC_INFORMATION
-{
-/* 0x000 */ PVOID                          BaseAddress;
-/* 0x004 */ PVOID                          AllocationBase;
-/* 0x008 */ ULONG                          AllocationProtect;
-/* 0x00C */ ULONG_PTR                      RegionSize;
-/* 0x010 */ ULONG                          State;
-/* 0x014 */ ULONG                          Protect;
-/* 0x018 */ ULONG                          Type;
-
-} MEMORY_BASIC_INFORMATION, *PMEMORY_BASIC_INFORMATION;
-
-#endif
 
 typedef OBJECT_NAME_INFORMATION MEMORY_MAPPED_FILENAME_INFORMATION, *PMEMORY_MAPPED_FILENAME_INFORMATION;
 typedef OBJECT_NAME_INFORMATION2 MEMORY_MAPPED_FILENAME_INFORMATION2;
@@ -14886,7 +14572,6 @@ typedef struct _MEMORY_WORKING_SET_EX_INFORMATION
   image section information
 ************************************************************************/
 
-#if ML_USER_MODE
 
 typedef enum
 {
@@ -14895,7 +14580,6 @@ typedef enum
 
 } SECTION_INHERIT;
 
-#endif
 
 typedef enum
 {
@@ -15127,7 +14811,7 @@ ZwFlushInstructionCache(
         SECTION_ALL_ACCESS  - All of the preceding +
                               STANDARD_RIGHTS_REQUIRED
 
-    ObjectAttributes - Points to a structure that specifies the objectæŠ?attributes.
+    ObjectAttributes - Points to a structure that specifies the object??attributes.
         OBJ_OPENLINK is not a valid attribute for a section object.
 
     MaximumSize - Optionally points to a variable that specifies the size,
@@ -15300,7 +14984,6 @@ NtResetWriteWatch(
     SIZE_T  RegionSize
 );
 
-#if !ML_KERNEL_MODE
 
 /************************************************************************
   user mode
@@ -15380,7 +15063,6 @@ RtlUnlockHeap(
     IN PVOID HeapHandle
 );
 
-#endif // !kernel mode
 
 /************************************************************************
   C interface
@@ -15751,23 +15433,6 @@ typedef struct _EXCEPTION_REGISTRATION_RECORD
 
 #endif // _WIN32_WINNT_WIN8
 
-#if 0
-typedef struct _NT_TIB
-{
-/* 0x000 */ EXCEPTION_REGISTRATION_RECORD *ExceptionList;
-/* 0x004 */ PVOID StackBase;
-/* 0x008 */ PVOID StackLimit;
-/* 0x00c */ PVOID SubSystemTib;
-/* 0x010 */ union
-            {
-                PVOID FiberData;
-                ULONG Version;
-            };
-/* 0x014 */ PVOID ArbitraryUserPointer;
-/* 0x018 */ struct _NT_TIB *Self;
-} NT_TIB;
-
-#endif
 
 typedef struct
 {
@@ -16031,52 +15696,7 @@ VOID
     IN PVOID SystemArgument2 OPTIONAL
 );
 
-#if ML_KERNEL_MODE
 
-
-#define PROCESS_TERMINATE                  (0x0001)
-#define PROCESS_CREATE_THREAD              (0x0002)
-#define PROCESS_SET_SESSIONID              (0x0004)
-#define PROCESS_VM_OPERATION               (0x0008)
-#define PROCESS_VM_READ                    (0x0010)
-#define PROCESS_VM_WRITE                   (0x0020)
-#define PROCESS_DUP_HANDLE                 (0x0040)
-#define PROCESS_CREATE_PROCESS             (0x0080)
-#define PROCESS_SET_QUOTA                  (0x0100)
-#define PROCESS_SET_INFORMATION            (0x0200)
-#define PROCESS_QUERY_INFORMATION          (0x0400)
-#define PROCESS_SUSPEND_RESUME             (0x0800)
-#define PROCESS_QUERY_LIMITED_INFORMATION  (0x1000)
-#define PROCESS_SET_LIMITED_INFORMATION    (0x2000)
-#if (NTDDI_VERSION >= NTDDI_VISTA)
-#define PROCESS_ALL_ACCESS        (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | \
-                                   0xFFFF)
-#else
-#define PROCESS_ALL_ACCESS        (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | \
-                                   0xFFF)
-#endif
-
-typedef
-VOID
-(NTAPI
-*PKKERNEL_ROUTINE)(
-    PKAPC               Apc,
-    PKNORMAL_ROUTINE*   NormalRoutine,
-    PVOID*              NormalContext,
-    PVOID*              SystemArgument1,
-    PVOID*              SystemArgument2
-);
-
-typedef
-VOID
-(NTAPI
-*PKRUNDOWN_ROUTINE)(
-    PKAPC *Apc
-);
-
-#endif // r0
-
-#if ML_USER_MODE
 
 //
 // Define process debug flags
@@ -16270,7 +15890,6 @@ typedef struct _KERNEL_USER_TIMES {
 } KERNEL_USER_TIMES, *PKERNEL_USER_TIMES;
 
 
-#endif // r3 only
 
 
 
@@ -17046,164 +16665,6 @@ RtlCaptureContext(
     OUT PCONTEXT ContextRecord
 );
 
-#if ML_KERNEL_MODE
-
-NTKRNLAPI
-PVOID
-NTAPI
-PsGetThreadWin32Thread(
-    PETHREAD Thread
-);
-
-NTKRNLAPI
-NTSTATUS
-NTAPI
-PsGetContextThread(
-    IN      PETHREAD        Thread,
-    IN OUT  PCONTEXT        ThreadContext,
-    IN      KPROCESSOR_MODE PreviousMode
-);
-
-NTKRNLAPI
-NTSTATUS
-NTAPI
-PsSetContextThread(
-    IN      PETHREAD        Thread,
-    IN OUT  PCONTEXT        ThreadContext,
-    IN      KPROCESSOR_MODE PreviousMode
-);
-
-NTKRNLAPI
-VOID
-NTAPI
-KeInitializeApc(
-    OUT PRKAPC              Apc,
-    IN  PRKTHREAD           Thread,
-    IN  KAPC_ENVIRONMENT    Environment,
-    IN  PKKERNEL_ROUTINE    KernelRoutine,
-    IN  PKRUNDOWN_ROUTINE   RundownRoutine OPTIONAL,
-    IN  PKNORMAL_ROUTINE    NormalRoutine OPTIONAL,
-    IN  KPROCESSOR_MODE     ApcMode OPTIONAL,
-    IN  PVOID               NormalContext OPTIONAL
-);
-
-NTKRNLAPI
-BOOLEAN
-NTAPI
-KeInsertQueueApc(
-    IN OUT  PRKAPC Apc,
-    IN      PVOID SystemArgument1 OPTIONAL,
-    IN      PVOID SystemArgument2 OPTIONAL,
-    IN      KPRIORITY Increment
-);
-
-NTKRNLAPI
-NTSTATUS
-NTAPI
-PsLookupProcessThreadByCid(
-    IN  PCLIENT_ID  Cid,
-    OUT PEPROCESS*  Process OPTIONAL,
-    OUT PETHREAD*   Thread
-);
-
-NTKRNLAPI
-PVOID
-PsGetProcessSectionBaseAddress(
-    IN PEPROCESS Process
-);
-
-NTKRNLAPI
-PCHAR
-NTAPI
-PsGetProcessImageFileName(
-    IN PEPROCESS Process
-);
-
-NTKRNLAPI
-PVOID
-NTAPI
-PsGetProcessDebugPort(
-    IN PEPROCESS Process
-);
-
-NTKRNLAPI
-PVOID
-NTAPI
-PsGetProcessSecurityPort(
-    IN PEPROCESS Process
-);
-
-NTKRNLAPI
-NTSTATUS
-NTAPI
-PsSetProcessSecurityPort(
-    OUT PEPROCESS Process,
-    IN  PVOID Port
-);
-
-NTKRNLAPI
-NTSTATUS
-NTAPI
-PsGetProcessExitStatus(
-    IN PEPROCESS Process
-);
-
-NTKRNLAPI
-HANDLE
-NTAPI
-PsGetThreadProcessId(
-    IN PETHREAD Thread
-);
-
-NTKRNLAPI
-PEPROCESS
-NTAPI
-PsGetThreadProcess(
-    IN PETHREAD Thread
-);
-
-NTKERNELAPI
-PVOID
-NTAPI
-PsGetThreadTeb(
-    PETHREAD Thread
-);
-
-NTKERNELAPI
-NTSTATUS
-NTAPI
-PsSuspendProcess(
-    PEPROCESS Process
-);
-
-NTKERNELAPI
-NTSTATUS
-NTAPI
-PsResumeProcess(
-    PEPROCESS Process
-);
-
-NTKRNLAPI
-VOID
-NTAPI
-KiAttachProcess_NT5(
-    IN OUT  PRKTHREAD           Thread,
-    IN      PKPROCESS           Process,
-    IN      PKLOCK_QUEUE_HANDLE LockHandle,
-    OUT     PRKAPC_STATE        SavedApcState
-);
-
-NTKRNLAPI
-VOID
-NTAPI
-KiAttachProcess_NT6(
-    // IN OUT  PRKTHREAD           Thread, // eax
-    IN      PKPROCESS       Process,
-    IN      KIRQL           PreviousIrql,
-    OUT     PRKAPC_STATE    SavedApcState
-);
-
-#endif // r0
 
 #endif // _NTPROCESS_H_39560d0d_86be_4220_839a_0fcdb8e556cf_
 
@@ -17794,7 +17255,6 @@ NtSystemDebugControl(
     OUT PULONG          ReturnLength
 );
 
-#if !ML_KERNEL_MODE
 
 NATIVE_API
 VOID
@@ -18191,7 +17651,6 @@ RtlDecompressBuffer(
     OUT PULONG  FinalUncompressedSize
 );
 
-#endif // !ML_KERNEL_MODE
 
 #endif // _NTMISC_H_e2789f20_6dd7_48d9_841c_b38cc5e46666_
 #ifndef _NTMODULE_H_da9e04cd_9069_411f_8914_6b5fce052ca8_
@@ -18204,7 +17663,6 @@ RtlDecompressBuffer(
 #define _NTREGISTRY_H_0aecc908_7e96_445f_a102_94f7cf820671_
 
 
-#if ML_USER_MODE
 
 typedef enum
 {
@@ -18324,7 +17782,6 @@ typedef struct _KEY_BASIC_INFORMATION
 
 } KEY_BASIC_INFORMATION, *PKEY_BASIC_INFORMATION;
 
-#endif // r3
 
 NATIVE_API
 NTSTATUS
@@ -19688,7 +19145,6 @@ RtlIntegerToUnicodeString(
 );
 
 
-#if !ML_KERNEL_MODE
 
 NATIVE_API
 NTSTATUS
@@ -19808,7 +19264,6 @@ RtlInitEmptyUnicodeString(
     UnicodeString->Buffer        = (PWSTR)Buffer;
 }
 
-#endif // ML_KERNEL_MODE
 
 #endif // _NTIFS_
 
@@ -20345,7 +19800,6 @@ NtTestAlert(
     VOID
 );
 
-#if !ML_KERNEL_MODE
 
 NATIVE_API
 VOID
@@ -20376,7 +19830,6 @@ RtlLeaveCriticalSection(
     LPCRITICAL_SECTION CriticalSection
 );
 
-#endif // !ML_KERNEL_MODE
 
 #endif // _NTSYNC_H_a657b25f_ed76_4374_b4b4_c0281e592892_
 #ifndef _NTTIMER_H_5e54d33a_0623_48d6_be4c_a11f0207d94a_
@@ -20507,65 +19960,6 @@ RtlCreateTimer(
 #define _NTTOKEN_H_f4dd851c_2e83_4d40_9dbf_e2adf1753014_
 
 
-#if ML_KERNEL_MODE
-
-#if !defined(_NTIFS_)
-
-/*
-typedef enum _TOKEN_ELEVATION_TYPE {
-    TokenElevationTypeDefault = 1,
-    TokenElevationTypeFull,
-    TokenElevationTypeLimited,
-} TOKEN_ELEVATION_TYPE, *PTOKEN_ELEVATION_TYPE;
-*/
-
-typedef enum _TOKEN_INFORMATION_CLASS
-{
-    TokenUser                              = 1,
-    TokenGroups                            = 2,
-    TokenPrivileges                        = 3,
-    TokenOwner                             = 4,
-    TokenPrimaryGroup                      = 5,
-    TokenDefaultDacl                       = 6,
-    TokenSource                            = 7,
-    TokenType                              = 8,
-    TokenImpersonationLevel                = 9,
-    TokenStatistics                        = 10,
-    TokenRestrictedSids                    = 11,
-    TokenSessionId                         = 12,
-    TokenGroupsAndPrivileges               = 13,
-    TokenSessionReference                  = 14,
-    TokenSandBoxInert                      = 15,
-    TokenAuditPolicy                       = 16,
-    TokenOrigin                            = 17,
-    TokenElevationType                     = 18,
-    TokenLinkedToken                       = 19,
-    TokenElevation                         = 20,
-    TokenHasRestrictions                   = 21,
-    TokenAccessInformation                 = 22,
-    TokenVirtualizationAllowed             = 23,
-    TokenVirtualizationEnabled             = 24,
-    TokenIntegrityLevel                    = 25,
-    TokenUIAccess                          = 26,
-    TokenMandatoryPolicy                   = 27,
-    TokenLogonSid                          = 28,
-    TokenIsAppContainer                    = 29,
-    TokenCapabilities                      = 30,
-    TokenAppContainerSid                   = 31,
-    TokenAppContainerNumber                = 32,
-    TokenUserClaimAttributes               = 33,
-    TokenDeviceClaimAttributes             = 34,
-    TokenRestrictedUserClaimAttributes     = 35,
-    TokenRestrictedDeviceClaimAttributes   = 36,
-    TokenDeviceGroups                      = 37,
-    TokenRestrictedDeviceGroups            = 38,
-    MaxTokenInfoClass                      = 39,
-
-} TOKEN_INFORMATION_CLASS, *PTOKEN_INFORMATION_CLASS;
-
-#endif // _NTIFS_
-
-#else // r3
 
 NATIVE_API
 NTSTATUS
@@ -20585,7 +19979,6 @@ RtlEqualSid (
     IN PSID Sid2
 );
 
-#endif // ML_KERNEL_MODE
 
 NATIVE_API
 NTSTATUS
@@ -20707,13 +20100,7 @@ ZwAdjustPrivilegesToken(
 
 #define WIN32K_API NATIVE_API
 
-#if ML_KERNEL_MODE
 
-    DECLARE_HANDLE            (HWND);
-
-#endif // r0
-
-#if !ML_KERNEL_MODE
 
 /************************************************************************
   user32 undoc api
@@ -20822,7 +20209,6 @@ NtUserDefSetText(
     return 0;
 }
 
-#endif // !ML_KERNEL_MODE
 
 typedef enum _WINDOWINFOCLASS
 {
@@ -21061,7 +20447,6 @@ RtlQueryProcessDebugInformation(
     IN OUT  PRTL_DEBUG_INFORMATION  Buffer
 );
 
-#if ML_USER_MODE
 
 NATIVE_API
 NTSTATUS
@@ -21084,7 +20469,6 @@ typedef struct _TIME_FIELDS {
     SHORT Weekday;     // range [0..6] == [Sunday..Saturday]
 } TIME_FIELDS, *PTIME_FIELDS;
 
-#endif // r3
 
 typedef struct _RTL_TIME_ZONE_INFORMATION {
     LONG        Bias;
@@ -21211,7 +20595,6 @@ RtlDoesFileExists_U(
 );
 
 
-#if ML_USER_MODE
 
 // Resources
 
@@ -21286,7 +20669,6 @@ RtlConvertExclusiveToShared(
     IN OUT PRTL_RESOURCE Resource
 );
 
-#endif // r3
 
 NATIVE_API
 USHORT
@@ -21497,46 +20879,6 @@ RtlUnicodeToOemN(
 
 _ML_C_HEAD_
 
-#if ML_KERNEL_MODE
-
-DECLARE_HANDLE(HDC);
-DECLARE_HANDLE(HFONT);
-
-typedef struct tagPOINT
-{
-    LONG  x;
-    LONG  y;
-
-} POINT, *PPOINT, *LPPOINT;
-
-typedef struct _GLYPHMETRICS {
-    UINT    gmBlackBoxX;
-    UINT    gmBlackBoxY;
-    POINT   gmptGlyphOrigin;
-    short   gmCellIncX;
-    short   gmCellIncY;
-} GLYPHMETRICS, *LPGLYPHMETRICS;
-
-typedef struct _FIXED {
-#ifndef _MAC
-    WORD    fract;
-    short   value;
-#else
-    short   value;
-    WORD    fract;
-#endif
-} FIXED;
-
-typedef struct _MAT2 {
-    FIXED  eM11;
-    FIXED  eM12;
-    FIXED  eM21;
-    FIXED  eM22;
-} MAT2, *LPMAT2;
-
-typedef struct ENUMLOGFONTEXDVW *PENUMLOGFONTEXDVW;
-
-#endif // r0
 
 
 inline
@@ -21571,7 +20913,6 @@ NtGdiHfontCreate(
 }
 
 
-#if ML_USER_MODE
 
 typedef struct
 {
@@ -21610,7 +20951,6 @@ GetFontFileInfo(
     PULONG          ReturnedLength
 );
 
-#endif // r3
 
 _ML_C_TAIL_
 
@@ -21619,17 +20959,6 @@ _ML_C_TAIL_
 #define _NTPO_H_87cbac49_8d82_445e_8ac6_19ad5037eeb4_
 
 
-#if ML_KERNEL_MODE
-
-#define ES_SYSTEM_REQUIRED      ((ULONG)0x00000001)
-#define ES_DISPLAY_REQUIRED     ((ULONG)0x00000002)
-#define ES_USER_PRESENT         ((ULONG)0x00000004)
-#define ES_AWAYMODE_REQUIRED    ((ULONG)0x00000004)
-#define ES_CONTINUOUS           ((ULONG)0x80000000)
-
-typedef ULONG EXECUTION_STATE;
-
-#endif // r0
 
 NTSTATUS
 NTAPI
@@ -21645,7 +20974,6 @@ NtSetThreadExecutionState(
 #define _FMS_H_d46bc672_243a_4917_83c6_abbbbf435bb2_
 
 
-#if ML_USER_MODE
 
 DECLARE_HANDLE(FMS_ENUMERATOR);
 
@@ -21853,7 +21181,6 @@ FmsGetFontProperty(
     IN OUT  PVOID           PropertyBuffer
 );
 
-#endif // r3
 
 #endif // _FMS_H_d46bc672_243a_4917_83c6_abbbbf435bb2_
 
@@ -22145,30 +21472,13 @@ ForceInline PTEB_BASE Nt_CurrentTeb()
 #endif
 }
 
-#if ML_KERNEL_MODE
-inline
-#else
 ForceInline
-#endif
 PPEB_BASE Nt_CurrentPeb()
 {
 
-#if ML_KERNEL_MODE
-
-    NTSTATUS    Status;
-    PROCESS_BASIC_INFORMATION BasicInfo;
-
-    Status = ZwQueryInformationProcess(NtCurrentProcess(), ProcessBasicInformation, &BasicInfo, sizeof(BasicInfo), NULL);
-    if (!NT_SUCCESS(Status))
-        return NULL;
-
-    return (PPEB_BASE)BasicInfo.PebBaseAddress;
-
-#else // r3
 
     return (PPEB_BASE)(ULONG_PTR)ReadFsPtr(PEB_OFFSET);
 
-#endif // rx
 }
 
 ForceInline HANDLE RtlGetProcessHeap()
@@ -22322,43 +21632,6 @@ Nt_AdjustPrivilege(
     BOOL        DEF_VAL(CurrentThread, FALSE)
 );
 
-#if ML_KERNEL_MODE
-
-PLDR_MODULE
-LookupPsLoadedModuleList(
-    PLDR_MODULE LdrModule,
-    PVOID       CallDriverEntry
-);
-
-NTSTATUS
-QuerySystemModuleByHandle(
-    PVOID                           ImageBase,
-    PRTL_PROCESS_MODULE_INFORMATION Module
-);
-
-NTSTATUS
-QueryModuleNameByHandle(
-    PVOID           ImageBase,
-    PUNICODE_STRING ModuleName
-);
-
-NTSTATUS
-Nt_WaitForDebugEvent(
-    PDBGUI_WAIT_STATE_CHANGE WaitState,
-    ULONG Timeout,
-    HANDLE DebugObject
-);
-
-NTSTATUS
-KiQueueUserApc(
-    PETHREAD            Thread,
-    PKNORMAL_ROUTINE    ApcRoutine,
-    PVOID               DEF_VAL(ApcRoutineContext, NULL),
-    PVOID               DEF_VAL(Argument1, NULL),
-    PVOID               DEF_VAL(Argument2, NULL)
-);
-
-#else   // r3
 
 /************************************************************************
   user mode
@@ -22839,7 +22112,6 @@ Nt_InitializeSListHead(
     PSLIST_HEADER SListHead
 );
 
-#endif  // MY_NT_DDK
 
 _ML_C_TAIL_
 
@@ -22858,22 +22130,14 @@ class NOVTABLE MemoryAllocator
 {
 protected:
 
-#if ML_KERNEL_MODE
-
-public:
-    static const ULONG m_kMemTag = TAG4('MLKN');
-
-#else
 
            HANDLE       m_hHeap;
     static HANDLE       m_hHeapGlobal;
     static ULONG_PTR    m_ObjectCount;
 
-#endif  // MY_NT_DDK
 
 protected:
 
-#if !ML_KERNEL_MODE
 
     NoInline static HANDLE CreateGlobalHeapInternal(DWORD flOptions = 0, SIZE_T dwInitialSize = 0, SIZE_T dwMaximumSize = 0)
     {
@@ -22908,14 +22172,10 @@ protected:
         return m_hHeap != NULL && m_hHeap != m_hHeapGlobal;
     }
 
-#endif  // MY_NT_DDK
 
 public:
     NoInline MemoryAllocator(HANDLE hHeap = NULL)
     {
-#if ML_KERNEL_MODE
-        UNREFERENCED_PARAMETER(hHeap);
-#else
         if (hHeap != NULL)
         {
 //            m_hHeapPrivate = hHeap;
@@ -22938,7 +22198,6 @@ public:
 
         m_hHeap = hHeap;
 
-#endif  // MY_NT_DDK
     }
 
     MemoryAllocator(const MemoryAllocator &mem)
@@ -22948,7 +22207,6 @@ public:
 
     NoInline ~MemoryAllocator()
     {
-#if !ML_KERNEL_MODE
 
         if (IsHeapPrivate())
         {
@@ -22960,10 +22218,8 @@ public:
             DestroyGlobal();
         }
 
-#endif  // MY_NT_DDK
     }
 
-#if !ML_KERNEL_MODE
 
     HANDLE GetHeap() const
     {
@@ -23050,50 +22306,7 @@ public:
         return Result;
     }
 
-#else // r0
 
-    static POOL_TYPE GetGlobalHeap()
-    {
-        return NonPagedPool;
-    }
-
-    static PVOID AllocateMemory(ULONG_PTR Size, POOL_TYPE PoolType = NonPagedPool, ULONG Tag = m_kMemTag)
-    {
-        return AllocateHeapInternal(Size, PoolType, Tag);
-    }
-
-    static BOOL FreeMemory(PVOID Memory, ULONG Tag = m_kMemTag)
-    {
-        return FreeHeapInternal(Memory, Tag);
-    }
-
-#endif  // ML_KERNEL_MODE
-
-#if ML_KERNEL_MODE
-
-    PVoid Alloc(SizeT Size, POOL_TYPE PoolType = NonPagedPool, ULONG Tag = m_kMemTag)
-    {
-        return AllocateHeapInternal(Size, PoolType, Tag);
-    }
-
-    Bool Free(PVoid pBuffer, ULONG Tag = m_kMemTag)
-    {
-        return FreeHeapInternal(pBuffer, Tag);
-    }
-
-    Bool SafeFree(PVoid pBuffer, ULONG Tag = m_kMemTag)
-    {
-        LPVoid **pt = (LPVoid **)pBuffer;
-        if (*pt == NULL)
-            return False;
-
-        FreeHeapInternal(*pt, Tag);
-        *pt = NULL;
-
-        return True;
-    }
-
-#else
 
     PVoid Alloc(SizeT Size, ULONG_PTR Flags = 0)
     {
@@ -23137,13 +22350,10 @@ public:
         return Result;
     }
 
-#endif
 
 private:
 
-#if !ML_KERNEL_MODE
 
-#if USE_NT_VER
 
     BOOL IsNotProcessHeap()
     {
@@ -23162,26 +22372,7 @@ private:
         return !RtlDestroyHeap(hHeap);
     }
 
-#else
 
-    BOOL IsNotProcessHeap()
-    {
-        return m_hHeap != GetProcessHeap();
-    }
-
-    static HANDLE CreateHeapInternal(ULONG Flags = 0, SIZE_T CommitSize = 0, SIZE_T ReserveSize = 0)
-    {
-        return HeapCreate(Flags, CommitSize, ReserveSize);
-    }
-
-    static BOOL DestroyHeapInternal(HANDLE hHeap)
-    {
-        return HeapDestroy(hHeap);
-    }
-
-#endif
-
-#endif  // MY_NT_DDK
 
     static LONG_PTR ModifyAllocCount(LONG_PTR Increment)
     {
@@ -23191,38 +22382,6 @@ private:
         return AllocCount;
     }
 
-#if ML_KERNEL_MODE
-
-    static PVOID AllocateHeapInternal(SIZE_T Size, POOL_TYPE PoolType = NonPagedPool, ULONG Tag = m_kMemTag)
-    {
-        PVOID Memory = ExAllocatePoolWithTag(PoolType, Size, Tag);
-
-    #if ML_MEMORY_DEBUG
-
-        ModifyAllocCount(Memory != nullptr);
-
-    #endif
-
-        return Memory;
-    }
-
-    static BOOL FreeHeapInternal(PVOID Memory, ULONG Tag = m_kMemTag)
-    {
-        if (Memory == NULL)
-            return TRUE;
-
-    #if ML_MEMORY_DEBUG
-
-        ModifyAllocCount(-1);
-
-    #endif
-
-        ExFreePoolWithTag(Memory, Tag);
-
-        return TRUE;
-    }
-
-#elif USE_NT_VER
 
     static PVOID AllocateHeapInternal(HANDLE Heap, ULONG_PTR Flags, SIZE_T Size)
     {
@@ -23256,140 +22415,15 @@ private:
         return RtlFreeHeap(Heap, (ULONG)Flags, Memory);
     }
 
-#elif 0
-    static PVOID AllocateHeapInternal(HANDLE hHeap, ULONG Flags, SIZE_T Size)
-    {
-        return HeapAlloc(hHeap, Flags, Size);
-    }
-
-    static PVOID ReAllocateHeapInternal(HANDLE hHeap, ULONG Flags, PVOID pvMemory, SIZE_T Size)
-    {
-        return pvMemory == NULL ? AllocateHeapInternal(hHeap, Flags, Size) : HeapReAlloc(hHeap, Flags, pvMemory, Size);
-    }
-
-    static BOOL FreeHeapInternal(HANDLE hHeap, ULONG Flags, PVOID pvMemory)
-    {
-        if (pvMemory == NULL)
-            return TRUE;
-
-        return HeapFree(hHeap, Flags, pvMemory);
-    }
-
-#endif  // MY_NT_DDK
 };
 
-#if !ML_KERNEL_MODE
 
 DECL_SELECTANY HANDLE       MemoryAllocator::m_hHeapGlobal = NULL;
 DECL_SELECTANY ULONG_PTR    MemoryAllocator::m_ObjectCount = 0;
 
-#endif // ML_KERNEL_MODE
 
 // typedef MemoryAllocator CMem;
 
-#if ML_KERNEL_MODE
-
-template<class Object, POOL_TYPE PoolType = NonPagedPool>
-class FixedMemoryBlock
-{
-protected:
-    union
-    {
-        NPAGED_LOOKASIDE_LIST   NonPaged;
-        PAGED_LOOKASIDE_LIST    Paged;
-    } LookasideList;
-
-public:
-    static const ULONG_PTR BlockSize = sizeof(Object);
-
-public:
-    NTSTATUS Initialize(
-        PALLOCATE_FUNCTION  Allocate    = NULL,
-        PFREE_FUNCTION      Free        = NULL,
-        ULONG               Flags       = 0,
-        ULONG               Tag         = MemoryAllocator::m_kMemTag,
-        USHORT              Depth       = 0
-    )
-    {
-        switch (PoolType)
-        {
-            case NonPagedPool:
-                ExInitializeNPagedLookasideList(&LookasideList.NonPaged, Allocate, Free, Flags, BlockSize, Tag, Depth);
-                break;
-
-            case PagedPool:
-                ExInitializePagedLookasideList(&LookasideList.Paged, Allocate, Free, Flags, BlockSize, Tag, Depth);
-                break;
-
-            default:
-                return STATUS_INVALID_PARAMETER;
-        }
-
-        return STATUS_SUCCESS;
-    }
-
-    NTSTATUS UnInitialize()
-    {
-        switch (PoolType)
-        {
-            case NonPagedPool:
-                ExDeleteNPagedLookasideList(&LookasideList.NonPaged);
-                break;
-
-            case PagedPool:
-                ExDeletePagedLookasideList(&LookasideList.Paged);
-                break;
-        }
-
-        return STATUS_SUCCESS;
-    }
-
-    Object* Allocate()
-    {
-        PVOID Block;
-
-        switch (PoolType)
-        {
-            case NonPagedPool:
-                Block = ExAllocateFromNPagedLookasideList(&LookasideList.NonPaged);
-                break;
-
-            case PagedPool:
-                Block = ExAllocateFromPagedLookasideList(&LookasideList.Paged);
-                break;
-
-            default:
-                Block = NULL;
-                break;
-        }
-
-        if (Block != NULL)
-            new (Block) Object;
-
-        return (Object *)Block;
-    }
-
-    VOID Free(PVOID Block)
-    {
-        if (Block == NULL)
-            return;
-
-        switch (PoolType)
-        {
-            case NonPagedPool:
-                ((Object *)Block)->~Object();
-                ExFreeToNPagedLookasideList(&LookasideList.NonPaged, Block);
-                break;
-
-            case PagedPool:
-                ((Object *)Block)->~Object();
-                ExFreeToPagedLookasideList(&LookasideList.Paged, Block);
-                break;
-        }
-    }
-};
-
-#endif // r0
 
 #endif // CPP_DEFINED
 
@@ -23401,27 +22435,6 @@ FreeMemoryP(
     ULONG DEF_VAL(Flags, 0)
 );
 
-#if ML_KERNEL_MODE
-
-PVOID
-AllocateMemoryP(
-    ULONG_PTR Size,
-    POOL_TYPE DEF_VAL(PoolType, NonPagedPool)
-);
-
-PVOID
-AllocateMemory(
-    ULONG_PTR Size,
-    POOL_TYPE DEF_VAL(PoolType, NonPagedPool)
-);
-
-BOOL
-FreeMemory(
-    PVOID Memory,
-    ULONG Flags = 0
-);
-
-#else // user mode
 
 PVOID
 AllocateMemoryP(
@@ -23468,7 +22481,6 @@ FreeVirtualMemory(
     HANDLE  DEF_VAL(ProcessHandle, NtCurrentProcess())
 );
 
-#endif // ML_KERNEL_MODE
 
 _ML_C_TAIL_
 
@@ -23633,30 +22645,6 @@ inline ULONG_PTR HashStringT(StrType *String, ULONG_PTR Hash = 0)
 
 #endif // CPP_DEFINED
 
-#if ML_KERNEL_MODE
-
-NTSTATUS
-ProbeForReadSafe(
-    PVOID   Address,
-    SIZE_T  Length,
-    ULONG   Alignment
-);
-
-NTSTATUS
-ProbeForWriteSafe(
-    PVOID   Address,
-    SIZE_T  Length,
-    ULONG   Alignment
-);
-
-NTSTATUS
-MmProbeAndLockPagesSafe(
-    PMDL            MemoryDescriptorList,
-    KPROCESSOR_MODE AccessMode,
-    LOCK_OPERATION  Operation
-);
-
-#else   // else if !MY_NT_DDK
 
 /************************************************************************
   user mode
@@ -23748,36 +22736,14 @@ EXTC_IMPORT void CDECL __wgetmainargs(int *argc, wchar_t ***argv, wchar_t ***env
 /*
     argret = __wgetmainargs(&argc, &argv, &envp,
                             _dowildcard, &startinfo);
-#else
-    argret = __getmainargs(&argc, &argv, &envp,
-                           _dowildcard, &startinfo);
 */
 
-#if USE_NT_VER
-
 #define getargsW(pargc, pargv) (*(pargv)) = CmdLineToArgvW(Nt_GetCommandLine(), (pargc))
-
-#else // !USE_NT_VER
-
-#define getargsA(pargc, pargv) \
-            { \
-                Char **__envp__;int __dowildcard = 0;__my_startupinfo _my_startupinfo;\
-                *(pargc) = 0; \
-                __getmainargs((int *)(pargc), (pargv), (&__envp__), __dowildcard, &_my_startupinfo); \
-            }
-
-#define getargsW(pargc, pargv) \
-            { \
-                WChar **__envp__;int __dowildcard = 0;__my_startupinfo _my_startupinfo; \
-                *(pargc) = 0; \
-                __wgetmainargs((int *)(pargc), (pargv), (&__envp__), __dowildcard, &_my_startupinfo); \
-            }
-
-#endif  // USE_NT_VER
 
 #if MY_UNICODE_ENABLE
     #define getargs getargsW
 #else
+    #define getargsA(pargc, pargv) (*(pargv)) = CmdLineToArgvA(Nt_GetCommandLine(), (pargc))
     #define getargs getargsA
 #endif
 
@@ -23807,8 +22773,6 @@ ForceInline PTChar* FASTCALL CmdLineToArgv(PTChar pszCmdLine, PLONG_PTR pArgc)
     else
         return (PTChar *)CmdLineToArgvW((LPWSTR)pszCmdLine, pArgc);
 }
-
-#endif  // MY_NT_DDK
 
 _ML_C_TAIL_
 
@@ -25975,11 +24939,6 @@ PVOID WalkOpCodeT(PVOID Buffer, LONG_PTR Size, T Callback)
 #define _FILEIO_H_322e14b1_8a90_410b_bea8_1b39baddbd22
 
 
-//#include "MyLibrary.h"
-
-#if ML_USER_MODE
-
-
 _ML_C_HEAD_
 
 inline Long fsize(FILE *fp)
@@ -26017,7 +24976,6 @@ inline Int64 my_ftell64(FILE *fp)
 
 _ML_C_TAIL_
 
-#endif // ring3
 
 
 #if CPP_DEFINED
@@ -26526,11 +25484,7 @@ public:
         HANDLE FileHandle
     )
     {
-#if ML_KERNEL_MODE
-        return ZwClose(FileHandle);
-#else
         return NtClose(FileHandle);
-#endif
     }
 
     ForceInline
@@ -26832,7 +25786,6 @@ public:
         ULONG_PTR       Flags = 0
     );
 
-#if ML_USER_MODE
 
     static
     HANDLE
@@ -26890,16 +25843,6 @@ public:
         }
 
         /* check for console input/output */
-#if 0
-        if (0 == _wcsicmp(L"CONOUT$", lpFileName)
-            || 0 == _wcsicmp(L"CONIN$", lpFileName))
-        {
-            return OpenConsoleW(lpFileName,
-                dwDesiredAccess,
-                lpSecurityAttributes ? lpSecurityAttributes->bInheritHandle : FALSE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE);
-        }
-#endif
         /* validate & translate the flags */
 
         /* translate the flags that need no validation */
@@ -27037,13 +25980,6 @@ public:
 
         RtlFreeUnicodeString(&NtPathU);
 
-#if 0
-        /* free the extended attributes buffer if allocated */
-        if (EaBuffer != NULL)
-        {
-            RtlFreeHeap(RtlGetProcessHeap(), 0, EaBuffer);
-        }
-#endif
 
         /* error */
         if (!NT_SUCCESS(Status))
@@ -27082,11 +26018,9 @@ public:
         return FileHandle;
     }
 
-#endif // r3
 
 };
 
-#if !ML_KERNEL_MODE
 
 /************************************************************************
   memory file
@@ -27339,7 +26273,6 @@ protected:
     }
 };
 
-#endif // ML_KERNEL_MODE
 
 #endif // CPP_DEFINED
 
@@ -27613,9 +26546,7 @@ public:
     }
 };
 
-#if ML_USER_MODE
 
-#endif // r3
 
 #endif // _POINTER_H_6fac0398_48bd_494d_b268_63d42c5b7dc9_
 #ifndef _SAFEWINTYPES_H_1bcf869c_5f0d_4e2b_9b04_212129cd7897_
@@ -27653,7 +26584,6 @@ public:
 
 typedef Pointer<HANDLE> Handle;
 
-#if ML_USER_MODE
 
 class FindHandle : public PointerImpl<FindHandle, HANDLE>
 {
@@ -27676,7 +26606,6 @@ public:
     }
 };
 
-#endif // r3
 
 #endif // _SAFEWINTYPES_H_1bcf869c_5f0d_4e2b_9b04_212129cd7897_
 #ifndef _FUNCTION_H_a0ede8da_ec11_4122_bf7f_3b39ea104800_
@@ -28461,22 +27390,7 @@ protected:
 //            if (sizeof(TYPE) > ULONG_MAX / NewMaxSize)
 //                return STATUS_INVALID_PARAMETER;
 
-#if ML_KERNEL_MODE
-
-            TYPE* DataNew = (TYPE *)AllocateMemoryP(NewMaxSize * sizeof(*DataNew));
-
-            if (DataNew == nullptr)
-                return STATUS_NO_MEMORY;
-
-            if (DataNew != nullptr && m_Data != nullptr)
-            {
-                CopyMemory(DataNew, m_Data, m_MaxSize * sizeof(*DataNew));
-                FreeMemoryP(m_Data);
-            }
-
-#else // r3
             TYPE* DataNew = (TYPE *)ReAllocateMemoryP(m_Data, NewMaxSize * sizeof(*DataNew));
-#endif // r
 
             if (DataNew == nullptr)
                 return STATUS_NO_MEMORY;
@@ -30843,7 +29757,6 @@ Sleep(
     BOOL        Alertable = ThreadNoAlertable
 );
 
-#if ML_USER_MODE
 
 PTEB_ACTIVE_FRAME
 FindThreadFrame(
@@ -31024,93 +29937,6 @@ NTSTATUS QueueApcRoutine(const F &ApcFunction, HANDLE Thread = CurrentThread)
     return Status;
 }
 
-#else // r0
-
-#define LambdaKernelApc(Apc) [] (PKAPC Apc, PKNORMAL_ROUTINE* NormalRoutine, PVOID* NormalContext, PVOID* SystemArgument1, PVOID* SystemArgument2) -> VOID
-#define LambdaNormalApc(NormalContext) [] (PVOID NormalContext, PVOID, PVOID) -> VOID
-#define NormalApcCallbackM(...) (PKNORMAL_ROUTINE)(LambdaCastHelper<VOID(NTAPI *)(__VA_ARGS__, PVOID, PVOID)>::FUNC)[] (__VA_ARGS__, PVOID, PVOID) -> VOID
-
-typedef struct
-{
-    KAPC                Apc;
-    PKKERNEL_ROUTINE    Callback;
-    PVOID               Argument1;
-    PVOID               Argument2;
-
-} ML_KERNEL_APC, *PML_KERNEL_APC;
-
-inline
-NTSTATUS
-QueueNormalApc(
-    PETHREAD            Thread,
-    PKNORMAL_ROUTINE    NormalRoutine,
-    PVOID               NormalContext = nullptr,
-    KPRIORITY           Increment = IO_NO_INCREMENT
-)
-{
-    PKAPC       Apc;
-    NTSTATUS    Status;
-
-    Apc = new KAPC;
-    if (Apc == nullptr)
-        return STATUS_NO_MEMORY;
-
-    KeInitializeApc(Apc, Thread, OriginalApcEnvironment,
-        LambdaKernelApc(Apc)
-        {
-            delete Apc;
-        },
-        nullptr,
-        NormalRoutine,
-        KernelMode,
-        NormalContext
-    );
-
-    if (KeInsertQueueApc(Apc, Apc, nullptr, Increment) == FALSE)
-    {
-        delete Apc;
-        return STATUS_UNSUCCESSFUL;
-    }
-
-    return STATUS_SUCCESS;
-}
-
-inline
-NTSTATUS
-QueueNormalApc(
-    HANDLE              ThreadId,
-    PKNORMAL_ROUTINE    NormalRoutine,
-    PVOID               NormalContext = nullptr,
-    KPRIORITY           Increment = IO_NO_INCREMENT
-)
-{
-    NTSTATUS Status;
-    PETHREAD Thread;
-
-    Status = PsLookupThreadByThreadId(ThreadId, &Thread);
-    FAIL_RETURN(Status);
-
-    Status = QueueNormalApc(Thread, NormalRoutine, NormalContext, Increment);
-    ObDereferenceObject(Thread);
-
-    return Status;
-}
-
-inline PETHREAD TidToThreadObject(HANDLE ThreadId)
-{
-    PETHREAD Thread;
-
-    return NT_FAILED(PsLookupThreadByThreadId(ThreadId, &Thread)) ? nullptr : Thread;
-}
-
-inline PEPROCESS PidToProcessObject(HANDLE ProcessId)
-{
-    PEPROCESS Process;
-
-    return NT_FAILED(PsLookupProcessByProcessId(ProcessId, &Process)) ? nullptr : Process;
-}
-
-#endif // r0
 
 ML_NAMESPACE_END_(Ps);
 
@@ -31475,22 +30301,6 @@ ML_NAMESPACE_BEGIN(Reg);
     #define HKEY_CURRENT_USER_LOCAL_SETTINGS    (( HKEY ) (ULONG_PTR)((LONG)0x80000007) )
 #endif
 
-#if ML_KERNEL_MODE
-
-typedef HANDLE HKEY;
-
-#define HKEY_CLASSES_ROOT                   (( HKEY ) (ULONG_PTR)((LONG)0x80000000) )
-#define HKEY_CURRENT_USER                   (( HKEY ) (ULONG_PTR)((LONG)0x80000001) )
-#define HKEY_LOCAL_MACHINE                  (( HKEY ) (ULONG_PTR)((LONG)0x80000002) )
-#define HKEY_USERS                          (( HKEY ) (ULONG_PTR)((LONG)0x80000003) )
-#define HKEY_PERFORMANCE_DATA               (( HKEY ) (ULONG_PTR)((LONG)0x80000004) )
-#define HKEY_PERFORMANCE_TEXT               (( HKEY ) (ULONG_PTR)((LONG)0x80000050) )
-#define HKEY_PERFORMANCE_NLSTEXT            (( HKEY ) (ULONG_PTR)((LONG)0x80000060) )
-#define HKEY_CURRENT_CONFIG                 (( HKEY ) (ULONG_PTR)((LONG)0x80000005) )
-#define HKEY_DYN_DATA                       (( HKEY ) (ULONG_PTR)((LONG)0x80000006) )
-#define HKEY_CURRENT_USER_LOCAL_SETTINGS    (( HKEY ) (ULONG_PTR)((LONG)0x80000007) )
-
-#endif // r0
 
 #define HKEY_MACHINE_CLASS                  (( HKEY ) (ULONG_PTR)((LONG)0x80000020) )
 
@@ -31579,77 +30389,6 @@ ML_NAMESPACE_END_(Reg);
 
 ML_NAMESPACE_BEGIN(Exp);
 
-#if ML_KERNEL_MODE
-
-/*
- * MessageBox() Flags
- */
-#define MB_OK                       0x00000000L
-#define MB_OKCANCEL                 0x00000001L
-#define MB_ABORTRETRYIGNORE         0x00000002L
-#define MB_YESNOCANCEL              0x00000003L
-#define MB_YESNO                    0x00000004L
-#define MB_RETRYCANCEL              0x00000005L
-#if(WINVER >= 0x0500)
-#define MB_CANCELTRYCONTINUE        0x00000006L
-#endif /* WINVER >= 0x0500 */
-
-
-#define MB_ICONHAND                 0x00000010L
-#define MB_ICONQUESTION             0x00000020L
-#define MB_ICONEXCLAMATION          0x00000030L
-#define MB_ICONASTERISK             0x00000040L
-
-#if(WINVER >= 0x0400)
-#define MB_USERICON                 0x00000080L
-#define MB_ICONWARNING              MB_ICONEXCLAMATION
-#define MB_ICONERROR                MB_ICONHAND
-#endif /* WINVER >= 0x0400 */
-
-#define MB_ICONINFORMATION          MB_ICONASTERISK
-#define MB_ICONSTOP                 MB_ICONHAND
-
-#define MB_DEFBUTTON1               0x00000000L
-#define MB_DEFBUTTON2               0x00000100L
-#define MB_DEFBUTTON3               0x00000200L
-#if(WINVER >= 0x0400)
-#define MB_DEFBUTTON4               0x00000300L
-#endif /* WINVER >= 0x0400 */
-
-#define MB_APPLMODAL                0x00000000L
-#define MB_SYSTEMMODAL              0x00001000L
-#define MB_TASKMODAL                0x00002000L
-#if(WINVER >= 0x0400)
-#define MB_HELP                     0x00004000L // Help Button
-#endif /* WINVER >= 0x0400 */
-
-#define MB_NOFOCUS                  0x00008000L
-#define MB_SETFOREGROUND            0x00010000L
-#define MB_DEFAULT_DESKTOP_ONLY     0x00020000L
-
-#if(WINVER >= 0x0400)
-#define MB_TOPMOST                  0x00040000L
-#define MB_RIGHT                    0x00080000L
-#define MB_RTLREADING               0x00100000L
-
-#endif /* WINVER >= 0x0400 */
-
-#ifdef _WIN32_WINNT
-#if (_WIN32_WINNT >= 0x0400)
-#define MB_SERVICE_NOTIFICATION          0x00200000L
-#else
-#define MB_SERVICE_NOTIFICATION          0x00040000L
-#endif
-#define MB_SERVICE_NOTIFICATION_NT3X     0x00040000L
-#endif
-
-#define MB_TYPEMASK                 0x0000000FL
-#define MB_ICONMASK                 0x000000F0L
-#define MB_DEFMASK                  0x00000F00L
-#define MB_MODEMASK                 0x00003000L
-#define MB_MISCMASK                 0x0000C000L
-
-#endif // r0
 
 NTSTATUS
 ExceptionBox(
@@ -31909,20 +30648,6 @@ ML_NAMESPACE_BEGIN(Io);
     #define FILE_ATTRIBUTE_NO_SCRUB_DATA        0x00020000
 #endif
 
-#if ML_KERNEL_MODE
-
-//
-// Typedefs
-//
-
-typedef struct _SECURITY_ATTRIBUTES {
-    DWORD nLength;
-    LPVOID lpSecurityDescriptor;
-    BOOL bInheritHandle;
-} SECURITY_ATTRIBUTES, *PSECURITY_ATTRIBUTES, *LPSECURITY_ATTRIBUTES;
-
-
-#endif // r0
 
 typedef struct _ML_FIND_DATA {
     ULONG           FileAttributes;
@@ -31956,11 +30681,7 @@ QueryClose(
     HANDLE FindFileHandle
 )
 {
-#if ML_KERNEL_MODE
-    return ZwClose(FindFileHandle);
-#elif ML_USER_MODE
     return NtClose(FindFileHandle);
-#endif
 }
 
 ULONG_PTR
@@ -32193,16 +30914,6 @@ ML_NAMESPACE_END_(Io);
 
 ML_NAMESPACE_BEGIN(Ob);
 
-#if ML_KERNEL_MODE
-
-NTSTATUS
-CreateObjectType(
-    IN  PUNICODE_STRING             TypeName,
-    IN  POBJECT_TYPE_INITIALIZER    ObjectTypeInitializer,
-    OUT POBJECT_TYPE*               ObjectType
-);
-
-#endif // r0
 
 ML_NAMESPACE_END_(Ob);
 
@@ -32211,7 +30922,6 @@ ML_NAMESPACE_END_(Ob);
 #define _MLNTGDI_H_27034c70_52be_440c_9442_2e83bff34107_
 
 
-#if ML_USER_MODE
 
 ML_NAMESPACE_BEGIN(Gdi);
 
@@ -32297,7 +31007,6 @@ typedef struct
 
 ML_NAMESPACE_END_(Gdi);
 
-#endif // r3
 
 #endif // _MLNTGDI_H_27034c70_52be_440c_9442_2e83bff34107_
 
@@ -34018,7 +32727,6 @@ _ML_CPP_TAIL_
 #endif // CPP_DEFINED
 
 #endif // _MYLIBRARYUSER_H_e5b0d13b_823a_4f24_88ec_6515f58a7140_
-#endif
 
 #if CPP_DEFINED
 #endif
@@ -34046,687 +32754,6 @@ using namespace ml::Native::Lpc;
 using namespace ml::Native::Io;
 
 #endif // _MLNS_H_6cb317cc_3fcc_4a63_87ee_12bcfeb1db61_
-#if ML_KERNEL_MODE
-
-ML_NAMESPACE_BEGIN(WindowsVersionsInfoClass)
-
-enum
-{
-    Windows7            = 0x00000601,
-    Windows7SP1         = 0x01000601,
-    Windows2008R2       = 0x80000601,
-
-    Windows8            = 0x00000602,
-    WindowsServer2012   = 0x80000602,
-
-    Windows81           = 0x00000603,
-    WindowsServer2012R2 = 0x80000603,
-
-    InvalidVersion      = 0xFFFFFFFF,
-};
-
-inline ULONG GetWindowsVersion()
-{
-    NTSTATUS                        Status;
-    ULONG                           CSDVersion;
-    RTL_OSVERSIONINFOEXW            Version;
-    PKEY_VALUE_PARTIAL_INFORMATION  Value;
-
-    static ULONG WindowsVersion = 0;
-
-    if (WindowsVersion != 0)
-    {
-        return WindowsVersion;
-    }
-
-    Version.dwOSVersionInfoSize = sizeof(Version);
-    Status = RtlGetVersion((PRTL_OSVERSIONINFOW)&Version);
-    if (NT_FAILED(Status))
-        return InvalidVersion;
-
-    Status = Reg::GetKeyValue(HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Windows", L"CSDVersion", &Value);
-    if (NT_FAILED(Status))
-        return InvalidVersion;
-
-    if (Value->Type != REG_DWORD || Value->DataLength != sizeof(CSDVersion))
-    {
-        FreeKeyInfo(Value);
-        return InvalidVersion;
-    }
-
-    CSDVersion = *(PULONG)Value->Data;
-    FreeKeyInfo(Value);
-
-    WindowsVersion = (Version.dwMajorVersion << 8 | Version.dwMinorVersion | ((CSDVersion << 16) & 0x7FFF0000)) | (Version.wProductType != VER_NT_WORKSTATION ? 0x80000000 : 0);
-
-    return WindowsVersion;
-}
-
-inline BOOL IsSupportedVersion()
-{
-    switch (WindowsVersionsInfoClass::GetWindowsVersion())
-    {
-        case WindowsVersionsInfoClass::Windows7:
-        case WindowsVersionsInfoClass::Windows7SP1:
-        case WindowsVersionsInfoClass::Windows8:
-        case WindowsVersionsInfoClass::Windows81:
-            return TRUE;
-
-        default:
-            return FALSE;
-    }
-}
-
-ML_NAMESPACE_END_(WindowsVersionsInfoClass);
-
-#pragma push_macro("DEFINE_PROPERTY")
-#pragma push_macro("DECLARE_ACCESSOR")
-#pragma push_macro("FIELD_ACCESSOR")
-#pragma push_macro("SET_ACCESSOR")
-#pragma push_macro("CALL_ACCESSOR")
-
-#undef DEFINE_PROPERTY
-#undef DECLARE_ACCESSOR
-#undef FIELD_ACCESSOR
-#undef SET_ACCESSOR
-#undef CALL_ACCESSOR
-
-
-typedef struct _OBJECT_TYPE_INITIALIZER_WIN7_760X               // 25 elements, 0x50 bytes (sizeof)
-{
-/*0x000*/     USHORT       Length;
-              union                                             // 2 elements, 0x1 bytes (sizeof)
-              {
-/*0x002*/         UCHAR        ObjectTypeFlags;
-                  struct                                        // 7 elements, 0x1 bytes (sizeof)
-                  {
-/*0x002*/             UCHAR        CaseInsensitive : 1;         // 0 BitPosition
-/*0x002*/             UCHAR        UnnamedObjectsOnly : 1;      // 1 BitPosition
-/*0x002*/             UCHAR        UseDefaultObject : 1;        // 2 BitPosition
-/*0x002*/             UCHAR        SecurityRequired : 1;        // 3 BitPosition
-/*0x002*/             UCHAR        MaintainHandleCount : 1;     // 4 BitPosition
-/*0x002*/             UCHAR        MaintainTypeList : 1;        // 5 BitPosition
-/*0x002*/             UCHAR        SupportsObjectCallbacks : 1; // 6 BitPosition
-                  };
-              };
-/*0x004*/     ULONG      ObjectTypeCode;
-/*0x008*/     ULONG      InvalidAttributes;
-/*0x00C*/     struct _GENERIC_MAPPING GenericMapping;           // 4 elements, 0x10 bytes (sizeof)
-/*0x01C*/     ULONG      ValidAccessMask;
-/*0x020*/     ULONG      RetainAccess;
-/*0x024*/     enum _POOL_TYPE PoolType;
-/*0x028*/     ULONG      DefaultPagedPoolCharge;
-/*0x02C*/     ULONG      DefaultNonPagedPoolCharge;
-/*0x030*/     PVOID      DumpProcedure;                       // FUNCT_00A4_0ED5_DumpProcedure*
-/*0x034*/     PVOID      OpenProcedure;                       // FUNCT_000F_0EDD_OpenProcedure*
-/*0x038*/     PVOID      CloseProcedure;                      // FUNCT_00A4_0EEB_CloseProcedure*
-/*0x03C*/     PVOID      DeleteProcedure;                     // FUNCT_00A4_0662_Free_InterfaceReference_InterfaceDereference_DeleteProcedure_WorkerRoutine_Callback_ReleaseFromLazyWrite_ReleaseFromReadAhead*
-/*0x040*/     PVOID      ParseProcedure;                      // FUNCT_000F_0EF1_ParseProcedure*
-/*0x044*/     PVOID      SecurityProcedure;                   // FUNCT_000F_0EFD_SecurityProcedure*
-/*0x048*/     PVOID      QueryNameProcedure;                  // FUNCT_000F_0F0E_QueryNameProcedure*
-/*0x04C*/     PVOID      OkayToCloseProcedure;                // FUNCT_0067_0F16_OkayToCloseProcedure*
-
-} OBJECT_TYPE_INITIALIZER_WIN7_760X, *POBJECT_TYPE_INITIALIZER_WIN7_760X;
-
-
-typedef struct _OBJECT_TYPE_INITIALIZER_WIN8_9X00                    // 29 elements, 0x58 bytes (sizeof)
-{
-/*0x000*/     USHORT       Length;
-              union                                             // 2 elements, 0x1 bytes (sizeof)
-              {
-/*0x002*/         UCHAR        ObjectTypeFlags;
-                  struct                                        // 8 elements, 0x1 bytes (sizeof)
-                  {
-/*0x002*/             UCHAR        CaseInsensitive : 1;         // 0 BitPosition
-/*0x002*/             UCHAR        UnnamedObjectsOnly : 1;      // 1 BitPosition
-/*0x002*/             UCHAR        UseDefaultObject : 1;        // 2 BitPosition
-/*0x002*/             UCHAR        SecurityRequired : 1;        // 3 BitPosition
-/*0x002*/             UCHAR        MaintainHandleCount : 1;     // 4 BitPosition
-/*0x002*/             UCHAR        MaintainTypeList : 1;        // 5 BitPosition
-/*0x002*/             UCHAR        SupportsObjectCallbacks : 1; // 6 BitPosition
-/*0x002*/             UCHAR        CacheAligned : 1;            // 7 BitPosition
-                  };
-              };
-
-/*0x004*/     ULONG      ObjectTypeCode;
-/*0x008*/     ULONG      InvalidAttributes;
-/*0x00C*/     struct _GENERIC_MAPPING GenericMapping;           // 4 elements, 0x10 bytes (sizeof)
-/*0x01C*/     ULONG      ValidAccessMask;
-/*0x020*/     ULONG      RetainAccess;
-/*0x024*/     enum _POOL_TYPE PoolType;
-/*0x028*/     ULONG      DefaultPagedPoolCharge;
-/*0x02C*/     ULONG      DefaultNonPagedPoolCharge;
-/*0x030*/     PVOID      DumpProcedure;                       // FUNCT_00BC_140F_DumpProcedure*
-/*0x034*/     PVOID      OpenProcedure;                       // FUNCT_0072_1417_OpenProcedure*
-/*0x038*/     PVOID      CloseProcedure;                      // FUNCT_00BC_1425_CloseProcedure*
-/*0x03C*/     PVOID      DeleteProcedure;                     // FUNCT_00BC_06F1_Free_WorkerRoutine_DeleteCallback_InterfaceReference_InterfaceDereference_DeleteProcedure_DevicePowerRequired_DevicePowerNotRequired_Callback_ReleaseFromLazyWrite_ReleaseFromReadAhead*
-/*0x040*/     PVOID      ParseProcedure;                      // FUNCT_0072_142B_ParseProcedure*
-/*0x044*/     PVOID      SecurityProcedure;                   // FUNCT_0072_1437_SecurityProcedure*
-/*0x048*/     PVOID      QueryNameProcedure;                  // FUNCT_0072_1448_QueryNameProcedure*
-/*0x04C*/     PVOID      OkayToCloseProcedure;                // FUNCT_007B_1450_OkayToCloseProcedure*
-/*0x050*/     ULONG      WaitObjectFlagMask;
-/*0x054*/     USHORT     WaitObjectFlagOffset;
-/*0x056*/     USHORT     WaitObjectPointerOffset;
-
-} OBJECT_TYPE_INITIALIZER_WIN8_9X00, *POBJECT_TYPE_INITIALIZER_WIN8_9X00;
-
-
-typedef struct _OBJECT_TYPE_WIN8                            // 12 elements, 0x90 bytes (sizeof)
-{
-/*0x000*/     LIST_ENTRY        TypeList;                   // 2 elements, 0x8 bytes (sizeof)
-/*0x008*/     UNICODE_STRING    Name;                       // 3 elements, 0x8 bytes (sizeof)
-/*0x010*/     PVOID             DefaultObject;              // VOID*
-/*0x014*/     UCHAR             Index;
-/*0x018*/     ULONG             TotalNumberOfObjects;
-/*0x01C*/     ULONG             TotalNumberOfHandles;
-/*0x020*/     ULONG             HighWaterNumberOfObjects;
-/*0x024*/     ULONG             HighWaterNumberOfHandles;
-              OBJECT_TYPE_INITIALIZER_WIN8_9X00 TypeInfo[1];
-#if 0
-/*0x028*/     struct _OBJECT_TYPE_INITIALIZER TypeInfo;     // 29 elements, 0x58 bytes (sizeof)
-/*0x080*/     struct _EX_PUSH_LOCK TypeLock;                // 7 elements, 0x4 bytes (sizeof)
-/*0x084*/     ULONG32      Key;
-/*0x088*/     struct _LIST_ENTRY CallbackList;              // 2 elements, 0x8 bytes (sizeof)
-#endif
-
-} OBJECT_TYPE_WIN8_9X00, *POBJECT_TYPE_WIN8_9X00;
-
-typedef OBJECT_TYPE_WIN8_9X00 OBJECT_TYPE_WIN7_760X, *POBJECT_TYPE_WIN7_760X;
-
-
-template<class _FIELD_TYPE, ULONG_PTR FieldOffset>
-ForceInline _FIELD_TYPE& FieldAccessor(PVOID Object)
-{
-    return *(_FIELD_TYPE *)PtrAdd(Object, FieldOffset);
-}
-
-
-#define DEFINE_PROPERTY_(_RetType, _Object, _Type, _Field) \
-            READONLY_PROPERTY(_RetType, _Field) \
-            { \
-                CALL_ACCESSOR(_Object, _Field); \
-            }
-
-#define DEFINE_PROPERTY(_Object, _Type, _Field) DEFINE_PROPERTY_(FIELD_TYPE(_Type, _Field)&, _Object, _Type, _Field)
-
-
-#define DECLARE_ACCESSOR_(_RetType, _Object, _Type, _Field) \
-            protected: _RetType (*Accessor_##_Field)(PVOID Object);\
-            public: DEFINE_PROPERTY_(_RetType, _Object, _Type, _Field)
-
-#define DECLARE_ACCESSOR(_Object, _Type, _Field) DECLARE_ACCESSOR_(FIELD_TYPE(_Type, _Field)&, _Object, _Type, _Field)
-
-
-#define FIELD_ACCESSOR(_Type, _Field) FieldAccessor<FIELD_TYPE(_Type, _Field), FIELD_OFFSET(_Type,_Field)>
-
-#define SET_ACCESSOR(_Type, _Field) \
-            IF_EXIST(_Type::_Field) \
-            { \
-                *(PVOID *)&Accessor_##_Field = PtrAdd((PVOID)0, FIELD_ACCESSOR(_Type, _Field)) \
-            } \
-            IF_NOT_EXIST(_Type::_Field) \
-            { \
-                *(PVOID *)&Accessor_##_Field = PtrSub(IMAGE_INVALID_VA, 0x5432) \
-            }
-
-#define CALL_ACCESSOR(_Object, _Field) return this->Accessor_##_Field(_Object)
-
-class ML_OBJECT_TYPE
-{
-protected:
-    POBJECT_TYPE_WIN8_9X00 ObjectType;
-
-public:
-
-    BOOL Success;
-
-    DECLARE_ACCESSOR(this->ObjectType, OBJECT_TYPE_WIN8_9X00, TypeList);
-    DECLARE_ACCESSOR(this->ObjectType, OBJECT_TYPE_WIN8_9X00, Name);
-    DECLARE_ACCESSOR(this->ObjectType, OBJECT_TYPE_WIN8_9X00, DefaultObject);
-    DECLARE_ACCESSOR(this->ObjectType, OBJECT_TYPE_WIN8_9X00, Index);
-    DECLARE_ACCESSOR(this->ObjectType, OBJECT_TYPE_WIN8_9X00, TotalNumberOfObjects);
-    DECLARE_ACCESSOR(this->ObjectType, OBJECT_TYPE_WIN8_9X00, TotalNumberOfHandles);
-    DECLARE_ACCESSOR(this->ObjectType, OBJECT_TYPE_WIN8_9X00, HighWaterNumberOfObjects);
-    DECLARE_ACCESSOR(this->ObjectType, OBJECT_TYPE_WIN8_9X00, HighWaterNumberOfHandles);
-    DECLARE_ACCESSOR_(POBJECT_TYPE_INITIALIZER, this->ObjectType, OBJECT_TYPE_WIN8_9X00, TypeInfo);
-
-    NoInline ML_OBJECT_TYPE(POBJECT_TYPE ObjectType = nullptr)
-    {
-        this->Success = FALSE;
-
-        if (WindowsVersionsInfoClass::IsSupportedVersion() == FALSE)
-            return;
-
-        *(POBJECT_TYPE *)&this->ObjectType = ObjectType;
-        Initialize<OBJECT_TYPE_WIN8_9X00>();
-
-        this->Success = TRUE;
-    }
-
-    ML_OBJECT_TYPE* operator->()
-    {
-        return this;
-    }
-
-    operator POBJECT_TYPE()
-    {
-        return (POBJECT_TYPE)this->ObjectType;
-    }
-
-protected:
-
-    template<class OBJECT_TYPE_TYPE>
-    VOID Initialize()
-    {
-        SET_ACCESSOR(OBJECT_TYPE_TYPE, TypeList);
-        SET_ACCESSOR(OBJECT_TYPE_TYPE, Name);
-        SET_ACCESSOR(OBJECT_TYPE_TYPE, DefaultObject);
-        SET_ACCESSOR(OBJECT_TYPE_TYPE, Index);
-        SET_ACCESSOR(OBJECT_TYPE_TYPE, TotalNumberOfObjects);
-        SET_ACCESSOR(OBJECT_TYPE_TYPE, TotalNumberOfHandles);
-        SET_ACCESSOR(OBJECT_TYPE_TYPE, HighWaterNumberOfObjects);
-        SET_ACCESSOR(OBJECT_TYPE_TYPE, HighWaterNumberOfHandles);
-        SET_ACCESSOR(OBJECT_TYPE_TYPE, TypeInfo);
-    }
-};
-
-class ML_OBJECT_TYPE_INITIALIZER_DATA
-{
-protected:
-    POBJECT_TYPE_INITIALIZER ObjectTypeInitializerPointer;
-
-    union
-    {
-        OBJECT_TYPE_INITIALIZER_WIN7_760X   Win7;
-        OBJECT_TYPE_INITIALIZER_WIN8_9X00   Win8;
-
-    } ObjectTypeInitializer;
-
-public:
-
-    BOOL Success;
-
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, Length);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, ObjectTypeFlags);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, ObjectTypeCode);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, InvalidAttributes);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, GenericMapping);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, ValidAccessMask);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, RetainAccess);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, PoolType);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, DefaultPagedPoolCharge);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, DefaultNonPagedPoolCharge);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, DumpProcedure);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, OpenProcedure);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, CloseProcedure);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, DeleteProcedure);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, ParseProcedure);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, SecurityProcedure);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, QueryNameProcedure);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, OkayToCloseProcedure);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, WaitObjectFlagMask);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, WaitObjectFlagOffset);
-    DECLARE_ACCESSOR(&this->ObjectTypeInitializer, OBJECT_TYPE_INITIALIZER_WIN8_9X00, WaitObjectPointerOffset);
-
-    NoInline ML_OBJECT_TYPE_INITIALIZER_DATA(POBJECT_TYPE ObjectType = nullptr)
-    {
-        *(PVOID *)&this->ObjectTypeInitializerPointer = IMAGE_INVALID_VA;
-        this->Success = FALSE;
-
-        switch (WindowsVersionsInfoClass::GetWindowsVersion())
-        {
-            case WindowsVersionsInfoClass::Windows7:
-            case WindowsVersionsInfoClass::Windows7SP1:
-                InitializeObjectTypeInitializer(&this->ObjectTypeInitializer.Win7);
-                break;
-
-            case WindowsVersionsInfoClass::Windows8:
-            case WindowsVersionsInfoClass::Windows81:
-                InitializeObjectTypeInitializer(&this->ObjectTypeInitializer.Win8);
-                break;
-
-            default:
-                return;
-        }
-
-        if (ObjectType != nullptr)
-            (*this) = ObjectType;
-
-        this->Success = TRUE;
-    }
-
-    ML_OBJECT_TYPE_INITIALIZER_DATA* operator->()
-    {
-        return this;
-    }
-
-    NoInline ML_OBJECT_TYPE_INITIALIZER_DATA& operator=(POBJECT_TYPE ObjectType)
-    {
-        ML_OBJECT_TYPE Type = ObjectType;
-
-        CopyMemory(&this->ObjectTypeInitializer, Type->TypeInfo, this->Length);
-        return *this;
-    }
-
-    operator POBJECT_TYPE_INITIALIZER()
-    {
-        return this->ObjectTypeInitializerPointer;
-    }
-
-protected:
-
-    POBJECT_TYPE_INITIALIZER FindObjectTypeInitializerFromObjectType(POBJECT_TYPE ObjectType)
-    {
-        USHORT  Length;
-        PBYTE   Buffer;
-
-        Length = this->Length;
-        Buffer = (PBYTE)ObjectType;
-
-        for (;; Buffer += sizeof(ULONG_PTR))
-        {
-            if (*(PUSHORT)Buffer != Length)
-                continue;
-        }
-    }
-
-    template<class OBJECT_TYPE_INITIALIZER_TYPE>
-    VOID InitializeObjectTypeInitializer(OBJECT_TYPE_INITIALIZER_TYPE *Ptr)
-    {
-        *(OBJECT_TYPE_INITIALIZER_TYPE **)&this->ObjectTypeInitializerPointer = Ptr;
-
-        ZeroMemory(Ptr, sizeof(OBJECT_TYPE_INITIALIZER_TYPE));
-        Ptr->Length = sizeof(*Ptr);
-
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, Length);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, ObjectTypeFlags);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, ObjectTypeCode);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, InvalidAttributes);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, GenericMapping);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, ValidAccessMask);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, RetainAccess);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, PoolType);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, DefaultPagedPoolCharge);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, DefaultNonPagedPoolCharge);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, DumpProcedure);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, OpenProcedure);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, CloseProcedure);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, DeleteProcedure);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, ParseProcedure);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, SecurityProcedure);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, QueryNameProcedure);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, OkayToCloseProcedure);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, WaitObjectFlagMask);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, WaitObjectFlagOffset);
-        SET_ACCESSOR(OBJECT_TYPE_INITIALIZER_TYPE, WaitObjectPointerOffset);
-    }
-};
-
-
-class ML_EPROCESS_DYNAMIC
-{
-protected:
-    PEPROCESS Process;
-
-    static ULONG_PTR Offset_ProcessLock;
-    static ULONG_PTR Offset_RundownProtect;
-    static ULONG_PTR Offset_UniqueProcessId;
-
-public:
-    ML_EPROCESS_DYNAMIC(PEPROCESS Process = nullptr)
-    {
-        (*this) = Process;
-    }
-
-    ML_EPROCESS_DYNAMIC& operator=(PEPROCESS Process)
-    {
-        this->Process = Process;
-        return *this;
-    }
-
-    operator PEPROCESS()
-    {
-        return this->Process;
-    }
-
-    READONLY_PROPERTY(EX_RUNDOWN_REF&, RundownProtect)
-    {
-        return *(PEX_RUNDOWN_REF)PtrAdd(this->Process, Offset_RundownProtect);
-    }
-
-    READONLY_PROPERTY(HANDLE, UniqueProcessId)
-    {
-        return *(PHANDLE)PtrAdd(this->Process, Offset_UniqueProcessId);
-    }
-
-    ML_EPROCESS_DYNAMIC* operator->()
-    {
-        return this;
-    }
-
-    NoInline static NTSTATUS InitializeOffset()
-    {
-        ULONG_PTR   Index, OffsetTable[0x1000 / sizeof(ULONG_PTR)];
-        PULONG_PTR  Buffer;
-
-        Index = 0;
-        FOR_EACH_ARRAY(Buffer, OffsetTable)
-        {
-            *Buffer = Index++;
-        }
-
-        Index = (ULONG_PTR)PsGetProcessId((PEPROCESS)OffsetTable);
-
-        Offset_UniqueProcessId = Index * sizeof(Index);
-        Offset_RundownProtect = PtrSub(Offset_UniqueProcessId, sizeof(((ML_EPROCESS_DYNAMIC *)0)->RundownProtect));
-
-        return STATUS_SUCCESS;
-    }
-};
-
-DECL_SELECTANY ULONG_PTR ML_EPROCESS_DYNAMIC::Offset_ProcessLock = 0;
-DECL_SELECTANY ULONG_PTR ML_EPROCESS_DYNAMIC::Offset_RundownProtect = 0;
-DECL_SELECTANY ULONG_PTR ML_EPROCESS_DYNAMIC::Offset_UniqueProcessId = 0;
-
-
-
-class ML_ETHREAD_DYNAMIC
-{
-protected:
-    PETHREAD Thread;
-
-    static ULONG_PTR Offset_Teb;
-    static ULONG_PTR Offset_CreateTime;
-
-public:
-    ML_ETHREAD_DYNAMIC(PETHREAD Thread = nullptr)
-    {
-        (*this) = Thread;
-    }
-
-    ML_ETHREAD_DYNAMIC& operator=(PETHREAD Thread)
-    {
-        this->Thread = Thread;
-        return *this;
-    }
-
-    operator PETHREAD()
-    {
-        return this->Thread;
-    }
-
-    PROPERTY(PVOID, Teb);
-
-    GET(Teb)
-    {
-        return *(PVOID *)PtrAdd(this->Thread, Offset_Teb);
-    }
-
-    SET(Teb)
-    {
-        *(PVOID *)PtrAdd(this->Thread, Offset_Teb) = value;
-    }
-
-    PROPERTY(LARGE_INTEGER&, CreateTime);
-
-    GET(CreateTime)
-    {
-        return *(PLARGE_INTEGER)PtrAdd(this->Thread, Offset_CreateTime);
-    }
-
-    SET(CreateTime)
-    {
-        ((PLARGE_INTEGER)PtrAdd(this->Thread, Offset_CreateTime))->QuadPart = value.QuadPart;
-   }
-
-    ML_ETHREAD_DYNAMIC* operator->()
-    {
-        return this;
-    }
-
-    NoInline static NTSTATUS InitializeOffset()
-    {
-        NTSTATUS            Status;
-        ULONG_PTR           Index, OffsetTable[0x1000 / sizeof(ULONG_PTR)];
-        PULONG_PTR          Buffer;
-        KERNEL_USER_TIMES   Times;
-        HANDLE              Handle;
-        PLARGE_INTEGER      Begin, End;
-
-        Index = 0;
-        FOR_EACH_ARRAY(Buffer, OffsetTable)
-        {
-            *Buffer = Index++;
-        }
-
-        Index = (ULONG_PTR)PsGetThreadTeb((PETHREAD)OffsetTable);
-        Offset_Teb = Index * sizeof(Index);
-
-        Status = ThreadIdToHandleEx(&Handle, (ULONG_PTR)PsGetCurrentThreadId());
-        FAIL_RETURN(Status);
-
-        Status = ZwQueryInformationThread(Handle, ThreadTimes, &Times, sizeof(Times), nullptr);
-        ZwClose(Handle);
-        FAIL_RETURN(Status);
-
-        Begin = (PLARGE_INTEGER)PsGetCurrentThread();
-        End = PtrAdd(Begin, 0x1000);
-        for (; Begin < End; ++Begin)
-        {
-            if (Begin->QuadPart == Times.CreateTime.QuadPart)
-            {
-                Offset_CreateTime = PtrOffset(Begin, PsGetCurrentThread());
-                return STATUS_SUCCESS;
-            }
-        }
-
-        return STATUS_NOT_FOUND;
-    }
-};
-
-DECL_SELECTANY ULONG_PTR ML_ETHREAD_DYNAMIC::Offset_Teb = 0;
-DECL_SELECTANY ULONG_PTR ML_ETHREAD_DYNAMIC::Offset_CreateTime = 0;
-
-
-class ML_OBJECT_HEADER_DYNAMIC
-{
-protected:
-    PVOID Object;
-
-    static ULONG_PTR Offset_TypeIndex;
-
-public:
-    ML_OBJECT_HEADER_DYNAMIC(PVOID Object = nullptr)
-    {
-        (*this) = Object;
-    }
-
-    ML_OBJECT_HEADER_DYNAMIC* operator->()
-    {
-        return this;
-    }
-
-    ML_OBJECT_HEADER_DYNAMIC& operator=(PVOID Object)
-    {
-        this->Object = Object;
-        return *this;
-    }
-
-    PROPERTY(UCHAR, TypeIndex);
-
-    GET(TypeIndex)
-    {
-        return *(PUCHAR)PtrAdd(this->Object, Offset_TypeIndex);
-    }
-
-    SET(TypeIndex)
-    {
-        _InterlockedExchange8((PCHAR)PtrAdd(this->Object, Offset_TypeIndex), value);
-    }
-
-    NoInline static NTSTATUS InitializeOffset()
-    {
-        BYTE            TypeIndexTable[0x60];
-        PBYTE           Buffer, TypeIndexTableEnd;
-        ULONG_PTR       TypeIndex;
-        ML_OBJECT_TYPE  TypeObjectType;
-
-        ZeroMemory(TypeIndexTable, sizeof(TypeIndexTable));
-
-        TypeIndexTableEnd = &TypeIndexTable[countof(TypeIndexTable)];
-
-        TypeObjectType = ObGetObjectType(*TmResourceManagerObjectType);
-        TypeIndex = TypeObjectType->Index;
-
-        for (Buffer = TypeIndexTableEnd - 1; Buffer != TypeIndexTable; --Buffer)
-        {
-            *Buffer = TypeIndex;
-            if (ObGetObjectType(TypeIndexTableEnd) == TypeObjectType)
-            {
-                Offset_TypeIndex = PtrOffset(Buffer, TypeIndexTableEnd);
-                return STATUS_SUCCESS;
-            }
-            *Buffer = 0;
-        }
-
-        return STATUS_UNSUCCESSFUL;
-    }
-};
-
-DECL_SELECTANY ULONG_PTR ML_OBJECT_HEADER_DYNAMIC::Offset_TypeIndex = 0;
-
-
-#pragma pop_macro("DEFINE_PROPERTY")
-#pragma pop_macro("DECLARE_ACCESSOR")
-#pragma pop_macro("FIELD_ACCESSOR")
-#pragma pop_macro("SET_ACCESSOR")
-#pragma pop_macro("CALL_ACCESSOR")
-
-class StructAccessorManager
-{
-public:
-
-    NoInline static NTSTATUS Initialize()
-    {
-        FAIL_RETURN(ML_OBJECT_HEADER_DYNAMIC::InitializeOffset());
-        FAIL_RETURN(ML_EPROCESS_DYNAMIC::InitializeOffset());
-        FAIL_RETURN(ML_ETHREAD_DYNAMIC::InitializeOffset());
-
-        ML_OBJECT_TYPE ObjectType;
-
-        if (ObjectType->Success == FALSE)
-            return STATUS_NOT_SUPPORTED;
-
-        ML_OBJECT_TYPE_INITIALIZER_DATA ObjectTypeInitializer;
-
-        if (ObjectTypeInitializer->Success == FALSE)
-            return STATUS_NOT_SUPPORTED;
-
-        return STATUS_SUCCESS;
-    }
-};
-
-#endif // r0
 #endif
 
 #endif // _MYLIBRARY_H_9fb91137_38ac_4d5e_8572_b6e12d23cb15_

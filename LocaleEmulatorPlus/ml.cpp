@@ -1,54 +1,10 @@
-#include "ml.h"
+﻿#include "ml.h"
 
-#if ML_KERNEL_MODE
-
-
-// #include "Source\MyLibraryKernel.cpp"
-
-
-    ML_NAMESPACE
-
-    LONG_PTR MlInitialize()
-    {
-        return 0;
-    }
-
-    LONG_PTR MlUnInitialize()
-    {
-        return 0;
-    }
-
-    MY_NAMESPACE_END
-
-#else
 
 
 
 _ML_C_HEAD_
 
-#if ML_KERNEL_MODE
-
-PVOID AllocateMemory(ULONG_PTR Size, POOL_TYPE PoolType /* = PagedPool */)
-{
-    return MemoryAllocator::AllocateMemory(Size, PoolType);
-}
-
-PVOID AllocateMemoryP(ULONG_PTR Size, POOL_TYPE PoolType)
-{
-    return AllocateMemory(Size, PoolType);
-}
-
-BOOL FreeMemory(PVOID Memory, ULONG Flags)
-{
-    return Memory != NULL ? MemoryAllocator::FreeMemory(Memory) : FALSE;
-}
-
-BOOL FreeMemoryP(PVOID Memory, ULONG Flags)
-{
-    return FreeMemory(Memory, Flags);
-}
-
-#else // user mode
 
 PVOID AllocateMemoryP(ULONG_PTR Size, ULONG Flags)
 {
@@ -62,13 +18,7 @@ PVOID ReAllocateMemoryP(PVOID Memory, ULONG_PTR Size, ULONG Flags)
 
 PVOID AllocateMemory(ULONG_PTR Size, ULONG Flags)
 {
-#if USE_CRT_VER
-    return malloc(Size);
-#elif USE_NT_VER
     return RtlAllocateHeap(CurrentPeb()->ProcessHeap, Flags, Size);
-#else
-    return HeapAlloc(GetProcessHeap(), Flags, Size);
-#endif
 }
 
 PVOID ReAllocateMemory(PVOID Memory, ULONG_PTR Size, ULONG Flags)
@@ -78,13 +28,7 @@ PVOID ReAllocateMemory(PVOID Memory, ULONG_PTR Size, ULONG Flags)
     if (Memory == NULL)
         return AllocateMemory(Size, Flags);
 
-#if USE_CRT_VER
-    Block = realloc(Memory, Size);
-#elif USE_NT_VER
     Block = RtlReAllocateHeap(CurrentPeb()->ProcessHeap, Flags, Memory, Size);
-#else
-    Block = HeapReAlloc(GetProcessHeap(), Flags, Memory, Size);
-#endif
 
     if (Block == nullptr)
     {
@@ -97,14 +41,7 @@ PVOID ReAllocateMemory(PVOID Memory, ULONG_PTR Size, ULONG Flags)
 
 BOOL FreeMemory(PVOID Memory, ULONG Flags)
 {
-#if USE_CRT_VER
-    free(Memory);
-    return TRUE;
-#elif USE_NT_VER
     return Memory != NULL ? RtlFreeHeap(CurrentPeb()->ProcessHeap, Flags, Memory) : FALSE;
-#else
-    return Memory != NULL ? HeapFree(GetProcessHeap(), Flags, Memory) : FALSE;
-#endif
 }
 
 BOOL FreeMemoryP(PVOID Memory, ULONG Flags)
@@ -114,26 +51,17 @@ BOOL FreeMemoryP(PVOID Memory, ULONG Flags)
 
 PVOID AllocateVirtualMemory(ULONG_PTR Size, ULONG Protect, HANDLE ProcessHandle)
 {
-#if USE_NT_VER
     PVOID BaseAddress = NULL;
     NTSTATUS Status;
     Status = Nt_AllocateMemory(ProcessHandle, &BaseAddress, Size, Protect);
     return NT_SUCCESS(Status) ? BaseAddress : NULL;
-#else
-    return VirtualAllocEx(ProcessHandle, NULL, Size, MEM_RESERVE | MEM_COMMIT, Protect);
-#endif
 }
 
 BOOL FreeVirtualMemory(PVOID Memory, HANDLE ProcessHandle)
 {
-#if USE_NT_VER
     return NT_SUCCESS(Nt_FreeMemory(ProcessHandle, Memory));
-#else
-    return VirtualFreeEx(ProcessHandle, Memory, 0, MEM_RELEASE);
-#endif
 }
 
-#endif  // ML_KERNEL_MODE
 
 _ML_C_TAIL_
 
@@ -311,19 +239,6 @@ POBJECT_TYPES_INFORMATION QuerySystemObjectTypes()
     LOOP_FOREVER
     {
 
-#if ML_KERNEL_MODE
-
-        Status = ZwQueryObject(NULL, ObjectTypesInformation, ObjectTypes, Size, &Length);
-        if (Status != STATUS_INFO_LENGTH_MISMATCH)
-            break;
-
-        if (ObjectTypes == StackPointer)
-            ObjectTypes = NULL;
-
-        FreeMemoryP(ObjectTypes);
-        ObjectTypes = (POBJECT_TYPES_INFORMATION)AllocateMemoryP(Length);
-
-#else
         Status = NtQueryObject(NULL, ObjectTypesInformation, ObjectTypes, Size, &Length);
         if (Status != STATUS_INFO_LENGTH_MISMATCH)
             break;
@@ -333,7 +248,6 @@ POBJECT_TYPES_INFORMATION QuerySystemObjectTypes()
 
         ObjectTypes = (POBJECT_TYPES_INFORMATION)ReAllocateMemoryP(ObjectTypes, Length);
 
-#endif
 
         if (ObjectTypes == NULL)
             return NULL;
@@ -365,16 +279,6 @@ PSYSTEM_HANDLE_INFORMATION_EX QuerySystemHandles()
     LOOP_FOREVER
     {
 
-#if ML_KERNEL_MODE
-
-        Status = ZwQuerySystemInformation(SystemExtendedHandleInformation, SystemHandles, Size, &Length);
-        if (Status != STATUS_INFO_LENGTH_MISMATCH)
-            break;
-
-        FreeMemoryP(SystemHandles);
-        SystemHandles = (PSYSTEM_HANDLE_INFORMATION_EX)AllocateMemoryP(Length);
-
-#else
 
         Status = NtQuerySystemInformation(SystemExtendedHandleInformation, SystemHandles, Size, &Length);
         if (Status != STATUS_INFO_LENGTH_MISMATCH)
@@ -382,7 +286,6 @@ PSYSTEM_HANDLE_INFORMATION_EX QuerySystemHandles()
 
         SystemHandles = (PSYSTEM_HANDLE_INFORMATION_EX)ReAllocateMemoryP(SystemHandles, Length);
 
-#endif
 
         if (SystemHandles == nullptr)
             return nullptr;
@@ -425,141 +328,6 @@ Nt_GetSessionId(
     return ml::Native::Ps::GetSessionId(Process);
 }
 
-#if ML_KERNEL_MODE
-
-/************************************************************************
-  kernel mode
-************************************************************************/
-PLDR_MODULE LookupPsLoadedModuleList(PLDR_MODULE LdrModule, PVOID CallDriverEntry)
-{
-    PLDR_MODULE PsLoadedModuleList;
-    UNICODE_STRING NtName;
-
-    RTL_CONST_STRING(NtName, L"ntoskrnl.exe");
-
-    PsLoadedModuleList = LdrModule;
-    do
-    {
-        PsLoadedModuleList = PsLoadedModuleList->NextLoadOrder();
-/*
-        if (PsLoadedModuleList->SizeOfImage != 0 && (PsLoadedModuleList->DllBase != NULL || PsLoadedModuleList->EntryPoint != NULL))
-        {
-            continue;
-        }
-*/
-        if (!IN_RANGEEX(PsLoadedModuleList->DllBase, CallDriverEntry, PtrAdd(PsLoadedModuleList->DllBase, PsLoadedModuleList->SizeOfImage)))
-            continue;
-
-        if (!RtlEqualUnicodeString(&PsLoadedModuleList->BaseDllName, &NtName, TRUE))
-            continue;
-
-        return PsLoadedModuleList->PrevLoadOrder();
-
-    } while (LdrModule != PsLoadedModuleList);
-
-    return NULL;
-}
-
-NTSTATUS QuerySystemModuleByHandle(PVOID ImageBase, PRTL_PROCESS_MODULE_INFORMATION Module)
-{
-    NTSTATUS                        Status;
-    ULONG                           ReturnedSize;
-    ULONG_PTR                       Size, NumberOfModules;
-    PRTL_PROCESS_MODULE_INFORMATION SystemModule;
-    PRTL_PROCESS_MODULES            ModuleInfo;
-
-    Size = 0;
-    ModuleInfo = NULL;
-
-    LOOP_FOREVER
-    {
-        Status = ZwQuerySystemInformation(SystemModuleInformation, ModuleInfo, Size, &ReturnedSize);
-        if (Status != STATUS_INFO_LENGTH_MISMATCH)
-            break;
-
-        FreeMemory(ModuleInfo);
-        ModuleInfo = (PRTL_PROCESS_MODULES)AllocateMemory(ReturnedSize - Size);
-        Size = ReturnedSize;
-    }
-
-    SCOPE_EXIT
-    {
-        FreeMemory(ModuleInfo);
-    }
-    SCOPE_EXIT_END;
-
-    if (!NT_SUCCESS(Status))
-        return Status;
-
-    if (ImageBase == NULL)
-    {
-        *Module = ModuleInfo->Modules[0];
-        return STATUS_SUCCESS;
-    }
-
-    SystemModule = ModuleInfo->Modules;
-    for (NumberOfModules = ModuleInfo->NumberOfModules; NumberOfModules != 0; ++SystemModule, --NumberOfModules)
-    {
-    	if (IN_RANGE((ULONG_PTR)SystemModule->ImageBase, (ULONG_PTR)ImageBase, (ULONG_PTR)SystemModule->ImageBase + SystemModule->ImageSize))
-        {
-            *Module = *SystemModule;
-            return STATUS_SUCCESS;
-        }
-    }
-
-    return STATUS_DLL_NOT_FOUND;
-}
-
-NTSTATUS QueryModuleNameByHandle(PVOID ImageBase, PUNICODE_STRING ModuleName)
-{
-    NTSTATUS                        Status;
-    ANSI_STRING                     ModuleAnsiName;
-    RTL_PROCESS_MODULE_INFORMATION  SystemModule;
-
-    Status = QuerySystemModuleByHandle(ImageBase, &SystemModule);
-    if (!NT_SUCCESS(Status))
-        return Status;
-
-    RtlInitAnsiString(&ModuleAnsiName, (PSTR)SystemModule.FullPathName);
-    return RtlAnsiStringToUnicodeString(ModuleName, &ModuleAnsiName, TRUE);
-}
-
-NTSTATUS
-KiQueueUserApc(
-    PETHREAD            Thread,
-    PKNORMAL_ROUTINE    ApcRoutine,
-    PVOID               ApcRoutineContext,
-    PVOID               Argument1,
-    PVOID               Argument2
-)
-{
-    PKAPC       Apc;
-    NTSTATUS    Status;
-
-    Apc = (PKAPC)AllocateMemoryP(sizeof(*Apc));
-    if (Apc == NULL)
-        return STATUS_NO_MEMORY;
-
-    KeInitializeApc(
-        Apc,
-        Thread,
-        OriginalApcEnvironment,
-        [] (PKAPC Apc, PKNORMAL_ROUTINE *NormalRoutine, PVOID *NormalContext, PVOID *SystemArgument1, PVOID *SystemArgument2)
-        {
-            FreeMemoryP(Apc);
-        },
-        NULL,
-        ApcRoutine,
-        UserMode,
-        ApcRoutineContext
-    );
-
-    Status = KeInsertQueueApc(Apc, Argument1, Argument2, 0);
-
-    return Status ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
-}
-
-#else   // r3
 
 /************************************************************************
   user mode
@@ -2160,7 +1928,6 @@ VOID Nt_Sleep(ULONG_PTR Milliseconds, BOOL Alertable)
     return Ps::Sleep(Milliseconds, Alertable);
 }
 
-#endif  // MY_NT_DDK
 
 _ML_C_TAIL_
 
@@ -2169,72 +1936,6 @@ _ML_C_TAIL_
 
 _ML_C_HEAD_
 
-#if ML_KERNEL_MODE
-
-NTSTATUS
-ProbeForReadSafe(
-    PVOID   Address,
-    SIZE_T  Length,
-    ULONG   Alignment
-)
-{
-    NTSTATUS Status = STATUS_SUCCESS;
-
-    SEH_TRY
-    {
-        ProbeForRead(Address, Length, Alignment);
-    }
-    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
-    {
-        Status = GetExceptionCode();
-    }
-
-    return Status;
-}
-
-NTSTATUS
-ProbeForWriteSafe(
-    PVOID   Address,
-    SIZE_T  Length,
-    ULONG   Alignment
-)
-{
-    NTSTATUS Status = STATUS_SUCCESS;
-
-    SEH_TRY
-    {
-        ProbeForWrite(Address, Length, Alignment);
-    }
-    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
-    {
-        Status = GetExceptionCode();
-    }
-
-    return Status;
-}
-
-NTSTATUS
-MmProbeAndLockPagesSafe(
-    PMDL            MemoryDescriptorList,
-    KPROCESSOR_MODE AccessMode,
-    LOCK_OPERATION  Operation
-)
-{
-    NTSTATUS Status = STATUS_SUCCESS;
-
-    SEH_TRY
-    {
-        MmProbeAndLockPages(MemoryDescriptorList, AccessMode, Operation);
-    }
-    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
-    {
-        Status = GetExceptionCode();
-    }
-
-    return Status;
-}
-
-#else // r3
 
 #pragma comment(lib, "dbghelp.lib")
 #include <DbgHelp.h>
@@ -2304,7 +2005,6 @@ BOOL IsPathExistsA(LPCSTR pszPath)
 
 BOOL CreateDirectoryWorker(LPCWSTR PathName)
 {
-#if USE_NT_VER
     NTSTATUS    Status;
     HANDLE      DirectoryHandle;
 
@@ -2315,9 +2015,6 @@ BOOL CreateDirectoryWorker(LPCWSTR PathName)
     NtClose(DirectoryHandle);
     return TRUE;
 
-#else
-    return CreateDirectoryW(PathName, NULL);
-#endif // USE_NT_VER
 }
 
 BOOL CreateDirectoryRecursiveW(LPCWSTR lpPathName)
@@ -2328,13 +2025,8 @@ BOOL CreateDirectoryRecursiveW(LPCWSTR lpPathName)
     if (lpPath == NULL || *lpPath == 0)
         return FALSE;
 
-#if USE_NT_VER
     if (Nt_IsPathExists(lpPathName))
         return TRUE;
-#else
-    if (IsPathExistsW(lpPathName))
-        return TRUE;
-#endif // USE_NT_VER
 
     do
     {
@@ -2423,21 +2115,12 @@ LONG ProcessFindResult(ENUM_DIRECTORY_INFO *pFindInfo, LPWSTR lpPath, LPWSTR lpF
         if (pFindInfo->ElemCount.QuadPart >= pFindInfo->MaxCount.QuadPart)
         {
             pFindInfo->MaxCount.QuadPart *= 2;
-#if USE_NT_VER
             lpBuffer = RtlReAllocateHeap(
                             pFindInfo->hHeap,
                             HEAP_ZERO_MEMORY,
                             pFindInfo->lpBuffer,
                             (ULONG_PTR)pFindInfo->MaxCount.QuadPart * pFindInfo->ElemSize
                        );
-#else
-            lpBuffer = HeapReAlloc(
-                            pFindInfo->hHeap,
-                            HEAP_ZERO_MEMORY,
-                            pFindInfo->lpBuffer,
-                            (ULONG_PTR)pFindInfo->MaxCount.QuadPart * pFindInfo->ElemSize
-                       );
-#endif // USE_NT_VER
 
             if (lpBuffer == NULL)
                 return -1;
@@ -2502,50 +2185,17 @@ VOID CopyCrtFindDataToWin32FindData(PWIN32_FIND_DATAW FindFileData, _wfinddata64
 
 HANDLE FindFirstFileWorker(LPCWSTR FileName, PWIN32_FIND_DATAW FindFileData)
 {
-#if USE_CRT_VER
-    intptr_t handle;
-    _wfinddata64_t finddata;
-
-    handle = _wfindfirst64(FileName, &finddata);
-    if (handle == -1)
-        return INVALID_HANDLE_VALUE;
-
-    CopyCrtFindDataToWin32FindData(FindFileData, &finddata);
-    return (HANDLE)handle;
-
-#elif USE_NT_VER
     return Nt_FindFirstFile(FileName, FindFileData);
-#else
-    return FindFirstFileW(FileName, FindFileData);
-#endif
 }
 
 BOOL FindNextFileWorker(HANDLE FindFileHandle, PWIN32_FIND_DATAW FindFileData)
 {
-#if USE_CRT_VER
-    _wfinddata64_t finddata;
-    if (_wfindnext64((intptr_t)FindFileHandle, &finddata) == -1)
-        return FALSE;
-
-    CopyCrtFindDataToWin32FindData(FindFileData, &finddata);
-    return TRUE;
-
-#elif USE_NT_VER
     return Nt_FindNextFile(FindFileHandle, FindFileData);
-#else
-    return FindNextFileW(FindFileHandle, FindFileData);
-#endif
 }
 
 BOOL FindCloseWorker(HANDLE FindFileHandle)
 {
-#if USE_CRT_VER
-    return _findclose((intptr_t)FindFileHandle) == 0;
-#elif USE_NT_VER
     return Nt_FindClose(FindFileHandle);
-#else
-    return FindClose(FindFileHandle);
-#endif
 }
 
 BOOL IsCircleSymbolicLink(ENUM_DIRECTORY_INFO *pFindInfo, LPWSTR lpPath, LPWSTR lpFileName)
@@ -2718,11 +2368,7 @@ EnumDirectoryFiles(
     info.hHeap = MemoryAllocator::GetGlobalHeap();
     if (lpFilesBuffer != NULL)
     {
-#if USE_NT_VER
         info.lpBuffer = RtlAllocateHeap(info.hHeap, HEAP_ZERO_MEMORY, (ULONG_PTR)info.MaxCount.QuadPart * info.ElemSize);
-#else
-        info.lpBuffer = HeapAlloc(info.hHeap, HEAP_ZERO_MEMORY, (ULONG_PTR)info.MaxCount.QuadPart * info.ElemSize);
-#endif // USE_NT_VER
         if (info.lpBuffer == NULL)
             return FALSE;
     }
@@ -2907,7 +2553,6 @@ LPWSTR* FASTCALL CmdLineToArgvW(LPWSTR pszCmdLine, PLONG_PTR pArgc)
     return (LPWSTR *)argv;
 }
 
-#endif  // ML_KERNEL_MODE
 
 _ML_C_TAIL_
 
@@ -3113,44 +2758,6 @@ PWChar StringUpperW(PWChar String, ULong Length)
 
 Long_Ptr FASTCALL StrLengthA(PCChar pString)
 {
-#if 0
-
-    PCChar s;
-    ULong quad, v1, flag;
-
-    if (pString == NULL)
-        return 0;
-
-    s = pString;
-    while ((Long_Ptr)(s) & 3)
-    {
-        if (*s++ == 0)
-        {
-            --s;
-            return s - pString;
-        }
-    }
-
-    do
-    {
-        quad = *(PULong)s;
-        s += sizeof(quad);
-
-        quad = ((quad + 0xFEFEFEFF) & ~quad) & 0x80808080;
-
-    } while (quad == 0);
-
-    v1 = quad >> 16;
-    flag = quad & 0x8080;
-
-    quad = flag ? quad: (v1);
-    s += flag ? 0 : 2;
-
-    s -= 3 + ((quad >> 7) & 1);
-
-    return s - pString;
-
-#else
 
     Long ch;
     Long_Ptr SizeOfUnit;
@@ -3207,7 +2814,6 @@ Long_Ptr FASTCALL StrLengthA(PCChar pString)
 end_of_calc:
     return pBuffer - pString;
 
-#endif
 }
 
 Long_Ptr FASTCALL StrLengthW(PCWChar pString)
@@ -3440,20 +3046,6 @@ Long_Ptr FASTCALL StrNICompareW(PCWChar pString1, PCWChar pString2, SizeT Length
         }
 
 
-#if 0
-        ch1 >>= 16;
-        ch2 >>= 16;
-        if ((ch1 | ch2) & 0xFF80)
-        {
-            if (ch1 != ch2)
-                break;
-        }
-        else if (((ch1 ^ ch2) & 0xFFDF) != 0)
-            break;
-
-        pString1 = (PCWChar)((PByte)pString1 + sizeof(ch1));
-        pString2 = (PCWChar)((PByte)pString2 + sizeof(ch1));
-#endif
         ++pString1;
         ++pString2;
     } while (--LengthToCompare != 0 && ch1);
@@ -3596,19 +3188,6 @@ Long_Ptr FASTCALL StrNCompareW(PCWChar pString1, PCWChar pString2, SizeT LengthT
 
     do
     {
-#if  0
-        ch1 = pString1[0];
-        if (ch1 != pString2[0])
-            return ch1 - pString2[0];
-        if (ch1 == 0)
-            return 0;
-
-        ch1 = pString1[1];
-        if (ch1 != pString2[1])
-            return ch1 - pString2[1];
-        if (ch1 == 0)
-            return 0;
-#else
         ch1 = *(PInt32)pString1;
         ch2 = *(PInt32)pString2;
         if (LoWord(ch1) != LoWord(ch2))
@@ -3632,7 +3211,6 @@ Long_Ptr FASTCALL StrNCompareW(PCWChar pString1, PCWChar pString2, SizeT LengthT
 
         if (ch1 == 0)
             return 0;
-#endif
         pString1 = (PCWChar)((PByte)pString1 + sizeof(ch1));
         pString2 = (PCWChar)((PByte)pString2 + sizeof(ch2));
 
@@ -5052,7 +4630,6 @@ _ML_C_TAIL_
 
 _ML_C_HEAD_
 
-#if ML_USER_MODE
 
 ULONG_PTR PrintConsoleA(PCSTR Format, ...)
 {
@@ -5214,7 +4791,6 @@ VOID PauseConsole(PCWSTR PauseText)
     ConsoleReadChar();
 }
 
-#endif // ML_USER_MODE
 
 _ML_C_TAIL_
 #if !ML_DISABLE_THIRD_LIB
@@ -5768,50 +5344,6 @@ L049:
 
 _ML_C_HEAD_
 
-#if ML_KERNEL_MODE
-
-PVOID GetImageBaseAddress(PVOID ImageAddress)
-{
-    ULONG                           Size, BufferSize;
-    NTSTATUS                        Status;
-    PRTL_PROCESS_MODULE_INFORMATION Module;
-    PRTL_PROCESS_MODULES            ModuleInformation;
-
-    Size                = 0;
-    BufferSize          = 0;
-    ModuleInformation   = nullptr;
-
-    LOOP_FOREVER
-    {
-        Status = ZwQuerySystemInformation(SystemModuleInformation, ModuleInformation, BufferSize, &Size);
-
-        if (NT_SUCCESS(Status))
-            break;
-
-        if (Status != STATUS_INFO_LENGTH_MISMATCH)
-            return nullptr;
-
-        ModuleInformation = (PRTL_PROCESS_MODULES)AllocStack(Size - BufferSize);
-        BufferSize = Size;
-    }
-
-    Module = ModuleInformation->Modules;
-    for (ULONG Count = ModuleInformation->NumberOfModules; Count; --Count)
-    {
-        ULONG_PTR ImageBase, EndOfImage;
-
-        ImageBase   = (ULONG_PTR)Module->ImageBase;
-        EndOfImage  = ImageBase + Module->ImageSize;
-        if (IN_RANGE(ImageBase, (ULONG_PTR)ImageAddress, EndOfImage))
-            return (PVOID)ImageBase;
-
-        ++Module;
-    }
-
-    return nullptr;
-}
-
-#else // user mode
 
 PVOID GetImageBaseAddress(PVOID ImageAddress)
 {
@@ -5822,7 +5354,6 @@ PVOID GetImageBaseAddress(PVOID ImageAddress)
     return LdrModule == nullptr ? nullptr : LdrModule->DllBase;
 }
 
-#endif // ML_KERNEL_MODE
 
 BOOL ValidateDataDirectory(PIMAGE_DATA_DIRECTORY DataDirectory, ULONG_PTR SizeOfImage)
 {
@@ -6055,10 +5586,6 @@ ProcessOneRelocate(
 
             ValuePtr = PtrAdd(RelocateBase, TypeOffset->Offset);
 
-#if ML_KERNEL_MODE
-            if (!MmIsAddressValid(ValuePtr))
-                continue;
-#endif
 
             if (*(PVOID *)ValuePtr != AddressToRelocate)
                 continue;
@@ -6071,12 +5598,8 @@ ProcessOneRelocate(
 
             {
                 PVOID Address;
-#if ML_USER_MODE
                 Address = ValuePtr;
 
-#elif ML_KERNEL_MODE
-                HookProtector hp(DISPATCH_LEVEL, ValuePtr, sizeof(PVOID));
-#endif
 
                 switch (TypeOffset->Type)
                 {
@@ -6461,7 +5984,6 @@ _ML_CPP_TAIL_
 
 #endif // cpp
 
-#if ML_USER_MODE
 
 typedef struct LOAD_MEM_DLL_INFO : public TEB_ACTIVE_FRAME
 {
@@ -6903,7 +6425,6 @@ LoadDllFromMemory(
     return Status;
 }
 
-#endif // ML_USER_MODE
 
 _ML_C_TAIL_
 
@@ -7081,11 +6602,6 @@ NtFileDisk& NtFileDisk::operator=(HANDLE Handle)
 
 NTSTATUS NtFileDisk::QueryFullNtPath(PCWSTR FileName, PUNICODE_STRING NtFilePath, ULONG_PTR Flags)
 {
-#if ML_KERNEL_MODE
-
-    return RtlCreateUnicodeString(NtFilePath, FileName) ? STATUS_SUCCESS : STATUS_OBJECT_PATH_NOT_FOUND;
-
-#else // r3
 
     WCHAR ExpandBuffer[MAX_NTPATH];
     UNICODE_STRING Path, Expand;
@@ -7114,7 +6630,6 @@ NTSTATUS NtFileDisk::QueryFullNtPath(PCWSTR FileName, PUNICODE_STRING NtFilePath
 
     return RtlDosPathNameToNtPathName_U(Expand.Buffer, NtFilePath, nullptr, nullptr) ? STATUS_SUCCESS : STATUS_OBJECT_PATH_NOT_FOUND;
 
-#endif // MY_NT_DDK
 }
 
 NTSTATUS
@@ -7253,15 +6768,9 @@ NTSTATUS NtFileDisk::GetSizeInternal(HANDLE FileHandle, PLARGE_INTEGER pFileSize
     FILE_STANDARD_INFORMATION FileStandard;
     API_POINTER(ZwQueryInformationFile) XQueryInformationFile;
 
-#if ML_KERNEL_MODE
-
-    XQueryInformationFile = ZwQueryInformationFile;
-
-#else
 
     XQueryInformationFile = NtQueryInformationFile;
 
-#endif
 
     if (pFileSize == nullptr)
         return STATUS_INVALID_PARAMETER;
@@ -7300,17 +6809,10 @@ SeekInternal(
     API_POINTER(ZwQueryInformationFile) XQueryInformationFile;
     API_POINTER(ZwSetInformationFile)   XSetInformationFile;
 
-#if ML_KERNEL_MODE
-
-    XQueryInformationFile = ZwQueryInformationFile;
-    XSetInformationFile = ZwSetInformationFile;
-
-#else
 
     XQueryInformationFile = NtQueryInformationFile;
     XSetInformationFile = NtSetInformationFile;
 
-#endif
 
 
     switch(MoveMethod)
@@ -7383,15 +6885,9 @@ ReadInternal(
     if (BytesRead != nullptr)
         BytesRead->QuadPart = 0;
 
-#if ML_KERNEL_MODE
-
-    XReadFile = ZwReadFile;
-
-#else
 
     XReadFile = NtReadFile;
 
-#endif
 
     Status = XReadFile(
                 FileHandle,
@@ -7439,15 +6935,9 @@ WriteInternal(
     if (pBytesWritten != nullptr)
         pBytesWritten->QuadPart = 0;
 
-#if ML_KERNEL_MODE
-
-    XWriteFile = ZwWriteFile;
-
-#else
 
     XWriteFile = NtWriteFile;
 
-#endif
 
     Status = XWriteFile(
                 FileHandle,
@@ -7484,15 +6974,9 @@ NTSTATUS NtFileDisk::DeleteInternal(HANDLE FileHandle)
     FILE_DISPOSITION_INFORMATION FileInformation;
     API_POINTER(ZwSetInformationFile)   XSetInformationFile;
 
-#if ML_KERNEL_MODE
-
-    XSetInformationFile = ZwSetInformationFile;
-
-#else
 
     XSetInformationFile = NtSetInformationFile;
 
-#endif
 
     FileInformation.DeleteFile = TRUE;
     Status = XSetInformationFile(
@@ -7518,15 +7002,9 @@ NTSTATUS NtFileDisk::SetEndOfFileInternal(HANDLE FileHandle, LARGE_INTEGER EndPo
 
     API_POINTER(ZwSetInformationFile)   XSetInformationFile;
 
-#if ML_KERNEL_MODE
-
-    XSetInformationFile = ZwSetInformationFile;
-
-#else
 
     XSetInformationFile = NtSetInformationFile;
 
-#endif
 
 
     EndOfFile.EndOfFile.QuadPart = EndPosition.QuadPart;
@@ -7568,15 +7046,9 @@ QuerySymbolicTargetInternal(
 
     API_POINTER(ZwDeviceIoControlFile) IoControlRoutine;
 
-#if ML_KERNEL_MODE
-
-    IoControlRoutine = ZwFsControlFile;
-
-#else
 
     IoControlRoutine = NtFsControlFile;
 
-#endif
 
     Status = IoControlRoutine(
                 FileHandle,
@@ -7680,15 +7152,9 @@ NTSTATUS NtFileDisk::Close()
     if (m_FileHandle == nullptr)
         return STATUS_SUCCESS;
 
-#if ML_KERNEL_MODE
-
-    Status = ZwClose(m_FileHandle);
-
-#else
 
     Status = NtClose(m_FileHandle);
 
-#endif
 
     if (!NT_SUCCESS(Status))
         return Status;
@@ -7778,15 +7244,9 @@ DeviceIoControl(
     IO_STATUS_BLOCK IoStatus;
     TYPE_OF(ZwDeviceIoControlFile)* IoControlRoutine;
 
-#if ML_KERNEL_MODE
-
-    IoControlRoutine = DEVICE_TYPE_FROM_CTL_CODE(IoControlCode) == FILE_DEVICE_FILE_SYSTEM ? ZwFsControlFile : ZwDeviceIoControlFile;
-
-#else
 
     IoControlRoutine = DEVICE_TYPE_FROM_CTL_CODE(IoControlCode) == FILE_DEVICE_FILE_SYSTEM ? NtFsControlFile : NtDeviceIoControlFile;
 
-#endif
 
     Status = IoControlRoutine(
                 m_FileHandle,
@@ -7837,7 +7297,6 @@ Seek(
     PLARGE_INTEGER  NewPosition /* = NULL */
 )
 {
-#if 1
     LARGE_INTEGER NewOffset = m_Position;
 
     switch(MoveMethod)
@@ -7871,24 +7330,6 @@ Seek(
         NewPosition->QuadPart = m_Position.QuadPart;
 
     return STATUS_SUCCESS;
-#else
-    NTSTATUS Status;
-    LARGE_INTEGER CurrentByteOffset;
-
-    Status = SeekInternal(m_FileHandle, Offset, MoveMethod, &CurrentByteOffset);
-
-    if (!NT_SUCCESS(Status))
-        return Status;
-
-    m_Position.QuadPart = CurrentByteOffset.QuadPart;
-    if (m_Position.QuadPart > m_FileSize.QuadPart)
-        m_FileSize.QuadPart = m_Position.QuadPart;
-
-    if (NewPosition != nullptr)
-        NewPosition->QuadPart = CurrentByteOffset.QuadPart;
-
-    return Status;
-#endif
 }
 
 NTSTATUS
@@ -8007,15 +7448,9 @@ NTSTATUS NtFileDisk::UnMapView(PVOID BaseAddress, HANDLE ProcessHandle)
     if (BaseAddress == nullptr)
         return STATUS_INVALID_PARAMETER;
 
-#if ML_USER_MODE
 
     return NtUnmapViewOfSection(ProcessHandle, BaseAddress);
 
-#else
-
-    return STATUS_NOT_IMPLEMENTED;
-
-#endif
 }
 
 
@@ -8057,15 +7492,9 @@ NTSTATUS NtFileDisk::SetEndOfFile(HANDLE FileHandle)
     IO_STATUS_BLOCK             IoStatus;
     API_POINTER(ZwQueryInformationFile) XQueryInformationFile;
 
-#if ML_KERNEL_MODE
-
-    XQueryInformationFile = ZwQueryInformationFile;
-
-#else
 
     XQueryInformationFile = NtQueryInformationFile;
 
-#endif
 
     Status = XQueryInformationFile(
                 FileHandle,
@@ -10337,7 +9766,6 @@ ML_NAMESPACE_BEGIN(Ldr)
   UserMode
 ************************************************************************/
 
-#if ML_USER_MODE
 
 PLDR_MODULE FindLdrModuleByName(PUNICODE_STRING ModuleName)
 {
@@ -10399,13 +9827,10 @@ PLDR_MODULE FindLdrModuleByHandle(PVOID BaseAddress)
     return FIELD_BASE(NextLink, LDR_MODULE, InLoadOrderLinks);
 }
 
-#endif // r3
 
 ForceInline PVOID GetModuleBase(PVOID Module)
 {
-#if ML_USER_MODE
     Module = FindLdrModuleByHandle(Module)->DllBase;
-#endif
 
     return Module;
 }
@@ -10562,14 +9987,6 @@ RelocPeImage(
     return STATUS_SUCCESS;
 }
 
-#if ML_KERNEL_MODE
-
-NTSTATUS ProcessStaticImport32(PIMAGE_IMPORT_DESCRIPTOR ImportDescriptor, ULONG_PTR BaseAddress, ULONG_PTR Flags)
-{
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-#else // user mode
 
 NTSTATUS ProcessStaticImport32(PIMAGE_IMPORT_DESCRIPTOR ImportDescriptor, ULONG_PTR BaseAddress, ULONG_PTR Flags)
 {
@@ -10662,7 +10079,6 @@ NTSTATUS ProcessStaticImport64(PIMAGE_IMPORT_DESCRIPTOR ImportDescriptor, ULONG_
     return STATUS_SUCCESS;
 }
 
-#endif // ML_KERNEL_MODE
 
 NTSTATUS
 LoadPeImageWorker(
@@ -10761,44 +10177,6 @@ LoadPeImageWorker(
         DataDirectory       = OptionalHeader64->DataDirectory;
     }
 
-#if ML_KERNEL_MODE
-
-    PMDL                Mdl;
-    PHYSICAL_ADDRESS    LowAddress, HighAddress, SkipBytes;
-
-    LowAddress.QuadPart     = 0;
-    HighAddress.QuadPart    = -1;
-    SkipBytes.QuadPart      = 0;
-
-    BaseAddress = MmAllocateMappingAddress(SizeOfImage, LOAD_PE_MEMORY_TAG);
-    if (BaseAddress == NULL)
-        return STATUS_NO_MEMORY;
-
-    Mdl = MmAllocatePagesForMdl(LowAddress, HighAddress, SkipBytes, SizeOfImage);
-    if (Mdl == NULL)
-    {
-        MmFreeMappingAddress(BaseAddress, LOAD_PE_MEMORY_TAG);
-        return STATUS_NO_MEMORY;
-    }
-
-    BaseAddress = MmMapLockedPagesWithReservedMapping(BaseAddress, LOAD_PE_MEMORY_TAG, Mdl, MmCached);
-    if (BaseAddress == NULL)
-    {
-        MmFreePagesFromMdl(Mdl);
-        ExFreePool(Mdl);
-        MmFreeMappingAddress(BaseAddress, LOAD_PE_MEMORY_TAG);
-
-        return STATUS_NO_MEMORY;
-    }
-
-    *(PMDL *)&DosHeader.e_res2 = Mdl;
-
-    *DllBaseAddress = BaseAddress;
-
-    Status = MmProtectMdlSystemAddress(Mdl, PAGE_EXECUTE_READWRITE);
-    FAIL_RETURN(Status);
-
-#else // r3
 
     Status = Mm::AllocVirtualMemory(DllBaseAddress, SizeOfImage, PAGE_EXECUTE_READWRITE, MEM_RESERVE | MEM_COMMIT | (FLAG_ON(Flags, LOAD_PE_TOP_TO_DOWN) ? MEM_TOP_DOWN : 0));
     if (!NT_SUCCESS(Status))
@@ -10806,7 +10184,6 @@ LoadPeImageWorker(
 
     BaseAddress = *DllBaseAddress;
 
-#endif
 
     FAIL_RETURN(file.Seek(0ll, FILE_BEGIN));
     FAIL_RETURN(file.Read(BaseAddress, SizeOfHeaders));
@@ -10845,7 +10222,6 @@ LoadPeImageWorker(
         Status = RelocPeImage(Buffer, ImageBase, OldBaseAddress);
     }
 
-#if !ML_KERNEL_MODE
 
     if (!FLAG_ON(Flags, LOAD_PE_IGNORE_IAT) &&
         ValidateDataDirectory(&DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT], SizeOfImage))
@@ -10864,11 +10240,6 @@ LoadPeImageWorker(
         }
     }
 
-#else
-
-    Status = STATUS_SUCCESS;
-
-#endif // r3
 
     return Status;
 }
@@ -10878,29 +10249,9 @@ NTSTATUS UnloadPeImage(PVOID DllBase)
     if (DllBase == NULL)
         return STATUS_INVALID_ADDRESS;
 
-#if ML_KERNEL_MODE
-
-    PIMAGE_DOS_HEADER   DosHeader;
-    PMDL                Mdl;
-
-    DosHeader   = (PIMAGE_DOS_HEADER)DllBase;
-    Mdl         = *(PMDL *)&DosHeader->e_res2;
-
-    if (Mdl == NULL)
-        return STATUS_UNSUCCESSFUL;
-
-    MmUnmapReservedMapping(DllBase, LOAD_PE_MEMORY_TAG, Mdl);
-    MmFreePagesFromMdl(Mdl);
-    ExFreePool(Mdl);
-    MmFreeMappingAddress(DllBase, LOAD_PE_MEMORY_TAG);
-
-    return STATUS_SUCCESS;
-
-#else // r3
 
     return Mm::FreeVirtualMemory(DllBase);
 
-#endif // ML_KERNEL_MODE
 }
 
 NTSTATUS
@@ -10923,7 +10274,6 @@ LoadPeImage(
 PVOID FASTCALL GetRoutineAddress(PVOID ModuleBase, LPCSTR RoutineName)
 {
 
-#if ML_USER_MODE
 
     PVOID       ProcAddress;
     LONG        Ordinal;
@@ -10965,15 +10315,9 @@ PVOID FASTCALL GetRoutineAddress(PVOID ModuleBase, LPCSTR RoutineName)
 
     return ProcAddress == (PVOID)ModuleBase ? NULL : (PVOID)ProcAddress;
 
-#else
-
-    return 0;
-
-#endif
 
 }
 
-#if ML_USER_MODE
 
 PVOID
 LoadDll(
@@ -10999,7 +10343,6 @@ UnloadDll(
     return LdrUnloadDll(DllHandle);
 }
 
-#endif // r3
 
 ML_NAMESPACE_END_(Ldr);
 
@@ -11010,7 +10353,6 @@ using namespace Ldr;
 
 ULONG_PTR HandleToProcessId(HANDLE Process)
 {
-#if ML_USER_MODE
 
     NTSTATUS Status;
     PROCESS_BASIC_INFORMATION Basic;
@@ -11019,13 +10361,10 @@ ULONG_PTR HandleToProcessId(HANDLE Process)
 
     return NT_SUCCESS(Status) ? Basic.UniqueProcessId : INVALID_CLIENT_ID;
 
-#else // r0
-#endif
 }
 
 ULONG_PTR HandleToThreadId(HANDLE Thread)
 {
-#if ML_USER_MODE
 
     NTSTATUS Status;
     THREAD_BASIC_INFORMATION Basic;
@@ -11034,13 +10373,10 @@ ULONG_PTR HandleToThreadId(HANDLE Thread)
 
     return NT_SUCCESS(Status) ? (ULONG_PTR)Basic.ClientId.UniqueThread : INVALID_CLIENT_ID;
 
-#else // r0
-#endif
 }
 
 NTSTATUS ProcessIdToHandleEx(PHANDLE ProcessHandle, ULONG_PTR ProcessId, ULONG_PTR Access /* = PROCESS_ALL_ACCESS */)
 {
-#if ML_USER_MODE
 
     NTSTATUS            Status;
     OBJECT_ATTRIBUTES   ObjectAttributes;
@@ -11054,20 +10390,6 @@ NTSTATUS ProcessIdToHandleEx(PHANDLE ProcessHandle, ULONG_PTR ProcessId, ULONG_P
 
     return Status;
 
-#else // r0
-
-    PEPROCESS   Process;
-    NTSTATUS    Status;
-
-    Status = PsLookupProcessByProcessId((HANDLE)ProcessId, &Process);
-    FAIL_RETURN(Status);
-
-    Status = ObOpenObjectByPointer(Process, 0, nullptr, Access, *PsProcessType, KernelMode, ProcessHandle);
-    ObDereferenceObject(Process);
-
-    return Status;
-
-#endif
 }
 
 HANDLE ProcessIdToHandle(ULONG_PTR ProcessId, ULONG_PTR Access /* = PROCESS_ALL_ACCESS */)
@@ -11081,7 +10403,6 @@ HANDLE ProcessIdToHandle(ULONG_PTR ProcessId, ULONG_PTR Access /* = PROCESS_ALL_
 
 NTSTATUS ThreadIdToHandleEx(PHANDLE ThreadHandle, ULONG_PTR ThreadId, ULONG_PTR Access)
 {
-#if ML_USER_MODE
 
     NTSTATUS            Status;
     OBJECT_ATTRIBUTES   ObjectAttributes;
@@ -11093,21 +10414,6 @@ NTSTATUS ThreadIdToHandleEx(PHANDLE ThreadHandle, ULONG_PTR ThreadId, ULONG_PTR 
 
     return NtOpenThread(ThreadHandle, Access, &ObjectAttributes, &CliendID);
 
-#else // r0
-
-    PETHREAD    Thread;
-    HANDLE      Handle;
-    NTSTATUS    Status;
-
-    Status = PsLookupThreadByThreadId((HANDLE)ThreadId, &Thread);
-    FAIL_RETURN(Status);
-
-    Status = ObOpenObjectByPointer(Thread, 0, nullptr, Access, *PsThreadType, KernelMode, ThreadHandle);
-    ObDereferenceObject(Thread);
-
-    return Status;
-
-#endif
 }
 
 HANDLE ThreadIdToHandle(ULONG_PTR ThreadId, ULONG_PTR Access)
@@ -11124,15 +10430,9 @@ ULONG_PTR GetSessionId(HANDLE Process)
     NTSTATUS Status;
     PROCESS_SESSION_INFORMATION Session;
 
-#if ML_KERNEL_MODE
-
-    Status = ZwQueryInformationProcess(Process, ProcessSessionInformation, &Session, sizeof(Session), NULL);
-
-#else
 
     Status = NtQueryInformationProcess(Process, ProcessSessionInformation, &Session, sizeof(Session), NULL);
 
-#endif
 
     return NT_FAILED(Status) ? INVALID_SESSION_ID : Session.SessionId;
 }
@@ -11148,15 +10448,9 @@ ULONG_PTR GetSessionId(ULONG_PTR ProcessId)
 
     SessionId = GetSessionId(Process);
 
-#if ML_KERNEL_MODE
-
-    ZwClose(Process);
-
-#else
 
     NtClose(Process);
 
-#endif
 
     return SessionId;
 }
@@ -11168,15 +10462,9 @@ BOOL IsWow64Process(HANDLE Process)
 
     API_POINTER(ZwQueryInformationProcess)  XQueryInformationProcess;
 
-#if ML_KERNEL_MODE
-
-    XQueryInformationProcess = ZwQueryInformationProcess;
-
-#else
 
     XQueryInformationProcess = NtQueryInformationProcess;
 
-#endif
 
     Status = XQueryInformationProcess(
                 Process,
@@ -11200,23 +10488,12 @@ PSYSTEM_PROCESS_INFORMATION QuerySystemProcesses()
 
     LOOP_FOREVER
     {
-#if ML_KERNEL_MODE
-
-        Status = ZwQuerySystemInformation(SystemProcessInformation, ProcessInfo, Size, &Length);
-        if (Status != STATUS_INFO_LENGTH_MISMATCH)
-            break;
-
-        FreeMemoryP(ProcessInfo);
-        ProcessInfo = (PSYSTEM_PROCESS_INFORMATION)AllocateMemoryP(Length);
-
-#else
         Status = NtQuerySystemInformation(SystemProcessInformation, ProcessInfo, Size, &Length);
         if (Status != STATUS_INFO_LENGTH_MISMATCH)
             break;
 
         ProcessInfo = (PSYSTEM_PROCESS_INFORMATION)ReAllocateMemoryP(ProcessInfo, Length);
 
-#endif
 
         if (ProcessInfo == NULL)
             return NULL;
@@ -11297,11 +10574,7 @@ VOID Sleep(ULONG_PTR Milliseconds, BOOL Alertable)
     LOOP_FOREVER
     {
 
-#if ML_USER_MODE
         Status = NtDelayExecution((BOOLEAN)Alertable, &Timeout);
-#else
-        Status = KeDelayExecutionThread(KernelMode, Alertable, &Timeout);
-#endif
 
         if (Milliseconds != INFINITE)
             break;
@@ -11314,7 +10587,6 @@ VOID Sleep(ULONG_PTR Milliseconds, BOOL Alertable)
     }
 }
 
-#if ML_USER_MODE
 
 PTEB_ACTIVE_FRAME
 FindThreadFrame(
@@ -11806,7 +11078,6 @@ ExitProcess(
     NtTerminateProcess(CurrentProcess, ExitStatus);
 }
 
-#endif // r3
 
 ML_NAMESPACE_END_(Ps);
 
@@ -11848,7 +11119,6 @@ FreeVirtualMemory(
     return NtFreeVirtualMemory(ProcessHandle, &BaseAddress, &Size, MEM_RELEASE);
 }
 
-#if ML_USER_MODE
 
 NTSTATUS
 ProtectVirtualMemory(
@@ -11959,7 +11229,6 @@ NTSTATUS QueryMappedImageName(HANDLE ProcessHandle, PVOID ImageBase, String& Ima
     return Status;
 }
 
-#endif // r3
 
 ML_NAMESPACE_END_(Mm)
 
@@ -11973,7 +11242,6 @@ DosPathNameToNtPathName(
     PRTL_RELATIVE_NAME_U    FileName
 )
 {
-#if ML_USER_MODE
 
     BOOL Success;
 
@@ -11981,11 +11249,6 @@ DosPathNameToNtPathName(
 
     return Success ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
 
-#elif ML_KERNEL_MODE
-
-    return STATUS_NOT_IMPLEMENTED;
-
-#endif // r
 }
 
 NTSTATUS GetSystemDirectory(PUNICODE_STRING Buffer, BOOL Wow64NoRedirect)
@@ -12007,7 +11270,6 @@ NTSTATUS GetSystemDirectory(PUNICODE_STRING Buffer, BOOL Wow64NoRedirect)
     if (Wow64NoRedirect == FALSE && Ps::IsWow64Process() != FALSE)
         KnownDlls = &KnownDlls32Name;
 
-#if ML_USER_MODE
 
     InitializeObjectAttributes(&ObjectAttributes, KnownDlls, OBJ_CASE_INSENSITIVE, nullptr, nullptr);
     Status = NtOpenDirectoryObject(&KnownDllDirectoryHandle, DIRECTORY_QUERY | DIRECTORY_TRAVERSE, &ObjectAttributes);
@@ -12028,31 +11290,8 @@ NTSTATUS GetSystemDirectory(PUNICODE_STRING Buffer, BOOL Wow64NoRedirect)
 
     return RtlDuplicateUnicodeString(RTL_DUPSTR_ADD_NULL, &LocalString, Buffer);
 
-#else // r0
-
-    InitializeObjectAttributes(&ObjectAttributes, KnownDlls, OBJ_CASE_INSENSITIVE, nullptr, nullptr);
-    Status = ZwOpenDirectoryObject(&KnownDllDirectoryHandle, DIRECTORY_QUERY | DIRECTORY_TRAVERSE, &ObjectAttributes);
-    FAIL_RETURN(Status);
-
-    InitializeObjectAttributes(&ObjectAttributes, &KnownDllPathName, OBJ_CASE_INSENSITIVE, KnownDllDirectoryHandle, nullptr);
-    Status = ZwOpenSymbolicLinkObject(&KnownDllPathSymbolicLink, SYMBOLIC_LINK_QUERY, &ObjectAttributes);
-    NtClose(KnownDllDirectoryHandle);
-    FAIL_RETURN(Status);
-
-    RtlInitEmptyString(&LocalString, LocalBuffer, countof(LocalBuffer));
-
-    Status = ZwQuerySymbolicLinkObject(KnownDllPathSymbolicLink, &LocalString, nullptr);
-    ZwClose(KnownDllPathSymbolicLink);
-    FAIL_RETURN(Status);
-
-    RtlAppendUnicodeToString(&LocalString, L"\\");
-
-    return RtlDuplicateUnicodeString(RTL_DUPSTR_ADD_NULL, &LocalString, Buffer);
-
-#endif
 }
 
-#if ML_USER_MODE
 
 NTSTATUS GetModuleDirectory(ml::String &Path, PVOID ModuleBase)
 {
@@ -12137,7 +11376,6 @@ NTSTATUS NtPathNameToDosPathName(PUNICODE_STRING DosPath, PUNICODE_STRING NtPath
     return RtlDuplicateUnicodeString(RTL_DUPSTR_ADD_NULL, &UnicodeBuffer.String, DosPath);
 }
 
-#endif // r3
 
 
 BOOL
@@ -12169,7 +11407,6 @@ Return Value:
     //  character.
     //
 
-#if ML_USER_MODE
 
     static const UCHAR LepGAL_ANSI_CHARACTER_ARRAY[128] =
     {
@@ -12183,7 +11420,6 @@ Return Value:
         0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x10, 0x17, 0x17, 0x17
     };
 
-#endif // r3
 
     if( Name->Length ) {
         for( p = Name->Buffer + (Name->Length / sizeof(WCHAR)) - 1;
@@ -13111,15 +12347,9 @@ NTSTATUS OpenPredefinedKeyHandle(PHANDLE KeyHandle, HANDLE PredefinedKey, ACCESS
     if ((LONG)(LONG_PTR)PredefinedKey >= 0)
         return STATUS_INVALID_HANDLE;
 
-#if ML_KERNEL_MODE
-
-    XOpenKey = ZwOpenKey;
-
-#else
 
     XOpenKey = NtOpenKey;
 
-#endif
 
 
 #pragma push_macro("KEY_INDEX")
@@ -13156,13 +12386,11 @@ NTSTATUS OpenPredefinedKeyHandle(PHANDLE KeyHandle, HANDLE PredefinedKey, ACCESS
             Status = XOpenKey(KeyHandle, DesiredAccess, &ObjectAttributes);
             break;
 
-#if ML_USER_MODE
 
         case KEY_INDEX(HKEY_CURRENT_USER):
             Status = RtlOpenCurrentUser(DesiredAccess, KeyHandle);
             break;
 
-#endif // r3
 
         case KEY_INDEX(HKEY_LOCAL_MACHINE):
             InitializeObjectAttributes(&ObjectAttributes, PUSTR(L"\\Registry\\Machine"), OBJ_CASE_INSENSITIVE, NULL, NULL);
@@ -13223,11 +12451,7 @@ ForceInline NTSTATUS CloseKeyHandle(HANDLE KeyHandle)
     if (KeyHandle == nullptr)
         return STATUS_INVALID_HANDLE;
 
-#if ML_KERNEL_MODE
-    return ZwClose(KeyHandle);
-#else
     return NtClose(KeyHandle);
-#endif
 }
 
 ForceInline NTSTATUS CloseMappedPredefinedKeyHandle(HANDLE KeyHandle)
@@ -13251,15 +12475,9 @@ OpenKey(
 
     API_POINTER(ZwOpenKey)  XOpenKey;
 
-#if ML_KERNEL_MODE
-
-    XOpenKey = ZwOpenKey;
-
-#else
 
     XOpenKey = NtOpenKey;
 
-#endif
 
     RtlInitUnicodeString(&SubKeyString, SubKey);
     Retry = FALSE;
@@ -13349,19 +12567,11 @@ GetKeyValue(
     API_POINTER(ZwOpenKey)          XOpenKey;
     API_POINTER(ZwQueryValueKey)    XQueryValueKey;
 
-#if ML_KERNEL_MODE
-
-    XCreateKey      = ZwCreateKey;
-    XOpenKey        = ZwOpenKey;
-    XQueryValueKey  = ZwQueryValueKey;
-
-#else
 
     XCreateKey      = NtCreateKey;
     XOpenKey        = NtOpenKey;
     XQueryValueKey  = NtQueryValueKey;
 
-#endif
 
     Status = OpenKey(&KeyHandle, hKey, KEY_QUERY_VALUE, SubKey);
     FAIL_RETURN(Status);
@@ -13405,13 +12615,8 @@ SetKeyValue(
     API_POINTER(ZwCreateKey)    XCreateKey;
     API_POINTER(ZwSetValueKey)  XSetValueKey;
 
-#if ML_KERNEL_MODE
-    XCreateKey = ZwCreateKey;
-    XSetValueKey = ZwSetValueKey;
-#else
     XCreateKey = NtCreateKey;
     XSetValueKey = NtSetValueKey;
-#endif
 
     RootKey = NULL;
 
@@ -13633,15 +12838,9 @@ ExceptionBox(
     HardErrorParameters[1] = (ULONG_PTR)&HardErrorTitle;
     HardErrorParameters[2] = Type;
 
-#if ML_USER_MODE
 
     Status = NtRaiseHardError(STATUS_SERVICE_NOTIFICATION, countof(HardErrorParameters), 1 | 2, HardErrorParameters, 0, &LocalResponse);
 
-#elif ML_KERNEL_MODE
-
-    Status = ExRaiseHardError(STATUS_SERVICE_NOTIFICATION, countof(HardErrorParameters), 1 | 2, HardErrorParameters, 0, &LocalResponse);
-
-#endif
 
     if (NT_SUCCESS(Status) && Response != NULL)
         *Response = LocalResponse;
@@ -13653,7 +12852,6 @@ ML_NAMESPACE_END_(Exp);
 
 ML_NAMESPACE_BEGIN(Lpc);
 
-#if ML_USER_MODE
 
 /************************************************************************
   InterProcessLpcServer
@@ -14001,7 +13199,6 @@ Connect(
     return Status;
 }
 
-#endif // r3
 
 ML_NAMESPACE_END_(Lpc);
 #include <mountmgr.h>
@@ -14053,15 +13250,9 @@ IopQueryFileBothDirectoryInformation(
     if (LocalFileBothInformation == NULL)
         return STATUS_NO_MEMORY;
 
-#if ML_KERNEL_MODE
-
-    XZwQueryDirectoryFile = ZwQueryDirectoryFile;
-
-#elif ML_USER_MODE
 
     XZwQueryDirectoryFile = NtQueryDirectoryFile;
 
-#endif
 
     LOOP_FOREVER
     {
@@ -14232,7 +13423,6 @@ ULONG_PTR QueryFileAttributes(PCWSTR FileName)
 
 NTSTATUS QueryFileAttributesEx(PCWSTR FileName, PULONG_PTR FileAttributes)
 {
-#if ML_USER_MODE
 
     NTSTATUS                Status;
     UNICODE_STRING          NtPath;
@@ -14251,11 +13441,6 @@ NTSTATUS QueryFileAttributesEx(PCWSTR FileName, PULONG_PTR FileAttributes)
 
     return Status;
 
-#elif ML_KERNEL_MODE
-
-    return STATUS_NOT_IMPLEMENTED;
-
-#endif
 
 }
 
@@ -14513,17 +13698,10 @@ NTSTATUS QueryDosPathFromHandle(PUNICODE_STRING DosPath, HANDLE FileHandle)
     API_POINTER(ZwQueryObject)              XQueryObject;
     API_POINTER(ZwQueryInformationFile)     XQueryInformationFile;
 
-#if ML_KERNEL_MODE
-
-    XQueryObject            = ZwQueryObject;
-    XQueryInformationFile   = ZwQueryInformationFile;
-
-#else
 
     XQueryObject            = NtQueryObject;
     XQueryInformationFile   = NtQueryInformationFile;
 
-#endif
 
     RtlInitEmptyUnicodeString(DosPath, NULL, 0);
 
@@ -14570,7 +13748,6 @@ NTSTATUS QueryDosDevice(PCWSTR DeviceName, PUNICODE_STRING TargetPath)
     UNICODE_STRING      Device, Target;
     PWSTR               TargetBuffer;
 
-#if ML_USER_MODE
 
     Device = USTR(L"\\??");
 
@@ -14613,50 +13790,6 @@ NTSTATUS QueryDosDevice(PCWSTR DeviceName, PUNICODE_STRING TargetPath)
 
     return RtlDuplicateUnicodeString(RTL_DUPSTR_ADD_NULL, &Target, TargetPath);
 
-#else
-
-    Device = USTR(L"\\??");
-
-    InitializeObjectAttributes(&ObjectAttributes, &Device, OBJ_CASE_INSENSITIVE, NULL, NULL);
-    Status = ZwOpenDirectoryObject(&Directory, DIRECTORY_QUERY, &ObjectAttributes);
-    FAIL_RETURN(Status);
-
-    RtlInitUnicodeString(&Device, DeviceName);
-    InitializeObjectAttributes(&ObjectAttributes, &Device, OBJ_CASE_INSENSITIVE, Directory, NULL);
-    Status = ZwOpenSymbolicLinkObject(&Link, SYMBOLIC_LINK_QUERY, &ObjectAttributes);
-    ZwClose(Directory);
-    FAIL_RETURN(Status);
-
-    RtlInitEmptyUnicodeString(&Target, NULL, 0);
-
-    Status = ZwQuerySymbolicLinkObject(Link, &Target, &Length);
-
-    if (Status != STATUS_BUFFER_TOO_SMALL)
-    {
-        ZwClose(Link);
-        return Status;
-    }
-
-    Length += sizeof(WCHAR);
-    TargetBuffer = (PWSTR)AllocStack(Length);
-    RtlInitEmptyUnicodeString(&Target, TargetBuffer, Length);
-
-    Status = ZwQuerySymbolicLinkObject(Link, &Target, &Length);
-    ZwClose(Link);
-
-    FAIL_RETURN(Status);
-
-    Length = Target.Length / sizeof(WCHAR);
-    if (Target.Buffer[Length - 1] != '\\')
-    {
-        Target.Buffer[Length++] = '\\';
-        Target.Buffer[Length] = 0;
-        Target.Length = (USHORT)(Length * sizeof(WCHAR));
-    }
-
-    return RtlDuplicateUnicodeString(RTL_DUPSTR_ADD_NULL, &Target, TargetPath);
-
-#endif
 }
 
 NTSTATUS
@@ -14796,52 +13929,6 @@ ML_NAMESPACE_END_(Io);
 
 ML_NAMESPACE_BEGIN(Ob)
 
-#if ML_KERNEL_MODE
-
-NTSTATUS
-CreateObjectType(
-    IN  PUNICODE_STRING             TypeName,
-    IN  POBJECT_TYPE_INITIALIZER    ObjectTypeInitializer,
-    OUT POBJECT_TYPE*               ObjectType
-)
-{
-    NTSTATUS Status;
-
-    *ObjectType = nullptr;
-
-    Status = ObCreateObjectType(TypeName, ObjectTypeInitializer, nullptr, ObjectType);
-    if (Status != STATUS_OBJECT_NAME_COLLISION)
-        return Status;
-
-    BYTE ObjectHack[0x100];
-    POBJECT_TYPE Type;
-    PVOID Object;
-    ML_OBJECT_HEADER_DYNAMIC ObjectHeader;
-
-    ZeroMemory(ObjectHack, sizeof(ObjectHack));
-
-    Object = &ObjectHack[countof(ObjectHack) / 2];
-    ObjectHeader = Object;
-
-    for (ULONG_PTR TypeIndex = ML_OBJECT_TYPE(ObGetObjectType(*TmResourceManagerObjectType))->Index; TypeIndex != 0x100; ++TypeIndex)
-    {
-        ObjectHeader->TypeIndex = TypeIndex;
-        Type = ObGetObjectType(Object);
-        if (Type == nullptr || (ULONG_PTR)Type == 1)
-            continue;
-
-        if (RtlEqualUnicodeString(&ML_OBJECT_TYPE(Type)->Name, TypeName, TRUE) == FALSE)
-            continue;
-
-        *ObjectType = Type;
-
-        return STATUS_SUCCESS;
-    }
-
-    return Status;
-}
-
-#endif
 
 ML_NAMESPACE_END_(Ob);
 
@@ -14911,5 +13998,3 @@ Nt_FreeMemory(
     }
 
     MY_NAMESPACE_END
-
-#endif

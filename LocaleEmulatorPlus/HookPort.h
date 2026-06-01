@@ -1,7 +1,7 @@
 #ifndef _HOOKPORT_H_19ab81ea_402e_4f99_8d93_44baae1cc16b_
 #define _HOOKPORT_H_19ab81ea_402e_4f99_8d93_44baae1cc16b_
 
-#include "MyLibrary.h"
+#include "ml.h"
 #include "HandleTable.h"
 
 _ML_C_HEAD_
@@ -253,39 +253,6 @@ typedef struct
 
         } User;
 
-#if ML_KERNEL_MODE
-
-        struct
-        {
-            struct
-            {
-                BOOLEAN SSDTShadowSearched  : 1;
-            };
-
-            PLDR_MODULE                     NtKrnlModule;
-            PVOID                           ReloadedNtOsKrnlBase;
-
-            PVOID                           HookPortAddress;
-            PVOID                           ShadowHookPortReturnAddress;
-
-            PKSERVICE_TABLE_DESCRIPTOR      ServiceDescriptorTable;
-            PKSERVICE_TABLE_DESCRIPTOR      ServiceDescriptorTableShadow[2];
-            PKSERVICE_TABLE_DESCRIPTOR      ShadowServiceDescriptorTable;
-
-            ULONG_PTR                       ThreadExitStatusOffset;
-            ULONG_PTR                       SsdtRoutineOffset;
-
-            struct
-            {
-                FixedMemoryBlock<HOOK_PORT_DISPATCHER_INFO> Objects;
-                ERESOURCE               Lock;
-                MlHandleTable*          Table;
-
-            } DispatcherInfo;
-
-        } Kernel;
-
-#endif
     };
 
 } HOOK_PORT_GLOBAL_INFO, *PHOOK_PORT_GLOBAL_INFO;
@@ -432,18 +399,6 @@ struct HookPortAutoBypassFilter : public HookPortBypassFilter
 
 #if SUPPORT_VA_ARGS_MACRO
 
-#if ML_KERNEL_MODE
-
-#define CallSysCall(_Routine, _OriginalRoutine, ...) \
-            CallFuncPtr( \
-                _Routine, \
-                _OriginalRoutine, \
-                __VA_ARGS__ \
-            )
-
-#define HpCallSysCall(_Routine, ...) CallFuncPtr(_Routine, HPARG_FLTINFO->SsdtRoutine, __VA_ARGS__)
-
-#else // r3
 
 #define CallSysCall(_Routine, _SysCallInfo, ...) \
             CallFuncPtr( \
@@ -459,7 +414,6 @@ struct HookPortAutoBypassFilter : public HookPortBypassFilter
                 __VA_ARGS__ \
             )
 
-#endif // rx
 
 #define ADD_FILTER_(routine, HookRoutine, ...) \
             HpAddSystemCallFilter( \

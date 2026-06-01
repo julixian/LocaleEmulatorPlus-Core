@@ -191,7 +191,16 @@ NTSTATUS LepGlobalData::Initialize()
     if (!IsLoader)
     {
         WCHAR Buffer[0x100];
-        swprintf(Buffer, L"Attach x64dbg to PID %p, then press OK.", CurrentPid());
+        PWSTR BufferEnd;
+
+        static const WCHAR Prefix[] = L"Attach x64dbg to PID 0x";
+        static const WCHAR Suffix[] = L", then press OK.";
+
+        CopyMemory(Buffer, Prefix, sizeof(Prefix) - sizeof(WCHAR));
+        BufferEnd = Buffer + CONST_STRLEN(Prefix);
+        BufferEnd += FormatLepUIntHex(BufferEnd, CurrentPid());
+        CopyMemory(BufferEnd, Suffix, sizeof(Suffix));
+
         ExceptionBox(Buffer, L"LEP x64 attach wait");
     }
 #endif
@@ -723,6 +732,26 @@ VOID GenerateModuleList(ml::String &ModuleNames)
         BYTE MappedFileBuffer[0x2000];
     };
 
+    auto AppendHexPointer = [] (ml::String &String, ULONG_PTR Value)
+    {
+        BOOL LeadingZero = TRUE;
+        WCHAR Buffer[bitsof(Value) / 4];
+        ULONG_PTR Count = 0;
+
+        for (LONG_PTR Shift = bitsof(Value) - 4; Shift >= 0; Shift -= 4)
+        {
+            ULONG_PTR Digit = (Value >> Shift) & 0xF;
+
+            if (Digit == 0 && LeadingZero && Shift != 0)
+                continue;
+
+            LeadingZero = FALSE;
+            Buffer[Count++] = (WCHAR)(Digit < 10 ? L'0' + Digit : L'A' + Digit - 10);
+        }
+
+        String.Concat(Buffer, Count);
+    };
+
     Status = NtQuerySystemInformation(SystemBasicInformation, &SystemBasic, sizeof(SystemBasic), nullptr);
     if (!NT_SUCCESS(Status))
         return;
@@ -752,7 +781,14 @@ VOID GenerateModuleList(ml::String &ModuleNames)
 
         Status = Io::QueryDosPathFromNtDeviceName(&DosPath, &MappedFile.Name);
 
-        ModuleNames += ml::String::Format(L"%p: %wZ\n", BaseAddress, NT_SUCCESS(Status) ? &DosPath : &MappedFile.Name);
+        ModuleNames += L"0x";
+        AppendHexPointer(ModuleNames, (ULONG_PTR)BaseAddress);
+        ModuleNames += L": ";
+        if (NT_SUCCESS(Status))
+            ModuleNames.Concat(DosPath.Buffer, DosPath.Length / sizeof(WCHAR));
+        else
+            ModuleNames.Concat(MappedFile.Name.Buffer, MappedFile.Name.Length / sizeof(WCHAR));
+        ModuleNames += L"\n";
 
         RtlFreeUnicodeString(&DosPath);
     }
@@ -791,6 +827,10 @@ BOOL Initialize(PVOID BaseAddress)
     }
 
     LepSetGlobalData(GlobalData);
+
+#if ENABLE_LOG
+    InitLog(GlobalData->LogFile);
+#endif
 
     Status = GlobalData->Initialize();
     if (NT_FAILED(Status))

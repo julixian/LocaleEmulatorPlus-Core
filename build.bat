@@ -78,7 +78,7 @@ if not exist "%LIBOUT%" mkdir "%LIBOUT%"
 if not exist "%OUT%" mkdir "%OUT%"
 
 set "COMMON_INC=/I"%ROOT%\LocaleEmulatorPlus" /I"%VC_TOOLS%\include" /I"%SDK_INC%\ucrt" /I"%SDK_INC%\shared" /I"%SDK_INC%\um" /I"%SDK_INC%\km""
-set "COMMON_CL=/nologo /c /O2 /Ob1 /GF /Gy /GR- /EHs-c- /GS- %COMMON_ARCH_CL% /DNDEBUG /DUSE_NT_VER=1 /DLEP_MODERN_SDK_BUILD=1 %EXTRA_CL% /D_NO_CRT_STDIO_INLINE /Zc:wchar_t"
+set "COMMON_CL=/nologo /c /O2 /Ob1 /GF /Gy /GR- /EHs-c- /GS- %COMMON_ARCH_CL% /DNDEBUG %EXTRA_CL% /D_NO_CRT_STDIO_INLINE /Zc:wchar_t"
 set "LIBPATHS=/libpath:"%SDK_LIB%\um\%SDK_ARCH%" /libpath:"%SDK_LIB%\ucrt\%SDK_ARCH%" /libpath:"%VC_TOOLS%\lib\%VC_ARCH%""
 
 echo [%TARGET% 1/5] Generating import libraries
