@@ -1,6 +1,6 @@
 # LocaleEmulatorPlus-Core 维护说明
 
-本文记录 Core 的转区原理、x86/x64 实现差异、现代工具链构建方式、patched linker 注意事项，以及当前依赖的非公开 API。它不是用户手册，而是之后升级 VS、SDK、WDK 或继续补 x64 功能时用的维护笔记。
+本文记录 Core 的转区原理、x86/x64 实现差异、现代工具链构建方式、patched linker 注意事项，以及当前依赖的非公开 API。它不是用户手册，而是之后升级 VS、SDK、WDK 或更新功能时用的维护笔记。
 
 ## 总体结构
 
@@ -22,13 +22,13 @@ out\x64\LocaleEmulatorPlus_x64.dll
 
 ## 转区原理
 
-LEP 的核心不是修改系统区域，而是在目标进程内尽早建立一套“伪区域环境”，让目标进程看到指定的 ACP/OEMCP/LCID/UI language/timezone/注册表值。
+LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让目标进程看到指定的 ACP/OEMCP/LCID/UI language/timezone/注册表值。
 
 主要流程：
 
-1. `LEPProc_*` 把 GUI 配置转换成 `LOCALEP_EMULATOR_PLUS_ENVIRONMENT_BLOCK`，调用 `LoaderDll_*!LepCreateProcess`。
+1. `LEPProc_*` 把 GUI 配置转换成 `LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK`，调用 `LoaderDll_*!LepCreateProcess`。
 2. `LoaderDll` 用非公开的 `CreateProcessInternalW` 创建目标进程。
-3. `LoaderDll` 生成或打开按 PID 命名的共享 section：`Local\LOCALEP_EMULATOR_PLUS_PROCESS_ENVIRONMENT_BLOCK_SECTION_<pid>`。
+3. `LoaderDll` 生成或打开按 PID 命名的共享 section：`Local\LOCALE_EMULATOR_PLUS_PROCESS_ENVIRONMENT_BLOCK_SECTION_<pid>`。
 4. 共享 section 内放 `LEPPEB`，包含目标 ACP/OEMCP/LCID、时区、注册表重定向项、LEP DLL 路径、`LdrLoadDll` 备份字节等。
 5. `LoaderDll` 在目标进程早期 loader 路径中 patch `ntdll!LdrLoadDll`，让 `LocaleEmulatorPlus_*` 在 kernel32 初始化前取得执行权。
 6. `LocaleEmulatorPlus` 初始化后恢复 `LdrLoadDll` 原字节，读取 `LEPPEB`，安装 ntdll/kernelbase/user32/gdi32 等 hook。
@@ -219,10 +219,8 @@ build.bat x86
 3. 在这份本机工具链副本上 patch `link.exe`。 patch 方法详见下文。
 4. 用 `build.bat` 顶部的 `VS_ROOT`、`MSVC_VER`、`SDK_VER` 指向自己的安装路径。
 
-原则上 `cl.exe`、`lib.exe`、`link.exe` 属于同一 MSVC toolset，最稳妥的
-做法是三者版本一致。当前仓库中的 `dep\tools` 只是演示当前需要 patch 哪一类
-linker 以及需要成套保留哪些相邻文件；升级或换机器时，不应长期混用差异过大的
-compiler/linker。
+原则上 `cl.exe`、`lib.exe`、`link.exe` 应属于同一 MSVC toolset，版本应该一致。
+当前仓库中的 `dep\tools` 只是演示 patched linker 及其环境。不应混用不同版本的 compiler/linker。
 
 目录职责：
 
@@ -292,7 +290,7 @@ compiler/linker。
 dep\tools\link.exe
 ```
 
-作用：放宽 linker 对 delay-load DLL 的非法名单检查，让 `LocaleEmulatorPlus` 可以把特定系统 DLL 放进 delay import，而不是被 linker 拒绝或被迫变成普通 import。旧 VS2015 linker 中相同逻辑可在 IDA 导出的 `CheckInvalidDelayLoadDlls` / `FInvalidDelayLoadDll` 附近看到。
+作用：放宽 linker 对 delay-load DLL 的非法名单检查，让 `LocaleEmulatorPlus` 可以把特定系统 DLL 放进 delay import，而不是被 linker 拒绝或被迫变成普通 import。相关逻辑可在 IDA 导出的 `CheckInvalidDelayLoadDlls` / `FInvalidDelayLoadDll` 附近看到。
 
 为什么需要它：
 
@@ -316,14 +314,10 @@ dep\tools\link.exe
 1. 修改 `build.bat` 顶部：`VS_ROOT`、`MSVC_VER`、`SDK_VER`。
 2. `SDK_VER` 应指向实际存在的 Windows Kits 版本。
 3. 确认存在 `%VC_TOOLS%\include`、`%VC_TOOLS%\lib\x86`、`%VC_TOOLS%\lib\x64`、`%SDK_INC%\um`、`%SDK_INC%\shared`、`%SDK_INC%\km`。
-4. `km` 目录通常来自 WDK。若找不到 WDK/内核头，确认 Visual Studio Installer 已安装 WDK/Windows Driver Kit 组件，且已安装与当前 Windows SDK 版本对应的 [WDK](https://learn.microsoft.com/zh-cn/windows-hardware/drivers/download-the-wdk)。
+4. `km` 目录通常来自 WDK。若找不到 WDK/内核头，确认 Visual Studio Installer 已安装 WDK/Windows Driver Kit 组件，且已安装与当前 Windows SDK 版本对应的 [WDK](https://learn.microsoft.com/zh-cn/windows-hardware/drivers/other-wdk-downloads)。
 5. 更新 `dep\tools` 时要成套复制工具链文件，尤其是 linker 旁边的依赖 DLL、PDB 服务相关工具、资源目录等。
 6. 重新生成 import lib，不要复用旧 `.lib`。构建脚本会自动生成 `out\libs\x86\*.lib` 和 `out\libs\x64\*.lib`。
 7. 构建后检查 import table。
-8. x86 运行确认：32 位游戏能启动，`GetACP()`/标题/字体/注册表重定向符合预期。
-9. x64 运行确认：64 位目标能启动，`GetACP()` 返回目标 ACP，例如日文 932；子进程继承转区，注册表重定向和时区正常。
-10. 如出现 `0xC0000142`，优先检查 `LocaleEmulatorPlus` 是否普通导入了 kernel32/ucrt/vcruntime，以及 kernel32/kernelbase 是否在 LEP 初始化前已经加载。
-11. 如出现 `0xC0000005`，优先检查 x64 inline hook 覆盖长度、绝对跳转写入、原始 stub 生成和 restore 逻辑。
 
 ## 非公开 API 和脆弱点
 
