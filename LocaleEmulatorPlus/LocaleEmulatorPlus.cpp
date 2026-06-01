@@ -55,12 +55,15 @@ static VOID LepDiagStatus(PCWSTR Stage, NTSTATUS Status)
 }
 
 #define LEP_DIAG_HERE(_stage) ExceptionBox(_stage, L"LEP modern init diag")
+#define LEP_DIAG_HERE_IF(_condition, _stage) \
+    do { if (_condition) ExceptionBox(_stage, L"LEP modern init diag"); } while (0)
 #define LEP_DIAG_FAIL_RETURN(_stage, _expr) \
     do { Status = (_expr); if (NT_FAILED(Status)) { LepDiagStatus(_stage, Status); return Status; } } while (0)
 
 #else
 
 #define LEP_DIAG_HERE(_stage)
+#define LEP_DIAG_HERE_IF(_condition, _stage)
 #define LEP_DIAG_FAIL_RETURN(_stage, _expr) \
     do { Status = (_expr); FAIL_RETURN(Status); } while (0)
 
@@ -174,6 +177,7 @@ NTSTATUS LepGlobalData::Initialize()
     PLDR_MODULE     Ntdll;
     PPEB_BASE       Peb;
     NTSTATUS        Status;
+    BOOL            DiagVerbose;
     NLSTABLEINFO    NlsTableInfo;
     UNICODE_STRING  SystemDirectory, NlsFileName, OemNlsFileName, LangFileName, Win32U;
     PKEY_VALUE_PARTIAL_INFORMATION IndexValue;
@@ -183,9 +187,9 @@ NTSTATUS LepGlobalData::Initialize()
         return STATUS_DLL_INIT_FAILED;
 #endif
 
-    LEP_DIAG_HERE(L"LepGlobalData::Initialize entry");
-
     IsLoader = IsLepLoader();
+    DiagVerbose = !IsLoader;
+    LEP_DIAG_HERE_IF(DiagVerbose, L"LepGlobalData::Initialize entry");
     LepPebMapped = FALSE;
 #if ML_AMD64 && defined(LEP_X64_ATTACH_WAIT)
     if (!IsLoader)
@@ -210,10 +214,10 @@ NTSTATUS LepGlobalData::Initialize()
     if (LEP_X64_CRASH_PROBE == 11 && !IsLoader)
         return STATUS_DLL_INIT_FAILED;
 #endif
-    LEP_DIAG_HERE(IsLoader ? L"IsLepLoader: true" : L"IsLepLoader: false");
+    LEP_DIAG_HERE_IF(DiagVerbose, IsLoader ? L"IsLepLoader: true" : L"IsLepLoader: false");
 
     Wow64 = Ps::IsWow64Process();
-    LEP_DIAG_HERE(Wow64 ? L"Ps::IsWow64Process: true" : L"Ps::IsWow64Process: false");
+    LEP_DIAG_HERE_IF(DiagVerbose, Wow64 ? L"Ps::IsWow64Process: true" : L"Ps::IsWow64Process: false");
 
     Ntdll = GetNtdllLdrModule();
     if (Ntdll == nullptr)
@@ -223,13 +227,13 @@ NTSTATUS LepGlobalData::Initialize()
 #endif
         return STATUS_DLL_INIT_FAILED;
     }
-    LEP_DIAG_HERE(L"GetNtdllLdrModule ok");
+    LEP_DIAG_HERE_IF(DiagVerbose, L"GetNtdllLdrModule ok");
 
     LOOP_ONCE
     {
-        LEP_DIAG_HERE(L"before OpenOrCreateLepPeb");
+        LEP_DIAG_HERE_IF(DiagVerbose, L"before OpenOrCreateLepPeb");
         LEPPEB = OpenOrCreateLepPeb();
-        LEP_DIAG_HERE(LEPPEB == nullptr ? L"OpenOrCreateLepPeb: null" : L"OpenOrCreateLepPeb: mapped");
+        LEP_DIAG_HERE_IF(DiagVerbose, LEPPEB == nullptr ? L"OpenOrCreateLepPeb: null" : L"OpenOrCreateLepPeb: mapped");
         LepPebMapped = LEPPEB != nullptr;
         if (LEPPEB == nullptr)
         {
@@ -240,13 +244,13 @@ NTSTATUS LepGlobalData::Initialize()
             PLDR_MODULE     Lepdll;
 
             LEPPEB = GetLepPeb();
-            LEP_DIAG_HERE(L"GetLepPeb ok");
+            LEP_DIAG_HERE_IF(DiagVerbose, L"GetLepPeb ok");
 
             InitDefaultLeb(&LEPPEB->LEPB);
-            LEP_DIAG_HERE(L"InitDefaultLeb ok");
+            LEP_DIAG_HERE_IF(DiagVerbose, L"InitDefaultLeb ok");
 
             Lepdll = FindLdrModuleByHandle(&__ImageBase);
-            LEP_DIAG_HERE(Lepdll == nullptr ? L"FindLdrModuleByHandle(self): null" : L"FindLdrModuleByHandle(self): ok");
+            LEP_DIAG_HERE_IF(DiagVerbose, Lepdll == nullptr ? L"FindLdrModuleByHandle(self): null" : L"FindLdrModuleByHandle(self): ok");
             if (Lepdll)
             {
                 FullDllName = &Lepdll->FullDllName;
@@ -256,30 +260,31 @@ NTSTATUS LepGlobalData::Initialize()
                 LEPPEB->LepDllDirPath[(FullDllName->Length - Lepdll->BaseDllName.Length) / sizeof(WCHAR)] = 0;
             }
 
-            LEP_DIAG_HERE(L"before LoadPeImage(ntdll)");
+            LEP_DIAG_HERE_IF(DiagVerbose, L"before LoadPeImage(ntdll)");
             Status = LoadPeImage(Ntdll->FullDllName.Buffer, &ReloadedNtdll, nullptr, LOAD_PE_IGNORE_RELOC);
 #if LEP_DIAG_INIT
-            LepDiagStatus(L"LoadPeImage(ntdll)", Status);
+            if (DiagVerbose || NT_FAILED(Status))
+                LepDiagStatus(L"LoadPeImage(ntdll)", Status);
 #endif
             if (NT_SUCCESS(Status))
             {
                 PVOID LdrLoadDllAddress;
 
                 LdrLoadDllAddress = LookupExportTable(ReloadedNtdll, NTDLL_LdrLoadDll);
-                LEP_DIAG_HERE(LdrLoadDllAddress == nullptr ? L"Lookup LdrLoadDll: null" : L"Lookup LdrLoadDll: ok");
+                LEP_DIAG_HERE_IF(DiagVerbose, LdrLoadDllAddress == nullptr ? L"Lookup LdrLoadDll: null" : L"Lookup LdrLoadDll: ok");
                 LEPPEB->LdrLoadDllAddress = PtrAdd(LdrLoadDllAddress, PtrOffset(Ntdll->DllBase, ReloadedNtdll));
                 CopyMemory(LEPPEB->LdrLoadDllBackup, LdrLoadDllAddress, LDR_LOAD_DLL_BACKUP_SIZE);
                 LEPPEB->LdrLoadDllBackupSize = LDR_LOAD_DLL_BACKUP_SIZE;
 
                 UnloadPeImage(ReloadedNtdll);
-                LEP_DIAG_HERE(L"UnloadPeImage(ntdll) ok");
+                LEP_DIAG_HERE_IF(DiagVerbose, L"UnloadPeImage(ntdll) ok");
             }
 
-            LEP_DIAG_HERE(L"before format defaults");
+            LEP_DIAG_HERE_IF(DiagVerbose, L"before format defaults");
             DefaultACPLength    = (FormatLepUIntDecimal(DefaultACP, LEPPEB->LEPB.AnsiCodePage) + 1) * sizeof(WCHAR);
             DefaultOEMCPLength  = (FormatLepUIntDecimal(DefaultOEMCP, LEPPEB->LEPB.OemCodePage) + 1) * sizeof(WCHAR);
             DefaultLCIDLength   = (FormatLepUIntDecimal(DefaultLCID, LEPPEB->LEPB.LocaleID) + 1) * sizeof(WCHAR);
-            LEP_DIAG_HERE(L"format defaults ok");
+            LEP_DIAG_HERE_IF(DiagVerbose, L"format defaults ok");
 
             REGISTRY_REDIRECTION_ENTRY64 *Entry, Entries[] =
             {
@@ -799,12 +804,14 @@ BOOL Initialize(PVOID BaseAddress)
     NTSTATUS            Status;
     PLDR_MODULE         Kernel32;
     PLepGlobalData       GlobalData;
-
-    LEP_DIAG_HERE(L"Initialize entry");
+    BOOL                IsLoader;
 
     ml::MlInitialize();
 
-    if (FindThreadFrame(LEP_LOADER_PROCESS) == nullptr)
+    IsLoader = FindThreadFrame(LEP_LOADER_PROCESS) != nullptr;
+    LEP_DIAG_HERE_IF(!IsLoader, L"Initialize entry");
+
+    if (!IsLoader)
     {
         Kernel32 = GetKernel32Ldr();
         if (Kernel32 != nullptr && FLAG_ON(Kernel32->Flags, LDRP_PROCESS_ATTACH_CALLED))

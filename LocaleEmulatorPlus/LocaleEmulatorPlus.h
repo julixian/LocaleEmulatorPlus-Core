@@ -40,8 +40,11 @@ VOID LepNlsDiag(PCWSTR Format, ...);
 
 #if LEP_DIAG_INIT
 #define LEP_DIAG_HEADER(_stage) ExceptionBox(_stage, L"LEP modern init diag")
+#define LEP_DIAG_HEADER_IF(_condition, _stage) \
+    do { if (_condition) ExceptionBox(_stage, L"LEP modern init diag"); } while (0)
 #else
 #define LEP_DIAG_HEADER(_stage)
+#define LEP_DIAG_HEADER_IF(_condition, _stage)
 #endif
 
 inline BOOL IsLepLoader()
@@ -483,41 +486,44 @@ OpenOrCreateLepPeb(
     PLEPPEB              LEPPEB;
     ULONG_PTR           ViewSize, SessionId;
     LARGE_INTEGER       MaximumSize;
+#if LEP_DIAG_INIT
+    BOOL                DiagVerbose = !IsLepLoader() || Create;
+#endif
 
     // ExceptionBox(L"OpenOrCreateLepPeb");
 
-    LEP_DIAG_HEADER(L"OpenOrCreateLepPeb entry");
+    LEP_DIAG_HEADER_IF(DiagVerbose, L"OpenOrCreateLepPeb entry");
     SessionId = GetSessionId(ProcessId);
-    LEP_DIAG_HEADER(SessionId == INVALID_SESSION_ID ? L"GetSessionId invalid" : L"GetSessionId ok");
+    LEP_DIAG_HEADER_IF(DiagVerbose, SessionId == INVALID_SESSION_ID ? L"GetSessionId invalid" : L"GetSessionId ok");
     if (SessionId == INVALID_SESSION_ID)
         return nullptr;
 
-    LEP_DIAG_HEADER(L"before section root format");
+    LEP_DIAG_HEADER_IF(DiagVerbose, L"before section root format");
     FormatLepBaseNamedObjectsRoot(RootNameBuffer, SessionId);
-    LEP_DIAG_HEADER(L"section root format ok");
+    LEP_DIAG_HEADER_IF(DiagVerbose, L"section root format ok");
 
-    LEP_DIAG_HEADER(L"before LepOpenDirectoryObject(BaseNamedObjects)");
+    LEP_DIAG_HEADER_IF(DiagVerbose, L"before LepOpenDirectoryObject(BaseNamedObjects)");
     Status = LepOpenDirectoryObject(&RootHandle, RootNameBuffer, nullptr);
-    LEP_DIAG_HEADER(NT_FAILED(Status) ? L"LepOpenDirectoryObject(BaseNamedObjects) failed" : L"LepOpenDirectoryObject(BaseNamedObjects) ok");
+    LEP_DIAG_HEADER_IF(DiagVerbose, NT_FAILED(Status) ? L"LepOpenDirectoryObject(BaseNamedObjects) failed" : L"LepOpenDirectoryObject(BaseNamedObjects) ok");
     if (NT_FAILED(Status))
         return FALSE;
 
-    LEP_DIAG_HEADER(L"before GetLepPebSectionName");
+    LEP_DIAG_HEADER_IF(DiagVerbose, L"before GetLepPebSectionName");
     SectionName.Length          = (USHORT) GetLepPebSectionName(SectionNameBuffer, ProcessId) * sizeof(WCHAR);
     SectionName.MaximumLength   = sizeof(SectionNameBuffer);
     SectionName.Buffer          = SectionNameBuffer;
-    LEP_DIAG_HEADER(L"GetLepPebSectionName ok");
+    LEP_DIAG_HEADER_IF(DiagVerbose, L"GetLepPebSectionName ok");
 
     InitializeObjectAttributes(&ObjectAttributes, &SectionName, 0, RootHandle, nullptr);
 
-    LEP_DIAG_HEADER(L"before NtOpenSection");
+    LEP_DIAG_HEADER_IF(DiagVerbose, L"before NtOpenSection");
     Status = NtOpenSection(&SectionHandle, SECTION_ALL_ACCESS, &ObjectAttributes);
-    LEP_DIAG_HEADER(NT_FAILED(Status) ? L"NtOpenSection failed" : L"NtOpenSection ok");
+    LEP_DIAG_HEADER_IF(DiagVerbose, NT_FAILED(Status) ? L"NtOpenSection failed" : L"NtOpenSection ok");
     if (NT_FAILED(Status))
     {
         if (Create)
         {
-            LEP_DIAG_HEADER(L"before NtCreateSection");
+            LEP_DIAG_HEADER_IF(DiagVerbose, L"before NtCreateSection");
             MaximumSize.QuadPart = sizeof(*LEPPEB) + ExtraSize;
             Status = NtCreateSection(
                         &SectionHandle,
@@ -528,7 +534,7 @@ OpenOrCreateLepPeb(
                         SEC_COMMIT,
                         nullptr
                     );
-            LEP_DIAG_HEADER(NT_FAILED(Status) ? L"NtCreateSection failed" : L"NtCreateSection ok");
+            LEP_DIAG_HEADER_IF(DiagVerbose, NT_FAILED(Status) ? L"NtCreateSection failed" : L"NtCreateSection ok");
             if (NT_FAILED(Status))
             {
                 NtClose(RootHandle);
@@ -538,26 +544,26 @@ OpenOrCreateLepPeb(
         else
         {
             NtClose(RootHandle);
-            LEP_DIAG_HEADER(L"before LepOpenDirectoryObject(Sandbox)");
+            LEP_DIAG_HEADER_IF(DiagVerbose, L"before LepOpenDirectoryObject(Sandbox)");
             Status = LepOpenDirectoryObject(&RootHandle, L"\\Sandbox", nullptr);
-            LEP_DIAG_HEADER(NT_FAILED(Status) ? L"LepOpenDirectoryObject(Sandbox) failed" : L"LepOpenDirectoryObject(Sandbox) ok");
+            LEP_DIAG_HEADER_IF(DiagVerbose, NT_FAILED(Status) ? L"LepOpenDirectoryObject(Sandbox) failed" : L"LepOpenDirectoryObject(Sandbox) ok");
             if (NT_FAILED(Status))
                 return FALSE;
-            LEP_DIAG_HEADER(L"before LepFindSectionObject");
+            LEP_DIAG_HEADER_IF(DiagVerbose, L"before LepFindSectionObject");
             if (!LepFindSectionObject(&SectionHandle, &SectionName, 6, RootHandle))
             {
-                LEP_DIAG_HEADER(L"LepFindSectionObject failed");
+                LEP_DIAG_HEADER_IF(DiagVerbose, L"LepFindSectionObject failed");
                 NtClose(RootHandle);
                 return nullptr;
             }
-            LEP_DIAG_HEADER(L"LepFindSectionObject ok");
+            LEP_DIAG_HEADER_IF(DiagVerbose, L"LepFindSectionObject ok");
         }
     }
     NtClose(RootHandle);
 
     ViewSize = 0;
     LEPPEB = nullptr;
-    LEP_DIAG_HEADER(L"before NtMapViewOfSection");
+    LEP_DIAG_HEADER_IF(DiagVerbose, L"before NtMapViewOfSection");
     Status = NtMapViewOfSection(
                 SectionHandle,
                 CurrentProcess,
@@ -570,7 +576,7 @@ OpenOrCreateLepPeb(
                 0,
                 PAGE_READWRITE
             );
-    LEP_DIAG_HEADER(NT_FAILED(Status) ? L"NtMapViewOfSection failed" : L"NtMapViewOfSection ok");
+    LEP_DIAG_HEADER_IF(DiagVerbose, NT_FAILED(Status) ? L"NtMapViewOfSection failed" : L"NtMapViewOfSection ok");
 
     if (NT_FAILED(Status))
     {
@@ -599,7 +605,7 @@ OpenOrCreateLepPeb(
         return nullptr;
     }
 
-    LEP_DIAG_HEADER(L"OpenOrCreateLepPeb return");
+    LEP_DIAG_HEADER_IF(DiagVerbose, L"OpenOrCreateLepPeb return");
     return LEPPEB;
 }
 

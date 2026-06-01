@@ -21493,29 +21493,44 @@ ForceInline PUSHORT Nt_GetDefaultCodePageBase()
 
 inline PLDR_MODULE GetKernel32Ldr()
 {
-    LDR_MODULE *Ldr, *FirstLdr;
+    PLIST_ENTRY Head, Link;
 
-    Ldr = FIELD_BASE(Nt_CurrentPeb()->Ldr->InInitializationOrderModuleList.Flink, LDR_MODULE, InInitializationOrderLinks);
-    FirstLdr = Ldr;
+    if (Nt_CurrentPeb()->Ldr == nullptr)
+        return nullptr;
 
-    do
+    Head = &Nt_CurrentPeb()->Ldr->InLoadOrderModuleList;
+    Link = Head->Flink;
+
+    while (Link != Head && Link != nullptr)
     {
-        Ldr = FIELD_BASE(Ldr->InInitializationOrderLinks.Flink, LDR_MODULE, InInitializationOrderLinks);
-        if (Ldr->BaseDllName.Buffer == NULL)
-            continue;
+        PLDR_MODULE Ldr;
 
-        if (CHAR_UPPER4W(*(PULONG64)(Ldr->BaseDllName.Buffer + 0)) != TAG4W('KERN') ||
-            CHAR_UPPER4W(*(PULONG64)(Ldr->BaseDllName.Buffer + 4)) != CHAR_UPPER4W(TAG4W('EL32')) ||
-            Ldr->BaseDllName.Buffer[8] != '.')
+        Ldr = FIELD_BASE(Link, LDR_MODULE, InLoadOrderLinks);
+        Link = Link->Flink;
+
+        SEH_TRY
         {
-            continue;
+            if (Ldr->BaseDllName.Buffer == nullptr)
+                continue;
+
+            if (Ldr->BaseDllName.Length < CONST_STRSIZE(L"kernel32."))
+                continue;
+
+            if (CHAR_UPPER4W(*(PULONG64)(Ldr->BaseDllName.Buffer + 0)) != TAG4W('KERN') ||
+                CHAR_UPPER4W(*(PULONG64)(Ldr->BaseDllName.Buffer + 4)) != CHAR_UPPER4W(TAG4W('EL32')) ||
+                Ldr->BaseDllName.Buffer[8] != L'.')
+            {
+                continue;
+            }
+
+            return Ldr;
         }
+        SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+        {
+        }
+    }
 
-        return Ldr;
-
-    } while (FirstLdr != Ldr);
-
-    return NULL;
+    return nullptr;
 }
 
 inline PVOID GetKernel32Handle()
