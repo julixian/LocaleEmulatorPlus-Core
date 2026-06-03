@@ -610,18 +610,18 @@ NTSTATUS LepGlobalData::HackAnsiOemCodeHashNodes() {
         (USHORT)GlobalData->GetLepb()->OemCodePage);
     LepSyncUser32ClientCodePage();
 #else
-    PUSHORT ThreadCodePagePair = LepGetThreadCodePagePair();
+    PUSHORT ProcessCodePagePair = LepGetProcessCodePagePair();
 
-    WriteLog(L"nls sync before teb=%u/%u ntdll=%u mb=%u oemmb=%u table=%u/%u",
-        ThreadCodePagePair[0],
-        ThreadCodePagePair[1],
+    WriteLog(L"nls sync before peb=%u/%u ntdll=%u mb=%u oemmb=%u table=%u/%u",
+        ProcessCodePagePair[0],
+        ProcessCodePagePair[1],
         NlsAnsiCodePage,
         NlsMbCodePageTag,
         NlsMbOemCodePageTag,
         AnsiTableInfo.CodePage,
         OemTableInfo.CodePage);
 
-    LepSetThreadCodePagePair(
+    LepSetProcessCodePagePair(
         (USHORT)GlobalData->GetLepb()->AnsiCodePage,
         (USHORT)GlobalData->GetLepb()->OemCodePage);
 #endif
@@ -648,11 +648,13 @@ NTSTATUS LepGlobalData::HackAnsiOemCodeHashNodes() {
 #endif
     }
 
-    // Keep LepSetupAnsiOemCodeHashNodes() available, but skip the kernelbase
-    // private refresh on both architectures. The process/ntdll/user32 state is
-    // synchronized above, and this private kernelbase path is not needed in the
-    // currently observed conversion paths.
+    // Keep the kernelbase private refresh implementation available for
+    // diagnostics, but skip it in the normal path. Process/ntdll/user32 cache
+    // sync is enough, and this private routine is fragile across builds.
     Status = STATUS_SUCCESS;
+#if ENABLE_LOG
+    WriteLog(L"skip SetupAnsiOemCodeHashNodes");
+#endif
 
 #if ML_AMD64
     LepProbeRtlAnsiTable(L"after-kbase", &AnsiTableInfo);
@@ -667,10 +669,10 @@ NTSTATUS LepGlobalData::HackAnsiOemCodeHashNodes() {
         NtdllStatus,
         Status);
 #else
-    ThreadCodePagePair = LepGetThreadCodePagePair();
-    WriteLog(L"nls sync after teb=%u/%u ntdll=%u mb=%u oemmb=%u ntdllStatus=%08X status=%08X",
-        ThreadCodePagePair[0],
-        ThreadCodePagePair[1],
+    ProcessCodePagePair = LepGetProcessCodePagePair();
+    WriteLog(L"nls sync after peb=%u/%u ntdll=%u mb=%u oemmb=%u ntdllStatus=%08X status=%08X",
+        ProcessCodePagePair[0],
+        ProcessCodePagePair[1],
         NlsAnsiCodePage,
         NlsMbCodePageTag,
         NlsMbOemCodePageTag,

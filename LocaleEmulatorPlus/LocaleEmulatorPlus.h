@@ -45,7 +45,7 @@ VOID LepSyncUser32ClientCodePage();
 static const ULONG_PTR LEP_TEB_WIN32_CLIENT_INFO_OFFSET = 0x800;
 static const ULONG_PTR LEP_PEB_NLS_CODE_PAGE_PAIR_OFFSET = 0x34C;
 #else
-static const ULONG_PTR LEP_TEB_NLS_CODE_PAGE_PAIR_OFFSET = 0x228;
+static const ULONG_PTR LEP_X86_PEB_NLS_CODE_PAGE_PAIR_OFFSET = 0x228;
 #endif
 static const ULONG LEP_WIN32_CLIENT_INFO_CODE_PAGE_INDEX = 19;
 
@@ -95,14 +95,14 @@ ForceInline VOID LepSetProcessCodePagePair(USHORT AnsiCodePage, USHORT OemCodePa
 }
 #else
 
-ForceInline PUSHORT LepGetThreadCodePagePair()
+ForceInline PUSHORT LepGetProcessCodePagePair()
 {
-    return (PUSHORT)PtrAdd(LepCurrentTeb(), LEP_TEB_NLS_CODE_PAGE_PAIR_OFFSET);
+    return (PUSHORT)PtrAdd(LepCurrentPeb(), LEP_X86_PEB_NLS_CODE_PAGE_PAIR_OFFSET);
 }
 
-ForceInline VOID LepSetThreadCodePagePair(USHORT AnsiCodePage, USHORT OemCodePage)
+ForceInline VOID LepSetProcessCodePagePair(USHORT AnsiCodePage, USHORT OemCodePage)
 {
-    PUSHORT CodePagePair = LepGetThreadCodePagePair();
+    PUSHORT CodePagePair = LepGetProcessCodePagePair();
 
     CodePagePair[0] = AnsiCodePage;
     CodePagePair[1] = OemCodePage;
@@ -902,7 +902,6 @@ public:
         API_POINTER(EnumFontFamiliesW)          StubEnumFontFamiliesW;
         API_POINTER(EnumFontFamiliesExA)        StubEnumFontFamiliesExA;
         API_POINTER(EnumFontFamiliesExW)        StubEnumFontFamiliesExW;
-
     } HookStub;
 
     ATOM AtomAnsiProc; //, AtomUnicodeProc;
@@ -1242,6 +1241,7 @@ public:
     {
         return HookStub.StubEnumFontFamiliesExW(hdc, lpLogfont, lpProc, lParam, dwFlags);
     }
+
 };
 
 ForceInline PLepGlobalData LepGetGlobalData()

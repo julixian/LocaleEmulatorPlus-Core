@@ -1,6 +1,8 @@
 #include "stdafx.h"
 #include "MessageTable.h"
 
+#define LEP_DISABLE_ANSI_WNDPROC_WRAP 0
+
 VOID ResetDCCharset(PLepGlobalData GlobalData, HWND hWnd);
 
 ForceInline VOID CheckDC(HDC hDC)
@@ -115,6 +117,506 @@ ForceInline BOOL IsOwnerDrawItemDataMessage(HWND Window, UINT Message)
 
     return FLAG_ON(Style, LBS_OWNERDRAWFIXED | LBS_OWNERDRAWVARIABLE) &&
           !FLAG_ON(Style, LBS_HASSTRINGS);
+}
+
+ForceInline BOOL IsEditControl(HWND Window)
+{
+    return IsWindowClass(Window, L"Edit");
+}
+
+ForceInline BOOL IsEditTextPositionMessage(UINT Message)
+{
+    switch (Message)
+    {
+        case EM_GETSEL:
+        case EM_SETSEL:
+        case EM_LINEINDEX:
+        case EM_LINELENGTH:
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOL CaptureEditTextA(WNDPROC PrevProc, HWND Window, PSTR *Text, ULONG_PTR *Length)
+{
+    LRESULT TextLength;
+    LRESULT Copied;
+    PSTR    Buffer;
+
+    *Text = nullptr;
+    *Length = 0;
+
+    TextLength = CallWindowProcA(PrevProc, Window, WM_GETTEXTLENGTH, 0, 0);
+    if (TextLength < 0)
+        return FALSE;
+
+    Buffer = AllocAnsi(TextLength + 1);
+    if (Buffer == nullptr)
+        return FALSE;
+
+    ZeroMemory(Buffer, TextLength + 1);
+
+    Copied = CallWindowProcA(PrevProc, Window, WM_GETTEXT, TextLength + 1, (LPARAM)Buffer);
+    if (Copied < 0)
+    {
+        FreeString(Buffer);
+        return FALSE;
+    }
+
+    *Text = Buffer;
+    *Length = Copied;
+
+    return TRUE;
+}
+
+static BOOL CaptureEditTextW(HWND Window, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags, PWSTR *Text, ULONG_PTR *Length)
+{
+    LRESULT TextLength;
+    LRESULT Copied;
+    PWSTR   Buffer;
+    PLepGlobalData GlobalData = LepGetGlobalData();
+
+    *Text = nullptr;
+    *Length = 0;
+    CLEAR_FLAG(Flags, WINDOW_FLAG_ANSI);
+
+    TextLength = GlobalData->NtUserMessageCall(Window, WM_GETTEXTLENGTH, 0, 0, xParam, xpfnProc, Flags);
+    if (TextLength < 0)
+        return FALSE;
+
+    Buffer = AllocUnicode(TextLength + 1);
+    if (Buffer == nullptr)
+        return FALSE;
+
+    ZeroMemory(Buffer, (TextLength + 1) * sizeof(WCHAR));
+
+    Copied = GlobalData->NtUserMessageCall(Window, WM_GETTEXT, TextLength + 1, (LPARAM)Buffer, xParam, xpfnProc, Flags);
+    if (Copied < 0)
+    {
+        FreeString(Buffer);
+        return FALSE;
+    }
+
+    *Text = Buffer;
+    *Length = Copied;
+
+    return TRUE;
+}
+
+static ULONG_PTR AnsiCharOffsetToByteOffset(PCSTR Text, ULONG_PTR CharOffset)
+{
+    PCSTR Current = Text;
+
+    for (ULONG_PTR i = 0; i != CharOffset && *Current != 0; ++i)
+        Current = CharNextA(Current);
+
+    return Current - Text;
+}
+
+static ULONG_PTR AnsiByteOffsetToCharOffset(PCSTR Text, ULONG_PTR ByteOffset)
+{
+    PCSTR     Current = Text;
+    PCSTR     Target;
+    ULONG_PTR CharOffset = 0;
+    ULONG_PTR TextLength;
+
+    TextLength = StrLengthA(Text);
+    ByteOffset = ML_MIN(ByteOffset, TextLength);
+    Target = Text + ByteOffset;
+
+    while (Current < Target && *Current != 0)
+    {
+        PCSTR Next = CharNextA(Current);
+        if (Next <= Current)
+            break;
+
+        Current = Next;
+        ++CharOffset;
+    }
+
+    return CharOffset;
+}
+
+static ULONG_PTR AnsiLineStartByteFromOffset(PCSTR Text, ULONG_PTR ByteOffset)
+{
+    PCSTR     Current = Text;
+    PCSTR     Target;
+    ULONG_PTR LineStart = 0;
+    ULONG_PTR TextLength;
+
+    TextLength = StrLengthA(Text);
+    ByteOffset = ML_MIN(ByteOffset, TextLength);
+    Target = Text + ByteOffset;
+
+    while (Current < Target && *Current != 0)
+    {
+        PCSTR Next = CharNextA(Current);
+
+        if (*Current == '\n')
+            LineStart = (Current - Text) + 1;
+
+        if (Next <= Current)
+            break;
+
+        Current = Next;
+    }
+
+    return LineStart;
+}
+
+static ULONG_PTR UnicodeLineStartCharFromOffset(PCWSTR Text, ULONG_PTR CharOffset)
+{
+    ULONG_PTR LineStart = 0;
+    ULONG_PTR TextLength;
+
+    TextLength = StrLengthW(Text);
+    CharOffset = ML_MIN(CharOffset, TextLength);
+
+    for (ULONG_PTR i = 0; i != CharOffset && Text[i] != 0; ++i)
+    {
+        if (Text[i] == L'\n')
+            LineStart = i + 1;
+    }
+
+    return LineStart;
+}
+
+static BOOL ConvertEditSelToAnsiByteOffsets(WNDPROC PrevProc, HWND Window, WPARAM *Start, LPARAM *End)
+{
+    ULONG_PTR Length;
+    PSTR      Text;
+    BOOL    Converted = FALSE;
+
+    if (*Start == (WPARAM)-1)
+        return FALSE;
+
+    if (!CaptureEditTextA(PrevProc, Window, &Text, &Length))
+        return FALSE;
+
+    WPARAM NewStart = AnsiCharOffsetToByteOffset(Text, *Start);
+    LPARAM NewEnd = *End;
+
+    if (*End != -1)
+        NewEnd = (LPARAM)AnsiCharOffsetToByteOffset(Text, (ULONG_PTR)*End);
+
+    *Start = NewStart;
+    *End = NewEnd;
+    Converted = TRUE;
+
+    FreeString(Text);
+
+    return Converted;
+}
+
+static LRESULT UserfnEDIT_GETSEL(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
+{
+    LRESULT   Result;
+    DWORD     StartA = 0;
+    DWORD     EndA = 0;
+    DWORD     StartW;
+    DWORD     EndW;
+    PSTR      Text;
+    ULONG_PTR Length;
+
+    Result = CallWindowProcA(PrevProc, Window, Message, (WPARAM)&StartA, (LPARAM)&EndA);
+
+    if (CaptureEditTextA(PrevProc, Window, &Text, &Length))
+    {
+        StartW = (DWORD)AnsiByteOffsetToCharOffset(Text, StartA);
+        EndW = (DWORD)AnsiByteOffsetToCharOffset(Text, EndA);
+        FreeString(Text);
+    }
+    else
+    {
+        StartW = LOWORD(Result);
+        EndW = HIWORD(Result);
+    }
+
+    if (wParam != 0)
+        *(LPDWORD)wParam = StartW;
+
+    if (lParam != 0)
+        *(LPDWORD)lParam = EndW;
+
+    return MAKELRESULT(StartW, EndW);
+}
+
+static LRESULT UserfnEDIT_SETSEL(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
+{
+    ConvertEditSelToAnsiByteOffsets(PrevProc, Window, &wParam, &lParam);
+    return CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
+}
+
+static LRESULT UserfnEDIT_LINEINDEX(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
+{
+    LRESULT   Result;
+    LRESULT   Converted;
+    PSTR      Text;
+    ULONG_PTR Length;
+
+    Result = CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
+    if (Result < 0)
+        return Result;
+
+    Converted = Result;
+    if (CaptureEditTextA(PrevProc, Window, &Text, &Length))
+    {
+        Converted = AnsiByteOffsetToCharOffset(Text, Result);
+        FreeString(Text);
+    }
+
+    return Converted;
+}
+
+static LRESULT UserfnEDIT_LINELENGTH(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
+{
+    LRESULT   Result;
+    LRESULT   Converted;
+    PSTR      Text;
+    ULONG_PTR Length;
+    WPARAM    AnsiIndex;
+    ULONG_PTR LineStart;
+
+    if (!CaptureEditTextA(PrevProc, Window, &Text, &Length))
+        return CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
+
+    AnsiIndex = wParam;
+    if (wParam != (WPARAM)-1)
+        AnsiIndex = AnsiCharOffsetToByteOffset(Text, wParam);
+
+    Result = CallWindowProcA(PrevProc, Window, Message, AnsiIndex, lParam);
+    if (Result < 0)
+    {
+        FreeString(Text);
+        return Result;
+    }
+
+    if (AnsiIndex == (WPARAM)-1)
+    {
+        LRESULT CurrentLineStart = CallWindowProcA(PrevProc, Window, EM_LINEINDEX, (WPARAM)-1, 0);
+        LineStart = CurrentLineStart < 0 ? 0 : CurrentLineStart;
+    }
+    else
+    {
+        LineStart = AnsiLineStartByteFromOffset(Text, AnsiIndex);
+    }
+
+    Converted = AnsiByteOffsetToCharOffset(Text + LineStart, Result);
+
+    FreeString(Text);
+
+    return Converted;
+}
+
+static LRESULT UserfnEDIT_TEXT_POSITION(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
+{
+    switch (Message)
+    {
+        case EM_GETSEL:
+            return UserfnEDIT_GETSEL(PrevProc, Window, Message, wParam, lParam);
+
+        case EM_SETSEL:
+            return UserfnEDIT_SETSEL(PrevProc, Window, Message, wParam, lParam);
+
+        case EM_LINEINDEX:
+            return UserfnEDIT_LINEINDEX(PrevProc, Window, Message, wParam, lParam);
+
+        case EM_LINELENGTH:
+            return UserfnEDIT_LINELENGTH(PrevProc, Window, Message, wParam, lParam);
+    }
+
+    return CallWindowProcA(PrevProc, Window, Message, wParam, lParam);
+}
+
+static LRESULT KernelfnEDIT_GETSEL(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
+{
+    LRESULT   Result;
+    WPARAM    OutputStart;
+    LPARAM    OutputEnd;
+    DWORD     StartW = 0;
+    DWORD     EndW = 0;
+    DWORD     StartA;
+    DWORD     EndA;
+    PWSTR     TextW;
+    ULONG_PTR LengthW;
+    PSTR      TextA;
+
+    OutputStart = wParam;
+    OutputEnd = lParam;
+    wParam = (WPARAM)&StartW;
+    lParam = (LPARAM)&EndW;
+
+    Result = CallNtUserMessageCallW();
+
+    if (CaptureEditTextW(Window, xParam, xpfnProc, Flags, &TextW, &LengthW))
+    {
+        TextA = WCharToMByte(TextW, LengthW);
+        if (TextA != nullptr)
+        {
+            StartA = (DWORD)AnsiCharOffsetToByteOffset(TextA, StartW);
+            EndA = (DWORD)AnsiCharOffsetToByteOffset(TextA, EndW);
+            FreeString(TextA);
+        }
+        else
+        {
+            StartA = LOWORD(Result);
+            EndA = HIWORD(Result);
+        }
+        FreeString(TextW);
+    }
+    else
+    {
+        StartA = LOWORD(Result);
+        EndA = HIWORD(Result);
+    }
+
+    if (OutputStart != 0)
+        *(LPDWORD)OutputStart = StartA;
+
+    if (OutputEnd != 0)
+        *(LPDWORD)OutputEnd = EndA;
+
+    return MAKELRESULT(StartA, EndA);
+}
+
+static LRESULT KernelfnEDIT_SETSEL(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
+{
+    PWSTR     TextW;
+    ULONG_PTR LengthW;
+    PSTR      TextA;
+    WPARAM    NewStart;
+    LPARAM    NewEnd;
+
+    if (wParam != (WPARAM)-1 && CaptureEditTextW(Window, xParam, xpfnProc, Flags, &TextW, &LengthW))
+    {
+        TextA = WCharToMByte(TextW, LengthW);
+        if (TextA != nullptr)
+        {
+            NewStart = AnsiByteOffsetToCharOffset(TextA, wParam);
+            NewEnd = lParam;
+            if (lParam != -1)
+                NewEnd = (LPARAM)AnsiByteOffsetToCharOffset(TextA, (ULONG_PTR)lParam);
+
+            wParam = NewStart;
+            lParam = NewEnd;
+            FreeString(TextA);
+        }
+        FreeString(TextW);
+    }
+
+    return CallNtUserMessageCallW();
+}
+
+static LRESULT KernelfnEDIT_LINEINDEX(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
+{
+    LRESULT   Result;
+    LRESULT   Converted;
+    PWSTR     TextW;
+    ULONG_PTR LengthW;
+    PSTR      TextA;
+
+    Result = CallNtUserMessageCallW();
+    if (Result < 0)
+        return Result;
+
+    Converted = Result;
+    if (CaptureEditTextW(Window, xParam, xpfnProc, Flags, &TextW, &LengthW))
+    {
+        TextA = WCharToMByte(TextW, LengthW);
+        if (TextA != nullptr)
+        {
+            Converted = AnsiCharOffsetToByteOffset(TextA, Result);
+            FreeString(TextA);
+        }
+        FreeString(TextW);
+    }
+
+    return Converted;
+}
+
+static LRESULT KernelfnEDIT_LINELENGTH(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
+{
+    LRESULT   Result;
+    LRESULT   Converted;
+    PWSTR     TextW;
+    ULONG_PTR LengthW;
+    PSTR      TextA;
+    WPARAM    OriginalIndex;
+    WPARAM    UnicodeIndex;
+    ULONG_PTR LineStart;
+    PLepGlobalData GlobalData = LepGetGlobalData();
+
+    OriginalIndex = wParam;
+
+    if (!CaptureEditTextW(Window, xParam, xpfnProc, Flags, &TextW, &LengthW))
+        return CallNtUserMessageCallW();
+
+    UnicodeIndex = wParam;
+    if (wParam != (WPARAM)-1)
+    {
+        TextA = WCharToMByte(TextW, LengthW);
+        if (TextA != nullptr)
+        {
+            UnicodeIndex = AnsiByteOffsetToCharOffset(TextA, wParam);
+            FreeString(TextA);
+        }
+    }
+
+    wParam = UnicodeIndex;
+    Result = CallNtUserMessageCallW();
+    if (Result < 0)
+    {
+        FreeString(TextW);
+        return Result;
+    }
+
+    if (UnicodeIndex == (WPARAM)-1)
+    {
+        ULONG WFlags = Flags;
+        CLEAR_FLAG(WFlags, WINDOW_FLAG_ANSI);
+        LRESULT CurrentLineStart = GlobalData->NtUserMessageCall(Window, EM_LINEINDEX, (WPARAM)-1, 0, xParam, xpfnProc, WFlags);
+        LineStart = CurrentLineStart < 0 ? 0 : CurrentLineStart;
+    }
+    else
+    {
+        LineStart = UnicodeLineStartCharFromOffset(TextW, UnicodeIndex);
+    }
+
+    TextA = WCharToMByte(TextW + LineStart, Result);
+    if (TextA != nullptr)
+    {
+        Converted = StrLengthA(TextA);
+        FreeString(TextA);
+    }
+    else
+    {
+        Converted = Result;
+    }
+
+    FreeString(TextW);
+
+    return Converted;
+}
+
+static LRESULT KernelfnEDIT_TEXT_POSITION(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, ULONG xpfnProc, ULONG Flags)
+{
+    switch (Message)
+    {
+        case EM_GETSEL:
+            return KernelfnEDIT_GETSEL(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+
+        case EM_SETSEL:
+            return KernelfnEDIT_SETSEL(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+
+        case EM_LINEINDEX:
+            return KernelfnEDIT_LINEINDEX(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+
+        case EM_LINELENGTH:
+            return KernelfnEDIT_LINELENGTH(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+    }
+
+    return CallNtUserMessageCall();
 }
 
 /************************************************************************
@@ -406,6 +908,12 @@ LRESULT NTAPI WindowProcW(HWND Window, UINT Message, WPARAM wParam, LPARAM lPara
     PLepGlobalData       GlobalData = LepGetGlobalData();
 
     PrevProc = (WNDPROC)GlobalData->GetWindowDataA(Window);
+
+    if (Message == WM_SETTEXT && IsWindowClass(Window, L"#32770"))
+        return DefWindowProcW(Window, Message, wParam, lParam);
+
+    if (IsEditTextPositionMessage(Message) && IsEditControl(Window))
+        return UserfnEDIT_TEXT_POSITION(PrevProc, Window, Message, wParam, lParam);
 
     if (Message < countof(MessageTable))
     {
@@ -719,6 +1227,9 @@ LepNtUserMessageCall(
         if (IsOwnerDrawItemDataMessage(Window, Message))
             return CallNtUserMessageCall();
 
+        if (IsEditTextPositionMessage(Message) && IsEditControl(Window) && LepGetGlobalData()->GetWindowDataA(Window) != nullptr)
+            return KernelfnEDIT_TEXT_POSITION(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+
         MessageCall = gapfnMessageCall[MessageTable[Message].Function].KernelCall;
         return CALLNTMSGCALL(MessageCall);
     }
@@ -826,6 +1337,9 @@ LRESULT CALLBACK CBTProc(int nCode, WPARAM wParam, LPARAM lParam)
         if (GlobalData->GetWindowDataA(hWnd) != nullptr)
             break;
 
+#if LEP_DISABLE_ANSI_WNDPROC_WRAP
+        break;
+#endif
         OriginalProcA = GetWindowProcA(GlobalData, hWnd);
         //if (IsCallProcHandle(OriginalProcA) == FALSE)
         {
@@ -1382,6 +1896,15 @@ ForceInline LONG_PTR LepSetWindowLongAWorker(PLepGlobalData GlobalData, HWND hWn
     switch (Index)
     {
         case GWLP_WNDPROC:
+#if LEP_DISABLE_ANSI_WNDPROC_WRAP
+#if ML_AMD64
+            if (UsePtrApi)
+                return GlobalData->SetWindowLongPtrA(hWnd, Index, NewLong);
+#else
+            (VOID)UsePtrApi;
+#endif
+            return GlobalData->SetWindowLongA(hWnd, Index, NewLong);
+#endif
             OriginalProcA = GlobalData->GetWindowDataA(hWnd);
             if (OriginalProcA != nullptr)
             {
