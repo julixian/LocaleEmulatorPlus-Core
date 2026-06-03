@@ -16,6 +16,8 @@ repository instead of using this core repository directly.
 
 For implementation notes and maintenance details, see [MAINTAINING.md](MAINTAINING.md).
 
+See `README_ORG.md` for the original upstream license notice and third-party attribution.
+
 ## 中文
 
 本仓库是从
@@ -30,3 +32,5 @@ For implementation notes and maintenance details, see [MAINTAINING.md](MAINTAINI
 Core 仓库。
 
 实现原理和维护说明请看 [MAINTAINING.md](MAINTAINING.md)。
+
+原始上游许可证说明和第三方来源请见 `README_ORG.md`。
