@@ -21,11 +21,16 @@
 
 #if ML_AMD64
 #define LEP_FUNCTION_JUMP_OP                     Mp::OpJumpIndirect
+#define LEP_FUNCTION_SHORT_JUMP_OP               Mp::OpJump
+#define LEP_FUNCTION_NO_ABSOLUTE_JUMP_OP         (Mp::OpJumpIndirect | Mp::NoAbsoluteJump)
 #else
 #define LEP_FUNCTION_JUMP_OP                     Mp::OpJump
+#define LEP_FUNCTION_SHORT_JUMP_OP               Mp::OpJump
+#define LEP_FUNCTION_NO_ABSOLUTE_JUMP_OP         Mp::OpJump
 #endif
 
 #define LepHookFromEAT(_Base, _Prefix, _Name)    Mp::FunctionJumpVa(LookupExportTable(_Base, _Prefix##_##_Name), Lep##_Name, &HookStub.Stub##_Name, LEP_FUNCTION_JUMP_OP)
+#define LepHookFromEATOp(_Base, _Prefix, _Name, _Op) Mp::FunctionJumpVa(LookupExportTable(_Base, _Prefix##_##_Name), Lep##_Name, &HookStub.Stub##_Name, _Op)
 #define LepHookFromEAT2(_Base, _Prefix, _Name)   Mp::FunctionJumpVa(LookupExportTable(_Base, _Prefix##_##_Name), Lep##_Name, nullptr, LEP_FUNCTION_JUMP_OP)
 #define LepFunctionJump(_Name)                   Mp::FunctionJumpVa(_Name, Lep##_Name, &HookStub.Stub##_Name, LEP_FUNCTION_JUMP_OP)
 #define LepFunctionCall(_Name)                   Mp::FunctionCallVa(_Name, Lep##_Name, &HookStub.Stub##_Name)
@@ -34,9 +39,102 @@ class LepGlobalData;
 typedef LepGlobalData* PLepGlobalData;
 
 VOID LepNlsDiag(PCWSTR Format, ...);
+VOID LepSyncUser32ClientCodePage();
+
+#if ML_AMD64
+static const ULONG_PTR LEP_TEB_WIN32_CLIENT_INFO_OFFSET = 0x800;
+static const ULONG_PTR LEP_PEB_NLS_CODE_PAGE_PAIR_OFFSET = 0x34C;
+#else
+static const ULONG_PTR LEP_TEB_NLS_CODE_PAGE_PAIR_OFFSET = 0x228;
+#endif
+static const ULONG LEP_WIN32_CLIENT_INFO_CODE_PAGE_INDEX = 19;
+
+ForceInline PPEB_BASE LepCurrentPeb()
+{
+    return CurrentPeb();
+}
+
+ForceInline PTEB_BASE LepCurrentTeb()
+{
+    return CurrentTeb();
+}
+
+ForceInline PULONG_PTR LepGetWin32ClientInfo()
+{
+#if ML_AMD64
+    return (PULONG_PTR)PtrAdd(LepCurrentTeb(), LEP_TEB_WIN32_CLIENT_INFO_OFFSET);
+#else
+    return (PULONG_PTR)LepCurrentTeb()->User32Reserved;
+#endif
+}
+
+ForceInline USHORT LepGetUser32ClientCodePage()
+{
+    return (USHORT)LepGetWin32ClientInfo()[LEP_WIN32_CLIENT_INFO_CODE_PAGE_INDEX];
+}
+
+#if ML_AMD64
+ForceInline PULONG LepGetProcessCodePagePair()
+{
+    return (PULONG)PtrAdd(LepCurrentPeb(), LEP_PEB_NLS_CODE_PAGE_PAIR_OFFSET);
+}
+
+ForceInline USHORT LepGetProcessAnsiCodePage()
+{
+    return LOWORD(*LepGetProcessCodePagePair());
+}
+
+ForceInline USHORT LepGetProcessOemCodePage()
+{
+    return HIWORD(*LepGetProcessCodePagePair());
+}
+
+ForceInline VOID LepSetProcessCodePagePair(USHORT AnsiCodePage, USHORT OemCodePage)
+{
+    *LepGetProcessCodePagePair() = MAKELONG(AnsiCodePage, OemCodePage);
+}
+#else
+
+ForceInline PUSHORT LepGetThreadCodePagePair()
+{
+    return (PUSHORT)PtrAdd(LepCurrentTeb(), LEP_TEB_NLS_CODE_PAGE_PAIR_OFFSET);
+}
+
+ForceInline VOID LepSetThreadCodePagePair(USHORT AnsiCodePage, USHORT OemCodePage)
+{
+    PUSHORT CodePagePair = LepGetThreadCodePagePair();
+
+    CodePagePair[0] = AnsiCodePage;
+    CodePagePair[1] = OemCodePage;
+}
+
+#endif
 
 #define THREAD_LOCAL_BUFFER_CONTEXT TAG4('LTLB')
 #define LEP_LOADER_PROCESS           TAG4('LepL')
+#define LEP_NTUSER_SYSCALL_CONTEXT   TAG4('UNSC')
+
+#if ML_AMD64
+struct LEP_NTUSER_SYSCALL_FRAME : public TEB_ACTIVE_FRAME
+{
+    PVOID NtUserCreateWindowEx;
+    PVOID NtUserMessageCall;
+    PVOID NtUserDefSetText;
+
+    LEP_NTUSER_SYSCALL_FRAME()
+    {
+        this->Context = LEP_NTUSER_SYSCALL_CONTEXT;
+        NtUserCreateWindowEx = nullptr;
+        NtUserMessageCall = nullptr;
+        NtUserDefSetText = nullptr;
+    }
+
+    static LEP_NTUSER_SYSCALL_FRAME* Current()
+    {
+        return (LEP_NTUSER_SYSCALL_FRAME*)FindThreadFrame(LEP_NTUSER_SYSCALL_CONTEXT);
+    }
+};
+#endif
 
 #if LEP_DIAG_INIT
 #define LEP_DIAG_HEADER(_stage) ExceptionBox(_stage, L"LEP modern init diag")
@@ -774,6 +872,10 @@ public:
         API_POINTER(NtUserDefSetText)           StubNtUserDefSetText;
         API_POINTER(SetWindowLongA)             StubSetWindowLongA;
         API_POINTER(GetWindowLongA)             StubGetWindowLongA;
+#if ML_AMD64
+        API_POINTER(SetWindowLongPtrA)          StubSetWindowLongPtrA;
+        API_POINTER(GetWindowLongPtrA)          StubGetWindowLongPtrA;
+#endif
         API_POINTER(IsWindowUnicode)            StubIsWindowUnicode;
         API_POINTER(GetClipboardData)           StubGetClipboardData;
         API_POINTER(SetClipboardData)           StubSetClipboardData;
@@ -981,6 +1083,18 @@ public:
         return HookStub.StubSetWindowLongA(hWnd, Index, NewLong);
     }
 
+#if ML_AMD64
+    LONG_PTR GetWindowLongPtrA(HWND hWnd, int Index)
+    {
+        return HookStub.StubGetWindowLongPtrA(hWnd, Index);
+    }
+
+    LONG_PTR SetWindowLongPtrA(HWND hWnd, int Index, LONG_PTR NewLong)
+    {
+        return HookStub.StubSetWindowLongPtrA(hWnd, Index, NewLong);
+    }
+#endif
+
     BOOL IsWindowUnicode(HWND hWnd)
     {
         return HookStub.StubIsWindowUnicode(hWnd);
@@ -1018,21 +1132,53 @@ public:
 
     LRESULT NtUserMessageCall(HWND hWnd, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, DWORD xpfnProc, ULONG Flags)
     {
+#if ML_AMD64
+        LEP_NTUSER_SYSCALL_FRAME* Frame = LEP_NTUSER_SYSCALL_FRAME::Current();
+        if (Frame != nullptr && Frame->NtUserMessageCall != nullptr)
+        {
+            typedef LRESULT (NTAPI *PFN)(HWND, UINT, WPARAM, LPARAM, ULONG_PTR, DWORD, ULONG);
+            return ((PFN)Frame->NtUserMessageCall)(hWnd, Message, wParam, lParam, xParam, xpfnProc, Flags);
+        }
+#endif
         return HookStub.StubNtUserMessageCall(hWnd, Message, wParam, lParam, xParam, xpfnProc, Flags);
     }
 
-    HWND NtUserCreateWindowEx_Win7(ULONG ExStyle, PLARGE_UNICODE_STRING ClassName, PLARGE_UNICODE_STRING ClassVersion, PLARGE_UNICODE_STRING WindowName, ULONG Style, LONG X, LONG Y, LONG Width, LONG Height, HWND ParentWnd, HMENU Menu, PVOID Instance, LPVOID Param, ULONG ShowMode, ULONG Unknown)
+    HWND NtUserCreateWindowEx_Win7(ULONG ExStyle, PLARGE_UNICODE_STRING ClassName, PLARGE_UNICODE_STRING ClassVersion, PLARGE_UNICODE_STRING WindowName, ULONG Style, LONG X, LONG Y, LONG Width, LONG Height, HWND ParentWnd, HMENU Menu, PVOID Instance, LPVOID Param, ULONG ShowMode, ULONG_PTR Unknown)
     {
+#if ML_AMD64
+        LEP_NTUSER_SYSCALL_FRAME* Frame = LEP_NTUSER_SYSCALL_FRAME::Current();
+        if (Frame != nullptr && Frame->NtUserCreateWindowEx != nullptr)
+        {
+            typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG_PTR);
+            return ((PFN)Frame->NtUserCreateWindowEx)(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown);
+        }
+#endif
         return HookStub.StubNtUserCreateWindowEx_Win7(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown);
     }
 
-    HWND NtUserCreateWindowEx_Win8(ULONG ExStyle, PLARGE_UNICODE_STRING ClassName, PLARGE_UNICODE_STRING ClassVersion, PLARGE_UNICODE_STRING WindowName, ULONG Style, LONG X, LONG Y, LONG Width, LONG Height, HWND ParentWnd, HMENU Menu, PVOID Instance, LPVOID Param, ULONG ShowMode, ULONG Unknown, ULONG Unknown2)
+    HWND NtUserCreateWindowEx_Win8(ULONG ExStyle, PLARGE_UNICODE_STRING ClassName, PLARGE_UNICODE_STRING ClassVersion, PLARGE_UNICODE_STRING WindowName, ULONG Style, LONG X, LONG Y, LONG Width, LONG Height, HWND ParentWnd, HMENU Menu, PVOID Instance, LPVOID Param, ULONG ShowMode, ULONG Unknown, ULONG_PTR Unknown2)
     {
+#if ML_AMD64
+        LEP_NTUSER_SYSCALL_FRAME* Frame = LEP_NTUSER_SYSCALL_FRAME::Current();
+        if (Frame != nullptr && Frame->NtUserCreateWindowEx != nullptr)
+        {
+            typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG, ULONG_PTR);
+            return ((PFN)Frame->NtUserCreateWindowEx)(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown, Unknown2);
+        }
+#endif
         return HookStub.StubNtUserCreateWindowEx_Win8(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown, Unknown2);
     }
 
     BOOL NtUserSetDefText(HWND hWnd, PLARGE_UNICODE_STRING Text)
     {
+#if ML_AMD64
+        LEP_NTUSER_SYSCALL_FRAME* Frame = LEP_NTUSER_SYSCALL_FRAME::Current();
+        if (Frame != nullptr && Frame->NtUserDefSetText != nullptr)
+        {
+            typedef BOOL (NTAPI *PFN)(HWND, PLARGE_UNICODE_STRING);
+            return ((PFN)Frame->NtUserDefSetText)(hWnd, Text);
+        }
+#endif
         return HookStub.StubNtUserDefSetText(hWnd, Text);
     }
 
@@ -1103,5 +1249,7 @@ ForceInline PLepGlobalData LepGetGlobalData()
     extern PLepGlobalData g_GlobalData;
     return g_GlobalData;
 }
+
+VOID LepSyncNtdllNlsGlobals(USHORT AnsiCodePage, BOOLEAN AnsiDbcsCodePage, BOOLEAN OemDbcsCodePage);
 
 #endif // _LocaleEmulatorPlus_H_cd444a0d_c7f9_44b2_aac8_8107e9a07ca2_

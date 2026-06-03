@@ -320,6 +320,13 @@ HpLookupSystemCall(
     ULONG_PTR SystemCallHash
 );
 
+#if ML_AMD64
+PVOID
+HpGetSystemCallOriginal(
+    ULONG RoutineHash
+);
+#endif
+
 NTSTATUS
 HpSetGlobalFilter(
     PHP_GLOBAL_FILTER  NewFilter,

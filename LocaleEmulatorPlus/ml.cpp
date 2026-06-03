@@ -8134,7 +8134,7 @@ ULONG_PTR FASTCALL LdeGetOpCodeSize64(PVOID Code, PVOID *OpCodePtr)
         {
             PFX66 = PFX67;
         }
-        else if (Rex && (tmp >> 1) == 0x17)     // 0xB8 ~ 0xBF  mov r64, imm64
+        else if ((Rex & 8) && (tmp >> 1) == 0x17)     // REX.W + 0xB8 ~ 0xBF  mov r64, imm64
         {
             Imm64 = 4;
         }
@@ -8194,7 +8194,7 @@ ULONG_PTR FASTCALL LdeGetOpCodeSize64(PVOID Code, PVOID *OpCodePtr)
     Ptr += FLAG_ON(Flags, OP_X64_DATA_I16) ? 2 : 0;
     Ptr += FLAG_ON(Flags, OP_X64_DATA_I32) ? 4 : 0;
     Ptr += FLAG_ON(Flags, OP_X64_DATA_PRE66_67) ? (PFX66 ? 2 : 4) : 0;
-    Ptr += (Rex & 9) ? Imm64 : 0;   // 0x48 || 0x49
+    Ptr += (Rex & 8) ? Imm64 : 0;   // REX.W
 
     return PtrOffset(Ptr, Code);
 }
@@ -8550,11 +8550,17 @@ DEFAULT_OP_CODE:
 
         if (Func[0] == 0xE8)
         {
-            // call qword ptr [rip + 0]; dq BranchTarget
+            // call qword ptr [rip + 2]; jmp short +8; dq BranchTarget
+            //
+            // A RIP-indirect call returns to the byte immediately after the
+            // call instruction. Keep a short jump there so the embedded
+            // absolute target is treated as data, not as executable code.
             *p++ = 0xFF;
             *p++ = 0x15;
-            *(PULONG)p = 0;
+            *(PULONG)p = 2;
             p += sizeof(ULONG);
+            *p++ = 0xEB;
+            *p++ = sizeof(ULONG_PTR);
             *(PULONG_PTR)p = BranchTarget;
             p += sizeof(ULONG_PTR);
             goto EXIT_PROC;
@@ -8714,14 +8720,157 @@ protected:
         return STATUS_SUCCESS;
     }
 
+#if ML_AMD64
+    BOOL GetRelativeJumpOffset(PVOID Address, PVOID Target, PLONG RelativeOffset)
+    {
+        LONGLONG Offset;
+
+        Offset = (LONGLONG)(ULONG_PTR)Target -
+                 (LONGLONG)((ULONG_PTR)Address + GetSizeOfHookOpSize(OpJump));
+        if (Offset < -0x80000000LL || Offset > 0x7FFFFFFFLL)
+            return FALSE;
+
+        *RelativeOffset = (LONG)Offset;
+        return TRUE;
+    }
+
+    ULONG_PTR AlignDownTo(ULONG_PTR Value, ULONG_PTR Alignment)
+    {
+        return Value & ~(Alignment - 1);
+    }
+
+    ULONG_PTR AlignUpTo(ULONG_PTR Value, ULONG_PTR Alignment)
+    {
+        return AlignDownTo(Value + Alignment - 1, Alignment);
+    }
+
+    NTSTATUS TryAllocateRelayStub(PVOID EntryAddress, PVOID CandidateBase, PVOID Target, PVOID* Relay)
+    {
+        PVOID Base;
+        SIZE_T Size;
+        NTSTATUS Status;
+        LONG RelativeOffset;
+
+        Base = CandidateBase;
+        Size = TRAMPOLINE_SIZE;
+        Status = NtAllocateVirtualMemory(CurrentProcess, &Base, 0, &Size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+        if (NT_FAILED(Status))
+            return Status;
+
+        if (!GetRelativeJumpOffset(EntryAddress, Base, &RelativeOffset))
+        {
+            Mm::FreeVirtualMemory(Base);
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+
+        Status = GenerateHookCode((PBYTE)Base, Base, Target, OpJumpIndirect, GetSizeOfHookOpSize(OpJumpIndirect));
+        if (NT_FAILED(Status))
+        {
+            Mm::FreeVirtualMemory(Base);
+            return Status;
+        }
+
+        FlushInstructionCache(Base, GetSizeOfHookOpSize(OpJumpIndirect));
+        *Relay = Base;
+
+        return STATUS_SUCCESS;
+    }
+
+    NTSTATUS AllocateRelayStub(PVOID Address, PVOID Target, PVOID* Relay)
+    {
+        ULONG_PTR Near, Low, High, Query, Next;
+        MEMORY_BASIC_INFORMATION MemoryInfo;
+        NTSTATUS Status;
+
+        static const ULONG_PTR AllocationGranularity = 0x10000;
+        static const ULONG_PTR MinUserAddress = 0x10000;
+        static const ULONG_PTR MaxRange = 0x7FFFFFFF;
+
+        *Relay = nullptr;
+
+        Near = (ULONG_PTR)Address;
+        Low = Near > MaxRange ? Near - MaxRange : MinUserAddress;
+        if (Low < MinUserAddress)
+            Low = MinUserAddress;
+
+        High = Near + MaxRange;
+        if (High < Near)
+            High = MAXULONG_PTR;
+
+        Query = AlignDownTo(Near, AllocationGranularity);
+        while (Query > Low)
+        {
+            Status = NtQueryVirtualMemory(CurrentProcess, (PVOID)Query, MemoryBasicInformation, &MemoryInfo, sizeof(MemoryInfo), nullptr);
+            if (NT_FAILED(Status))
+            {
+                Query -= Query >= AllocationGranularity ? AllocationGranularity : Query;
+                continue;
+            }
+
+            if (MemoryInfo.State == MEM_FREE)
+            {
+                Status = TryAllocateRelayStub(Address, (PVOID)Query, Target, Relay);
+                if (NT_SUCCESS(Status))
+                    return Status;
+            }
+
+            if ((ULONG_PTR)MemoryInfo.BaseAddress <= Low)
+                break;
+
+            Query = AlignDownTo((ULONG_PTR)MemoryInfo.BaseAddress - 1, AllocationGranularity);
+        }
+
+        Query = AlignUpTo(Near, AllocationGranularity);
+        while (Query < High)
+        {
+            Status = NtQueryVirtualMemory(CurrentProcess, (PVOID)Query, MemoryBasicInformation, &MemoryInfo, sizeof(MemoryInfo), nullptr);
+            if (NT_FAILED(Status))
+            {
+                Query += AllocationGranularity;
+                continue;
+            }
+
+            if (MemoryInfo.State == MEM_FREE)
+            {
+                Status = TryAllocateRelayStub(Address, (PVOID)Query, Target, Relay);
+                if (NT_SUCCESS(Status))
+                    return Status;
+            }
+
+            Next = (ULONG_PTR)MemoryInfo.BaseAddress + MemoryInfo.RegionSize;
+            if (Next <= Query)
+                Query += AllocationGranularity;
+            else
+                Query = AlignUpTo(Next, AllocationGranularity);
+        }
+
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+#endif
+
+    VOID FreeRelayStub(PVOID Relay)
+    {
+#if ML_AMD64
+        if (Relay != nullptr)
+            Mm::FreeVirtualMemory(Relay);
+#else
+        UNREFERENCED_PARAMETER(Relay);
+#endif
+    }
+
     NoInline NTSTATUS HandleFunctionPatch(PPATCH_MEMORY_DATA PatchData, PVOID BaseAddress)
     {
         auto&               Function = PatchData->Function;
         BYTE                LocalHookBuffer[TRAMPOLINE_SIZE];
         PVOID               Address;
+        PVOID               HookTarget;
+        PVOID               Relay;
         PBYTE               Trampoline;
         ULONG               Protect;
-        ULONG_PTR           HookOpSize, CopyOpSize;
+        ULONG_PTR           HookOp, HookOpSize, CopyOpSize;
+        ULONG               HookOp32;
+        BOOL                ForceTrampolineData;
         NTSTATUS            Status;
         PTRAMPOLINE_DATA    TrampolineData;
 
@@ -8731,39 +8880,111 @@ protected:
         if (Function.Source == IMAGE_INVALID_RVA)
             return STATUS_SUCCESS;
 
-        Address = PtrAdd(Function.Options.VirtualAddress ? nullptr : BaseAddress, Function.Source);
+        ULONG FunctionOptions = Function.Options.Flags;
+        BOOL VirtualAddressOpt = FLAG_ON(FunctionOptions, VirtualAddress);
+        BOOL NakedTrampolineOpt = FLAG_ON(FunctionOptions, NakedTrampoline);
+        BOOL DoNotDisassembleOpt = FLAG_ON(FunctionOptions, DoNotDisassemble);
+        BOOL KeepRawTrampolineOpt = FLAG_ON(FunctionOptions, KeepRawTrampoline);
+        BOOL NoAbsoluteJumpOpt = FLAG_ON(FunctionOptions, NoAbsoluteJump);
 
-        HookOpSize = GetSizeOfHookOpSize(Function.HookOp);
+        Address = PtrAdd(VirtualAddressOpt ? nullptr : BaseAddress, Function.Source);
+
+        HookOp = (ULONG)Function.HookOp;
+        HookOp32 = (ULONG)HookOp;
+        HookTarget = Function.Target;
+        Relay = nullptr;
+        ForceTrampolineData = FALSE;
+
+#if ML_AMD64
+        if (HookOp32 == (ULONG)OpJumpIndirect && NakedTrampolineOpt == FALSE)
+        {
+            PVOID       NearAddress;
+            ULONG_PTR   NearCopyOpSize, NearHookOpSize;
+            LONG        Offset;
+
+            NearHookOpSize = GetSizeOfHookOpSize(OpJump);
+            NearAddress = Address;
+
+            Status = GetHookAddressAndSize(Address, NearHookOpSize, &NearAddress, &NearCopyOpSize);
+            if (NT_SUCCESS(Status))
+            {
+                if (GetRelativeJumpOffset(NearAddress, HookTarget, &Offset))
+                {
+                    HookOp = OpJump;
+                    HookOpSize = NearHookOpSize;
+                    Address = NearAddress;
+                    CopyOpSize = NearCopyOpSize;
+                    goto GOT_HOOK_ADDRESS_AND_SIZE;
+                }
+
+                Status = AllocateRelayStub(NearAddress, HookTarget, &Relay);
+                if (NT_SUCCESS(Status))
+                {
+                    HookOp = OpJump;
+                    HookOpSize = NearHookOpSize;
+                    Address = NearAddress;
+                    CopyOpSize = NearCopyOpSize;
+                    HookTarget = Relay;
+                    ForceTrampolineData = TRUE;
+                    goto GOT_HOOK_ADDRESS_AND_SIZE;
+                }
+            }
+
+            if (NoAbsoluteJumpOpt)
+            {
+                if (Relay != nullptr)
+                    FreeRelayStub(Relay);
+
+                return NT_SUCCESS(Status) ? STATUS_BUFFER_TOO_SMALL : Status;
+            }
+        }
+#endif
+
+        HookOpSize = GetSizeOfHookOpSize(HookOp);
         if (HookOpSize == ULONG_PTR_MAX)
             return STATUS_BUFFER_TOO_SMALL;
 
         Status = GetHookAddressAndSize(Address, HookOpSize, &Address, &CopyOpSize);
         FAIL_RETURN(Status);
 
+GOT_HOOK_ADDRESS_AND_SIZE:
+
         if (CopyOpSize > TRAMPOLINE_SIZE)
             RaiseDebugBreak();
 
         FillMemory(LocalHookBuffer, CopyOpSize, 0x90);
 
-        if (Function.Options.NakedTrampoline == FALSE)
+        if (NakedTrampolineOpt == FALSE)
         {
-            Status = GenerateHookCode(LocalHookBuffer, Address, Function.Target, Function.HookOp, HookOpSize);
+            Status = GenerateHookCode(LocalHookBuffer, Address, HookTarget, HookOp, HookOpSize);
+            if (NT_FAILED(Status) && Relay != nullptr)
+                FreeRelayStub(Relay);
             FAIL_RETURN(Status);
 
             PatchNop(&LocalHookBuffer[HookOpSize], CopyOpSize - HookOpSize);
         }
 
         TrampolineData = nullptr;
-        if (Function.Options.NakedTrampoline != FALSE || (Function.Trampoline != nullptr && Function.Options.DoNotDisassemble == FALSE))
+        if (NakedTrampolineOpt != FALSE ||
+            ForceTrampolineData ||
+            (Function.Trampoline != nullptr && DoNotDisassembleOpt == FALSE))
         {
             TrampolineData = AllocateTrampolineData();
             if (TrampolineData == nullptr)
+            {
+                if (Relay != nullptr)
+                    FreeRelayStub(Relay);
+
                 return STATUS_NO_MEMORY;
+            }
 
             TrampolineData->PatchData = *PatchData;
+            TrampolineData->PatchData.Function.HookOp = HookOp;
             TrampolineData->PatchData.Function.NopBytes = CopyOpSize - HookOpSize;
             TrampolineData->PatchData.Function.Source = (ULONG_PTR)Address;
-            TrampolineData->PatchData.Function.Options.VirtualAddress = TRUE;
+            TrampolineData->PatchData.Function.Options.Flags |= VirtualAddress;
+            TrampolineData->Relay = Relay;
+            Relay = nullptr;
 
             TrampolineData->OriginSize = CopyOpSize;
             CopyMemory(TrampolineData->OriginalCode, Address, CopyOpSize);
@@ -8771,10 +8992,10 @@ protected:
             TrampolineData->JumpBackAddress = PtrAdd(Address, CopyOpSize);
             Trampoline = TrampolineData->Trampoline;
 
-            if (Function.Options.NakedTrampoline == FALSE)
+            if (NakedTrampolineOpt == FALSE)
             {
                 CopyTrampolineStub(Trampoline, Address, CopyOpSize);
-                if (CopyOpSize == HookOpSize && Function.HookOp == OpCall && Function.Options.KeepRawTrampoline == FALSE)
+                if (CopyOpSize == HookOpSize && HookOp == OpCall && KeepRawTrampolineOpt == FALSE)
                 {
                     TrampolineData->Trampoline[0] = 0xE9;
                 }
@@ -8787,7 +9008,7 @@ protected:
             {
                 GenerateNakedTrampoline(Trampoline, Address, CopyOpSize, TrampolineData);
 
-                Status = GenerateHookCode(LocalHookBuffer, Address, TrampolineData->Trampoline, Function.HookOp, HookOpSize);
+                Status = GenerateHookCode(LocalHookBuffer, Address, TrampolineData->Trampoline, HookOp, HookOpSize);
                 if (NT_FAILED(Status))
                 {
                     FreeTrampolineData(TrampolineData);
@@ -8812,6 +9033,9 @@ protected:
         if (NT_FAILED(Status))
         {
             FreeTrampolineData(TrampolineData);
+            if (Relay != nullptr)
+                FreeRelayStub(Relay);
+
             return Status;
         }
 
@@ -8872,6 +9096,20 @@ protected:
 
         switch (HookOp32)
         {
+            case OpCall:
+            case OpJump:
+            {
+                LONG_PTR Offset;
+
+                Offset = (LONG_PTR)PtrOffset(Target, PtrAdd(SourceIp, HookOpSize));
+                if ((LONG_PTR)(LONG)Offset != Offset)
+                    return STATUS_BUFFER_TOO_SMALL;
+
+                *Buffer++ = HookOp32 == OpCall ? 0xE8 : 0xE9;
+                *(PLONG)Buffer = (LONG)Offset;
+                break;
+            }
+
             case OpJumpIndirect:
                 //
                 // jmp qword ptr [rip + 0]
@@ -8952,8 +9190,10 @@ protected:
         NTSTATUS    Status;
         PVOID*      AddressOfReturnAddress;
         auto&       Function = TrampolineData->PatchData.Function;
+        ULONG       FunctionOptions = Function.Options.Flags;
+        BOOL        ExecuteTrampolineOpt = FLAG_ON(FunctionOptions, ExecuteTrampoline);
 
-        if (Function.Options.ExecuteTrampoline != FALSE)
+        if (ExecuteTrampolineOpt != FALSE)
         {
             Status = CopyTrampolineStub(Trampoline, Address, CopyOpSize);
             FAIL_RETURN(Status);
@@ -9384,7 +9624,7 @@ protected:
 
 #endif // arch
 
-        if (Function.Options.ExecuteTrampoline == FALSE)
+        if (ExecuteTrampolineOpt == FALSE)
         {
             *AddressOfReturnAddress = Trampoline;
 
@@ -9530,6 +9770,13 @@ protected:
 
         switch (HookOp32)
         {
+            case OpCall:
+            case OpJump:
+                //
+                // E8/E9 rel32
+                //
+                return 1 + sizeof(LONG);
+
             case OpJumpIndirect:
                 //
                 // FF 25 00 00 00 00 jmp qword ptr [rip + 0]
@@ -9635,6 +9882,12 @@ protected:
 
     VOID FreeTrampolineData(PTRAMPOLINE_DATA TrampolineData)
     {
+        if (TrampolineData != nullptr && TrampolineData->Relay != nullptr)
+        {
+            Mm::FreeVirtualMemory(TrampolineData->Relay);
+            TrampolineData->Relay = nullptr;
+        }
+
         if (TrampolineData != nullptr)
             RtlFreeHeap(this->ExecutableHeap, 0, TrampolineData);
     }

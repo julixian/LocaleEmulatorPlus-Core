@@ -1,6 +1,7 @@
 # LocaleEmulatorPlus-Core 维护说明
 
-本文记录 Core 的转区原理、x86/x64 实现差异、现代工具链构建方式、patched linker 注意事项，以及当前依赖的非公开 API。它不是用户手册，而是之后升级 VS、SDK、WDK 或更新功能时用的维护笔记。
+本文记录 Core 的大体转区原理、现代工具链构建方式、patched linker 注意事项。
+是之后升级 VS、SDK、WDK 或更新功能时用的维护笔记。
 
 ## 总体结构
 
@@ -29,12 +30,15 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 1. `LEPProc_*` 把 GUI 配置转换成 `LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK`，调用 `LoaderDll_*!LepCreateProcess`。
 2. `LoaderDll` 用非公开的 `CreateProcessInternalW` 创建目标进程。
 3. `LoaderDll` 生成或打开按 PID 命名的共享 section：`Local\LOCALE_EMULATOR_PLUS_PROCESS_ENVIRONMENT_BLOCK_SECTION_<pid>`。
-4. 共享 section 内放 `LEPPEB`，包含目标 ACP/OEMCP/LCID、时区、注册表重定向项、LEP DLL 路径、`LdrLoadDll` 备份字节等。
-5. `LoaderDll` 在目标进程早期 loader 路径中 patch `ntdll!LdrLoadDll`，让 `LocaleEmulatorPlus_*` 在 kernel32 初始化前取得执行权。
-6. `LocaleEmulatorPlus` 初始化后恢复 `LdrLoadDll` 原字节，读取 `LEPPEB`，安装 ntdll/kernelbase/user32/gdi32 等 hook。
-7. 之后目标进程调用 NLS、locale、窗口文字、字体、剪贴板、注册表、时区等相关 API 时，会被 LEP 的 hook 改写结果。
+4. 共享 section 内放 `LEPPEB`，包含目标 ACP/OEMCP/LCID、时区、注册表重定向项、LEP DLL 路径、`LdrLoadDll` 地址/备份字节等。
+5. `LoaderDll` 通过 `CreateProcessWithDll(CPWD_BEFORE_KERNEL32)` 创建调试态目标进程，临时把目标进程的 `ntdll!LdrLoadDll` 入口改成 2 字节 `UD2`，等待第一次 loader 侧 `LdrLoadDll` 调用。
+6. 命中 `UD2` 后恢复 `LdrLoadDll` 原字节，记录第一次 call site，并把 `LocaleEmulatorPlus_*` 注入到目标进程，让它在 kernel32 初始化前取得执行权。
+7. `LocaleEmulatorPlus` 初始化后读取 `LEPPEB`，安装 ntdll/kernelbase/user32/gdi32 等 hook。
+8. 之后目标进程调用 NLS、locale、窗口文字、字体、剪贴板、注册表、时区等相关 API 时，会被 LEP 的 hook 改写结果。
 
 关键点是“早”：如果目标进程在 LEP 初始化前已经加载并初始化 kernel32/kernelbase，NLS 缓存已经按本机区域建立，后续再改 ACP/LCID 往往无效。因此 `LocaleEmulatorPlus.dll` 自身必须尽量只静态依赖 `ntdll.dll`；其他 DLL 只能 delay-load，且 delay helper 也不能依赖 kernel32。
+
+具体 构建/Hook 工作详见[HOOK_INVENTORY.md](HOOK_INVENTORY.md)。
 
 ## LoaderDll 和 LocaleEmulatorPlus 的依赖约束
 
@@ -50,131 +54,6 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 - `LocaleEmulatorPlus_x86.dll` 普通 import 只应有 `ntdll.dll`；`KERNEL32.dll`/`USER32.dll`/`GDI32.dll`/`DBGHELP.dll` 是 delay-load。
 - `LocaleEmulatorPlus_x64.dll` 普通 import 只应有 `ntdll.dll`；`USER32.dll`/`GDI32.dll`/`DBGHELP.dll` 是 delay-load。当前 x64 代码路径没有产生 kernel32 delay import。
 - `LoaderDll_*` 对 kernel32 的约束没有 `LocaleEmulatorPlus_*` 那么严格。
-
-## x86 和 x64 的主要差异
-
-### 入口跳转编码
-
-x86 下无论 syscall、LdrLoadDll 还是普通 inline hook，均使用 5 字节相对跳转：
-
-```asm
-E9 xx xx xx xx
-```
-
-x86 的 `LDR_LOAD_DLL_BACKUP_SIZE` 是 5。
-
-PS: `LdrLoadDll` 早期注入 patch 和普通 inline hook 的风险模型不同。它是对子进程
-loader 早期路径的临时入口覆盖：第一次进入 `LoadFirstDll` 后会先恢复
-`LdrLoadDll` 原始入口字节，再调用真正的 `LdrLoadDll`。因此
-`LDR_LOAD_DLL_BACKUP_SIZE` 只表示这条专用 patch 固定备份/恢复多少字节；
-它不做完整指令分析，也不生成 trampoline，更不会执行被覆盖的原始指令片段。
-普通 inline hook 则必须按完整指令覆盖并生成 trampoline，否则原函数回跳路径会
-执行到半条指令。
-
-x64 下不能简单用一个长度概括所有 hook。当前有两种主要入口 patch 编码。
-
-LdrLoadDll 和普通 x64 inline hook 当前默认使用 `OpJumpIndirect`，写入 14 字节：
-
-```asm
-FF 25 00 00 00 00
-dq target
-```
-
-也就是 `jmp qword ptr [rip+0]` 后面跟 8 字节目标地址。它不占用 `rax/r10/r11`
-等通用寄存器。对普通 inline hook 来说，入口处必须能覆盖至少 14 字节完整指令；
-对 `LdrLoadDll` 早期注入 patch 来说，则只是固定覆盖 14 字节并在真正调用前恢复。
-
-x64 的 `LDR_LOAD_DLL_BACKUP_SIZE` 是 14。
-
-x64 HookPort/syscall wrapper 使用 12 字节 `mov rax, imm64; jmp rax`。这个
-长度在 `HookPortStub.cpp` 的 `X64_SYSCALL_PATCH_SIZE = 12`，实际写入代码在
-`WriteAbsoluteJump()`：
-
-```asm
-48 B8 imm64
-FF E0
-```
-
-它只用于 `HookPortStub.cpp` 里被 typed wrapper 支持的 ntdll `Zw*` syscall stub。
-
-HookPort/syscall wrapper 可以使用 12 字节 `mov rax; jmp rax`，是因为它不依赖
-通用 inline hook 的 trampoline。x64 路径会先枚举 ntdll 导出的 `Zw*` stub，
-解析 service index，然后为原函数人工构造一个最小 syscall stub：
-
-```asm
-4C 8B D1              ; mov r10, rcx
-B8 service_index      ; mov eax, service_index
-0F 05                 ; syscall
-C3                    ; ret
-```
-
-typed wrapper 需要调用原函数时，会调用这个人工 stub，而不是执行被覆盖入口处的
-原始指令。因此它不用和普通 inline hook 一样生成通用 trampoline。这里仍保留
-12 字节 `mov rax; jmp rax`，主要是这条 syscall wrapper 路径的历史实现，并没有太多深意。
-
-### HookPort
-
-x86 保留原版 HookPort 的思路，更接近通用 syscall dispatcher。原版会定位/复制内核 syscall 入口附近的 hook port，并用统一 dispatcher 处理更多系统调用形态。
-
-x64 当前实现是 `HookPortStub.cpp`，属于 typed syscall wrapper：
-
-- 枚举 ntdll 导出的 `Zw*` syscall stub。
-- 解析 x64 syscall stub 中的 service index。
-- 对需要过滤的 syscall 函数入口写入 12 字节 `mov rax, imm64; jmp rax`。
-- 每个被支持的 syscall 有一个显式 wrapper，例如 `HpNtCreateUserProcess`、`HpNtQueryValueKey`。
-- wrapper 按真实函数签名调用 filter，再调用人工生成的原始 syscall stub。
-
-这让 x64 路径更明确，但只支持 `FindWrapperByHash()` 中列出的 syscall。新增 filter 时必须补 wrapper，否则会返回 `STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM`。
-
-### ACP/OEMCP 生效点
-
-x86 原版会写 TEB 私有字段：
-
-- `TEB + 0x228`：ACP
-- `TEB + 0x22A`：OEMCP
-
-x64 当前写 PEB 私有字段：
-
-- `PEB + 0x34C`：ACP
-- `PEB + 0x34E`：OEMCP
-
-随后均进入 `LepSetupAnsiOemCodeHashNodes()` ，其重新调用 kernelbase 内部 NLS 初始化链，
-让 ANSI/OEM codepage hash/cache 按 LEP 写入的 ACP/OEMCP 重建。这一步的重点是找到
-`SetupAnsiOemCodeHashNodes()` 的地址。
-比如当前样本 x64 `KernelBase.dll` 中的寻找链路是：
-
-```text
-kernelbase!KernelBaseDllInitialize
-  +0x9A0E8: E8 -> kernelbase+0x9A250  ; KernelBaseBaseDllInitialize wrapper，入口点后第一个 E8
-
-kernelbase+0x9A250
-  +0x9A294: E9 -> kernelbase+0x29FC0  ; _KernelBaseBaseDllInitialize/internal body，第二个 E8/E9
-
-kernelbase+0x29FC0
-  +0x2A495: B8 90 01 00 00            ; mov eax, 190h  // 从 kernelbase+0x29FC0 处开始扫描此行汇编
-  +0x2A4A1: E8 -> kernelbase+0x2910C  ; BaseNlsDllInitialize
-
-kernelbase+0x2910C
-  +0x29123: E8 -> kernelbase+0x28FB0  ; NlsProcessInitialize
-
-kernelbase+0x28FB0
-  +0x28FEB: E8 -> kernelbase+0x288F8  ; SetupAnsiOemCodeHashNodes // 紧接 mov eax, 190h 后的第三个 E8 call
-```
-
-这里的 `_KernelBaseBaseDllInitialize` 不是公开导出名，而是 IDA/反编译导出中给
-内部实现起的名字。导出的 `KernelBaseBaseDllInitialize` 是外层 wrapper；不同架构
-或 build 里进入内部实现的第二个控制转移可能是 `E8 call`，也可能是 tail `E9 jmp`。
-当前代码会把 `E8`/`E9` 一起计数，取第 2 个目标。
-
-随后通过模式匹配调用 kernelbase 内部 NLS 初始化链中的 `SetupAnsiOemCodeHashNodes`，让 kernelbase 的 ANSI/OEM codepage hash/cache 重新按目标代码页建立。这部分和 Windows build 相关，系统升级后如果 `GetACP()` 不再返回目标代码页，应优先检查 `LepSetupAnsiOemCodeHashNodes()`。
-
-### user32 / win32u
-
-较新 Windows 中 user32 的底层调用在 `win32u.dll`。当前代码在 `HasWin32U` 时直接从 `win32u.dll` hook：
-
-- `NtUserCreateWindowEx`
-- `NtUserMessageCall`
-- `NtUserDefSetText`
 
 ## 构建
 
@@ -249,7 +128,7 @@ set EXTRA_CL=
 4. 用 `build.bat` 顶部的 `VS_ROOT`、`MSVC_VER`、`SDK_VER` 指向自己的安装路径。
 
 原则上 `cl.exe`、`lib.exe`、`link.exe` 应属于同一 MSVC toolset，版本应该一致。
-当前仓库中的 `dep\tools` 只是演示 patched linker 及其环境。不应混用不同版本的 compiler/linker。
+当前仓库中的 `dep\tools` 只是演示用 patched linker 及其环境。不应混用不同版本的 compiler/linker。
 
 目录职责：
 
@@ -349,28 +228,3 @@ dep\tools\link.exe
 5. 更新 `dep\tools` 时要成套复制工具链文件，尤其是 linker 旁边的依赖 DLL、PDB 服务相关工具、资源目录等。
 6. 重新生成 import lib，不要复用旧 `.lib`。构建脚本会自动生成 `out\libs\x86\*.lib` 和 `out\libs\x64\*.lib`。
 7. 构建后检查 import table。
-
-## 非公开 API 和脆弱点
-
-这里的“非公开”包括未正式文档化的 ntdll 导出、kernel32 内部导出、win32u syscall、PEB/TEB 私有字段，以及通过模式匹配调用的 kernelbase 内部例程。
-
-运行时查找或模式匹配：
-
-- `KERNELBASE.dll` loader/NLS 初始化链：`KernelBaseDllInitialize`、`KernelBaseBaseDllInitialize` wrapper、内部 `_KernelBaseBaseDllInitialize`、`BaseNlsDllInitialize`、`NlsProcessInitialize`、`SetupAnsiOemCodeHashNodes`。
-- `gNlsProcessLocalCache`：旧逻辑中通过 relocation 扫描定位，目前主要保留作参考。
-
-公开但被 hook 或特殊处理的 API：
-
-- user32：`SetWindowLongA`、`GetWindowLongA`、`IsWindowUnicode`、`SendMessageA`、`SetWindowTextA`、窗口创建和消息调用相关入口。
-- gdi32：字体枚举、字体创建、charset/text metric 等相关入口，见 `Hooks\Gdi32Hook.cpp`。
-- ntdll/kernelbase：NLS、locale、注册表和进程创建相关入口。
-
-私有结构和偏移：
-
-- `TEB + 0x228`：x86 ACP
-- `TEB + 0x22A`：x86 OEMCP
-- `PEB + 0x34C`：x64 ACP
-- `PEB + 0x34E`：x64 OEMCP
-- `LdrInitializeThunk` 内部调用 `NtContinue` 的位置，x86 路径通过扫描定位。
-
-这些偏移和内部调用点均可能随 Windows build 改变。若系统升级后转区失败，优先检查 PEB/TEB 偏移、kernelbase NLS pattern、win32u 导出、ntdll syscall stub 格式。

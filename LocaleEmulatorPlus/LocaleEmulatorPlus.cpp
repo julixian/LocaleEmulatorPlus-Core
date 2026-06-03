@@ -30,6 +30,13 @@ EXTC ULONG NTAPI FuckStupid2DJGame(PCSTR FileName)
 
 PLepGlobalData g_GlobalData;
 
+VOID LepSyncNtdllNlsGlobals(USHORT AnsiCodePage, BOOLEAN AnsiDbcsCodePage, BOOLEAN OemDbcsCodePage)
+{
+    NlsAnsiCodePage = AnsiCodePage;
+    NlsMbCodePageTag = AnsiDbcsCodePage;
+    NlsMbOemCodePageTag = OemDbcsCodePage;
+}
+
 #if LEP_DIAG_INIT
 
 static VOID LepDiagStatus(PCWSTR Stage, NTSTATUS Status)
@@ -175,7 +182,7 @@ NTSTATUS LepGlobalData::Initialize()
     BOOL            LepPebMapped;
     PLEPPEB          LEPPEB;
     PLDR_MODULE     Ntdll;
-    PPEB_BASE       Peb;
+    PPEB_BASE       ProcessEnvironment;
     NTSTATUS        Status;
     BOOL            DiagVerbose;
     NLSTABLEINFO    NlsTableInfo;
@@ -343,6 +350,7 @@ NTSTATUS LepGlobalData::Initialize()
         NtUnmapViewOfSection(CurrentProcess, NlsBaseAddress);
 
         WriteLog(L"init LEPB %s", GetLepPeb()->LepDllFullPath);
+        WriteLog(L"LEP image base: %p", &__ImageBase);
 
         SystemDirectory = Ntdll->FullDllName;
         SystemDirectory.Length -= Ntdll->BaseDllName.Length;
@@ -407,13 +415,23 @@ NTSTATUS LepGlobalData::Initialize()
 
         RtlResetRtlTranslations(&NlsTableInfo);
 
-        WriteLog(L"reset nls");
+        LepSyncNtdllNlsGlobals(
+            (USHORT)GetLepb()->AnsiCodePage,
+            (BOOLEAN)(NlsTableInfo.AnsiTableInfo.DBCSCodePage != 0),
+            (BOOLEAN)(NlsTableInfo.OemTableInfo.DBCSCodePage != 0));
+        WriteLog(L"reset nls acp=%u ntdll=%u mb=%u oemmb=%u table=%u/%u",
+            GetLepb()->AnsiCodePage,
+            NlsAnsiCodePage,
+            NlsMbCodePageTag,
+            NlsMbOemCodePageTag,
+            NlsTableInfo.AnsiTableInfo.CodePage,
+            NlsTableInfo.OemTableInfo.CodePage);
 
-        Peb = CurrentPeb();
+        ProcessEnvironment = LepCurrentPeb();
 
-        Peb->AnsiCodePageData       = (PUSHORT)PtrAdd(CodePageMapView, AnsiCodePageOffset);
-        Peb->OemCodePageData        = (PUSHORT)PtrAdd(CodePageMapView, OemCodePageOffset);
-        Peb->UnicodeCaseTableData   = (PUSHORT)PtrAdd(CodePageMapView, UnicodeCaseTableOffset);
+        ProcessEnvironment->AnsiCodePageData       = (PUSHORT)PtrAdd(CodePageMapView, AnsiCodePageOffset);
+        ProcessEnvironment->OemCodePageData        = (PUSHORT)PtrAdd(CodePageMapView, OemCodePageOffset);
+        ProcessEnvironment->UnicodeCaseTableData   = (PUSHORT)PtrAdd(CodePageMapView, UnicodeCaseTableOffset);
 
         // LdrInitShimEngineDynamic(&__ImageBase);
 
@@ -431,13 +449,14 @@ NTSTATUS LepGlobalData::Initialize()
     WriteLog(L"inst hp: %08X", Status);
     LEP_DIAG_FAIL_RETURN(L"InstallHookPort", Status);
 
-    HookNtdllRoutines(Ntdll->DllBase);
+    Status = HookNtdllRoutines(Ntdll->DllBase);
 #if ML_AMD64 && defined(LEP_X64_CRASH_PROBE)
     if (LEP_X64_CRASH_PROBE == 13)
         return STATUS_DLL_INIT_FAILED;
 #endif
 
-    WriteLog(L"hook ntdll");
+    WriteLog(L"hook ntdll: %08X", Status);
+    LEP_DIAG_FAIL_RETURN(L"HookNtdllRoutines", Status);
 
     if (IsLoader && !LepPebMapped)
     {

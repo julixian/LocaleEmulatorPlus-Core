@@ -4184,8 +4184,14 @@ typedef HANDLE64 *PHANDLE64;
 #define WIN32K__itow                                                         0xD5FDD4F6u
 #define WIN32K__local_unwind2                                                0x8B76A7E7u
 
-//#define WIN32K_NtUserCreateWindowEx                                         0xD7126686
-//#define WIN32K_NtUserMessageCall                                             0x53D276B2u
+#define WIN32K_NtUserCreateWindowEx                                           0xD7126686
+#define WIN32K_NtUserMessageCall                                             0x53D276B2u
+#define WIN32K_NtUserDefSetText                                              0x86E9A603u
+#define WIN32K_NtUserGetDC                                                   0x42E1A61Du
+#define WIN32K_NtUserGetDCEx                                                 0x750326E0u
+#define WIN32K_NtUserGetWindowDC                                             0x2BC567A6u
+#define WIN32K_NtUserBeginPaint                                              0xBC65FC95u
+#define WIN32K_NtGdiHfontCreate                                              0xA2C7D037u
 #define NTDLL_A_SHAFinal                                                     0x2C5E4B6Du
 #define NTDLL_A_SHAInit                                                      0x44098567u
 #define NTDLL_A_SHAUpdate                                                    0xC8FEA0C8u
@@ -7978,6 +7984,7 @@ typedef HANDLE64 *PHANDLE64;
 #define USER32_GetWindowDisplayAffinity                                      0x739B1BDCu
 #define USER32_GetWindowInfo                                                 0xB5B70CE7u
 #define USER32_GetWindowLongA                                                0xC1CDF677u
+#define USER32_GetWindowLongPtrA                                             0x36F57320u
 #define USER32_GetWindowLongW                                                0xC1CDF661u
 #define USER32_GetWindowMinimizeRect                                         0x4C48E82Bu
 #define USER32_GetWindowModuleFileName                                       0x791A9948u
@@ -8280,6 +8287,7 @@ typedef HANDLE64 *PHANDLE64;
 #define USER32_SetWindowContextHelpId                                        0x39FA4537u
 #define USER32_SetWindowDisplayAffinity                                      0x739BBBDCu
 #define USER32_SetWindowLongA                                                0xC1CDDE77u
+#define USER32_SetWindowLongPtrA                                             0x36E17320u
 #define USER32_SetWindowLongW                                                0xC1CDDE61u
 #define USER32_SetWindowPlacement                                            0x69323620u
 #define USER32_SetWindowPos                                                  0x004F8DADu
@@ -15552,6 +15560,83 @@ typedef struct
 
 typedef struct PEB_BASE
 {
+#if ML_AMD64
+/* 0x000 */ UCHAR                           InheritedAddressSpace;
+/* 0x001 */ UCHAR                           ReadImageFileExecOptions;
+/* 0x002 */ UCHAR                           BeingDebugged;
+/* 0x003 */ struct
+            {
+                UCHAR                       ImageUsesLargePages             : 1;
+                UCHAR                       IsProtectedProcess              : 1;
+                UCHAR                       IsImageDynamicallyRelocated     : 1;
+                UCHAR                       SkipPatchingUser32Forwarders    : 1;
+                UCHAR                       IsPackagedProcess               : 1;
+                UCHAR                       IsAppContainer                  : 1;
+                UCHAR                       IsProtectedProcessLight         : 1;
+                UCHAR                       IsLongPathAwareProcess          : 1;
+            };
+/* 0x004 */ UCHAR                           Padding0[4];
+/* 0x008 */ PVOID                           Mutant;
+/* 0x010 */ PVOID                           ImageBaseAddress;
+/* 0x018 */ PPEB_LDR_DATA                   Ldr;
+/* 0x020 */ PRTL_USER_PROCESS_PARAMETERS    ProcessParameters;
+/* 0x028 */ PVOID                           SubSystemData;
+/* 0x030 */ HANDLE                          ProcessHeap;
+/* 0x038 */ PRTL_CRITICAL_SECTION           FastPebLock;
+/* 0x040 */ PVOID                           AtlThunkSListPtr;
+/* 0x048 */ PVOID                           IFEOKey;
+/* 0x050 */ union
+            {
+                ULONG                       CrossProcessFlags;
+                struct
+                {
+                    UCHAR                   ProcessInJob           : 1;
+                    UCHAR                   ProcessInitializing    : 1;
+                    UCHAR                   ProcessUsingVEH        : 1;
+                    UCHAR                   ProcessUsingVCH        : 1;
+                    UCHAR                   ProcessUsingFTH        : 1;
+                };
+            };
+/* 0x054 */ UCHAR                           Padding1[4];
+/* 0x058 */ union
+            {
+                PVOID                       KernelCallbackTable;
+                PVOID                       UserSharedInfoPtr;
+            };
+/* 0x060 */ ULONG                           SystemReserved[1];
+/* 0x064 */ ULONG                           AtlThunkSListPtr32;
+/* 0x068 */ PVOID                           ApiSetMap;
+/* 0x070 */ ULONG                           TlsExpansionCounter;
+/* 0x074 */ UCHAR                           Padding2[4];
+/* 0x078 */ PVOID                           TlsBitmap;
+/* 0x080 */ ULONG                           TlsBitmapBits[2];
+/* 0x088 */ PVOID                           ReadOnlySharedMemoryBase;
+/* 0x090 */ PVOID                           HotpatchInformation;
+/* 0x098 */ STATIC_SERVER_DATA_PTR          ReadOnlyStaticServerData;
+/* 0x0a0 */ PUSHORT                         AnsiCodePageData;
+/* 0x0a8 */ PUSHORT                         OemCodePageData;
+/* 0x0b0 */ PVOID                           UnicodeCaseTableData;
+/* 0x0b8 */ ULONG                           NumberOfProcessors;
+/* 0x0bc */ ULONG                           NtGlobalFlag;
+/* 0x0c0 */ LARGE_INTEGER                   CriticalSectionTimeout;
+/* 0x0c8 */ ULONG_PTR                       HeapSegmentReserve;
+/* 0x0d0 */ ULONG_PTR                       HeapSegmentCommit;
+/* 0x0d8 */ ULONG_PTR                       HeapDeCommitTotalFreeThreshold;
+/* 0x0e0 */ ULONG_PTR                       HeapDeCommitFreeBlockThreshold;
+/* 0x0e8 */ ULONG                           NumberOfHeaps;
+/* 0x0ec */ ULONG                           MaximumNumberOfHeaps;
+/* 0x0f0 */ PVOID                           ProcessHeaps;
+/* 0x0f8 */ PVOID                           GdiSharedHandleTable;
+/* 0x100 */ PVOID                           ProcessStarterHelper;
+/* 0x108 */ ULONG                           GdiDCAttributeList;
+/* 0x10c */ UCHAR                           Padding3[4];
+/* 0x110 */ PRTL_CRITICAL_SECTION           LoaderLock;
+/* 0x118 */ ULONG                           OSMajorVersion;
+/* 0x11c */ ULONG                           OSMinorVersion;
+/* 0x120 */ USHORT                          OSBuildNumber;
+/* 0x122 */ USHORT                          OSCSDVersion;
+/* 0x124 */ ULONG                           OSPlatformId;
+#else
 /* 0x000 */ UCHAR                           InheritedAddressSpace;
 /* 0x001 */ UCHAR                           ReadImageFileExecOptions;
 /* 0x002 */ UCHAR                           BeingDebugged;
@@ -15624,10 +15709,28 @@ typedef struct PEB_BASE
 /* 0x0ac */ USHORT                          OSBuildNumber;
 /* 0x0ae */ USHORT                          OSCSDVersion;
 /* 0x0b0 */ ULONG                           OSPlatformId;
+#endif
 } PEB_BASE, *PPEB_BASE;
 
 typedef struct TEB_BASE
 {
+#if ML_AMD64
+/* 0x000 */ NT_TIB      NtTib;
+/* 0x038 */ PVOID       EnvironmentPointer;
+/* 0x040 */ CLIENT_ID   ClientId;
+/* 0x050 */ HANDLE      ActiveRpcHandle;
+/* 0x058 */ PVOID       ThreadLocalStoragePointer;
+/* 0x060 */ PPEB_BASE   ProcessEnvironmentBlock;
+/* 0x068 */ ULONG       LastErrorValue;
+/* 0x06C */ ULONG       CountOfOwnedCriticalSections;
+/* 0x070 */ PVOID       CsrClientThread;
+/* 0x078 */ PVOID       Win32ThreadInfo;
+/* 0x080 */ ULONG       User32Reserved[26];
+/* 0x0E8 */ ULONG       UserReserved[5];
+/* 0x100 */ PVOID       WOW32Reserved;
+/* 0x108 */ ULONG       CurrentLocale;
+/* 0x10C */ ULONG       FpSoftwareStatusRegister;
+#else
 /* 0x000 */ NT_TIB      NtTib;
 /* 0x01C */ PVOID       EnvironmentPointer;
 /* 0x020 */ CLIENT_ID   ClientId;
@@ -15645,8 +15748,35 @@ typedef struct TEB_BASE
 /* 0x0C8 */ ULONG       FpSoftwareStatusRegister;
 /* 0x0CC */ PVOID       SystemReserved1[54];
 /* 0x1A4 */ LONG        ExceptionCode;
+#endif
 
 } TEB_BASE, *PTEB_BASE;
+
+#if ML_AMD64
+C_ASSERT(FIELD_OFFSET(TEB_BASE, ProcessEnvironmentBlock) == 0x060);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, ImageBaseAddress) == 0x010);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, Ldr) == 0x018);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, ProcessParameters) == 0x020);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, ProcessHeap) == 0x030);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, AnsiCodePageData) == 0x0a0);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, OemCodePageData) == 0x0a8);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, UnicodeCaseTableData) == 0x0b0);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, OSMajorVersion) == 0x118);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, OSMinorVersion) == 0x11c);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, OSBuildNumber) == 0x120);
+#else
+C_ASSERT(FIELD_OFFSET(TEB_BASE, ProcessEnvironmentBlock) == 0x030);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, ImageBaseAddress) == 0x008);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, Ldr) == 0x00c);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, ProcessParameters) == 0x010);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, ProcessHeap) == 0x018);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, AnsiCodePageData) == 0x058);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, OemCodePageData) == 0x05c);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, UnicodeCaseTableData) == 0x060);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, OSMajorVersion) == 0x0a4);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, OSMinorVersion) == 0x0a8);
+C_ASSERT(FIELD_OFFSET(PEB_BASE, OSBuildNumber) == 0x0ac);
+#endif
 
 /************************************************************************
   thread information
@@ -19237,6 +19367,7 @@ RtlRunDecodeUnicodeString(
 
 NATIVE_API ULONG   NlsAnsiCodePage;
 NATIVE_API BOOLEAN NlsMbCodePageTag;
+NATIVE_API BOOLEAN NlsMbOemCodePageTag;
 
 FORCEINLINE
 VOID
@@ -20151,7 +20282,7 @@ NtUserCreateWindowEx_Win7(
     PVOID                   Instance,
     LPVOID                  Param,
     ULONG                   ShowMode,
-    ULONG                   Unknown
+    ULONG_PTR               Unknown
 )
 {
     return 0;
@@ -20176,7 +20307,7 @@ NtUserCreateWindowEx_Win8(
     LPVOID                  Param,
     ULONG                   ShowMode,
     ULONG                   Unknown,
-    ULONG                   Unknown2
+    ULONG_PTR               Unknown2
 )
 {
     return 0;
@@ -21479,6 +21610,14 @@ PPEB_BASE Nt_CurrentPeb()
 
     return (PPEB_BASE)(ULONG_PTR)ReadFsPtr(PEB_OFFSET);
 
+}
+
+ForceInline NTSTATUS Nt_QueryOsVersion(PRTL_OSVERSIONINFOW VersionInfo)
+{
+    ZeroMemory(VersionInfo, sizeof(*VersionInfo));
+    VersionInfo->dwOSVersionInfoSize = sizeof(*VersionInfo);
+
+    return RtlGetVersion(VersionInfo);
 }
 
 ForceInline HANDLE RtlGetProcessHeap()
@@ -31083,6 +31222,7 @@ enum
     NakedTrampoline     = 0x00000004,
     KeepRawTrampoline   = 0x00000008,
     ExecuteTrampoline   = 0x00000010,
+    NoAbsoluteJump      = 0x00000020,
 
     OpMask              = 0xF0000000u,
     OpJump              = 0x00000000u,
@@ -31170,9 +31310,9 @@ typedef struct
                 ULONG Flags;
                 struct
                 {
-                    BOOLEAN VirtualAddress      : 1;
-                    BOOLEAN BackupData          : 1;
-                    BOOLEAN DataIsBuffer        : 1;
+                    ULONG   VirtualAddress      : 1;
+                    ULONG   BackupData          : 1;
+                    ULONG   DataIsBuffer        : 1;
                 };
             } Options;
 
@@ -31190,11 +31330,12 @@ typedef struct
                 ULONG Flags;
                 struct
                 {
-                    BOOLEAN VirtualAddress      : 1;
-                    BOOLEAN DoNotDisassemble    : 1;
-                    BOOLEAN NakedTrampoline     : 1;
-                    BOOLEAN KeepRawTrampoline   : 1;
-                    BOOLEAN ExecuteTrampoline   : 1;
+                    ULONG   VirtualAddress      : 1;
+                    ULONG   DoNotDisassemble    : 1;
+                    ULONG   NakedTrampoline     : 1;
+                    ULONG   KeepRawTrampoline   : 1;
+                    ULONG   ExecuteTrampoline   : 1;
+                    ULONG   NoAbsoluteJump      : 1;
                 };
             } Options;
 
@@ -31216,6 +31357,7 @@ typedef struct _TRAMPOLINE_DATA
     ULONG               TrampolineSize;
     ULONG               OriginSize;
     PVOID               JumpBackAddress;
+    PVOID               Relay;
     PATCH_MEMORY_DATA   PatchData;
 
 } TRAMPOLINE_DATA, *PTRAMPOLINE_DATA;

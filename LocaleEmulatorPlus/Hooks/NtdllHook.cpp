@@ -951,7 +951,9 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
 
 	WriteLog(L"LdrInitNtContinue %08X", LdrInitNtContinue);
 
-    ADD_FILTER_(NtCreateUserProcess,        LepNtCreateUserProcess,      this);
+    Status = HpAddSystemCallFilter(NTDLL_NtCreateUserProcess, LepNtCreateUserProcess, this);
+    WriteLog(L"hook NtCreateUserProcess: %08X", Status);
+    FAIL_RETURN(Status);
 
     if (IsLepLoader())
         return STATUS_SUCCESS;

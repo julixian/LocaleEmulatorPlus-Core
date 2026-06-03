@@ -13,6 +13,15 @@ ForceInline BOOL IsCallProcHandle(PVOID WndProc)
     return ((ULONG_PTR)WndProc & 0xFFFF0000) == 0xFFFF0000;
 }
 
+ForceInline WNDPROC GetWindowProcA(PLepGlobalData GlobalData, HWND hWnd)
+{
+#if ML_AMD64
+    return (WNDPROC)GlobalData->GetWindowLongPtrA(hWnd, GWLP_WNDPROC);
+#else
+    return (WNDPROC)GlobalData->GetWindowLongA(hWnd, GWLP_WNDPROC);
+#endif
+}
+
 ForceInline VOID InitUnicodeProc(PLepGlobalData GlobalData, HWND hWnd, PVOID UnicodeProc, PVOID OriginalProcA)
 {
     SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)UnicodeProc);
@@ -817,7 +826,7 @@ LRESULT CALLBACK CBTProc(int nCode, WPARAM wParam, LPARAM lParam)
         if (GlobalData->GetWindowDataA(hWnd) != nullptr)
             break;
 
-        OriginalProcA = (WNDPROC)GlobalData->GetWindowLongA(hWnd, GWLP_WNDPROC);
+        OriginalProcA = GetWindowProcA(GlobalData, hWnd);
         //if (IsCallProcHandle(OriginalProcA) == FALSE)
         {
             InitUnicodeProc(GlobalData, hWnd, WindowProcW, OriginalProcA);
@@ -909,15 +918,245 @@ typedef struct USER_CREATE_WINDOW
     PVOID                   Instance;
     LPVOID                  Param;
     ULONG                   ShowMode;
-    ULONG                   Unknown1;
-    ULONG                   Unknown2;
-    ULONG                   Unknown3;
+    ULONG_PTR               Unknown1;
+    ULONG_PTR               Unknown2;
+    ULONG_PTR               Unknown3;
 
 } USER_CREATE_WINDOW, *PUSER_CREATE_WINDOW;
 
 typedef struct { PVOID _[15]; } USER_CREATE_WINDOW_WIN7;
 typedef struct { PVOID _[16]; } USER_CREATE_WINDOW_WIN8;
 typedef struct { PVOID _[17]; } USER_CREATE_WINDOW_WIN10;
+
+HWND LepNtUserCreateWindowExWorker(PUSER_CREATE_WINDOW Parameters, HWND (*Invoker)(PVOID, PUSER_CREATE_WINDOW));
+HFONT GetFontFromDC(PLepGlobalData GlobalData, HDC hDC);
+
+#if ML_AMD64
+static VOID LepInitNtUserSyscallFrame(LEP_NTUSER_SYSCALL_FRAME* Frame)
+{
+    Frame->NtUserCreateWindowEx = HpGetSystemCallOriginal(WIN32K_NtUserCreateWindowEx);
+    Frame->NtUserMessageCall = HpGetSystemCallOriginal(WIN32K_NtUserMessageCall);
+    Frame->NtUserDefSetText = HpGetSystemCallOriginal(WIN32K_NtUserDefSetText);
+}
+
+LRESULT
+HPCALL
+LepHpNtUserMessageCall(
+    HPARGS
+    HWND         Window,
+    UINT         Message,
+    WPARAM       wParam,
+    LPARAM       lParam,
+    ULONG_PTR    xParam,
+    ULONG        xpfnProc,
+    ULONG        Flags
+)
+{
+    LEP_NTUSER_SYSCALL_FRAME Frame;
+
+    HpSetFilterAction(BlockSystemCall);
+    LepInitNtUserSyscallFrame(&Frame);
+    Frame.Push();
+
+    return LepNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+}
+
+BOOL
+HPCALL
+LepHpNtUserDefSetText(
+    HPARGS
+    HWND                    hWnd,
+    PLARGE_UNICODE_STRING   Text
+)
+{
+    LEP_NTUSER_SYSCALL_FRAME Frame;
+
+    HpSetFilterAction(BlockSystemCall);
+    LepInitNtUserSyscallFrame(&Frame);
+    Frame.Push();
+
+    return LepNtUserDefSetText(hWnd, Text);
+}
+
+HDC
+HPCALL
+LepHpNtUserGetDC(
+    HPARGS
+    HWND hWnd
+)
+{
+    HDC DC;
+    HFONT Font;
+    PVOID Original;
+
+    HpSetFilterAction(BlockSystemCall);
+
+    Original = HpGetSystemCallOriginal(WIN32K_NtUserGetDC);
+    if (Original == nullptr)
+        return nullptr;
+
+    DC = ((HDC (NTAPI *)(HWND))Original)(hWnd);
+    Font = (HFONT)GetStockObject(SYSTEM_FONT);
+    if (Font != nullptr)
+        SelectObject(DC, Font);
+
+    return DC;
+}
+
+HDC
+HPCALL
+LepHpNtUserGetDCEx(
+    HPARGS
+    HWND hWnd,
+    HRGN hrgnClip,
+    DWORD flags
+)
+{
+    HDC DC;
+    HFONT Font;
+    PVOID Original;
+
+    HpSetFilterAction(BlockSystemCall);
+
+    Original = HpGetSystemCallOriginal(WIN32K_NtUserGetDCEx);
+    if (Original == nullptr)
+        return nullptr;
+
+    DC = ((HDC (NTAPI *)(HWND, HRGN, DWORD))Original)(hWnd, hrgnClip, flags);
+    Font = (HFONT)GetStockObject(SYSTEM_FONT);
+    if (Font != nullptr)
+        SelectObject(DC, Font);
+
+    return DC;
+}
+
+HDC
+HPCALL
+LepHpNtUserGetWindowDC(
+    HPARGS
+    HWND hWnd
+)
+{
+    HDC DC;
+    HFONT Font;
+    PVOID Original;
+
+    HpSetFilterAction(BlockSystemCall);
+
+    Original = HpGetSystemCallOriginal(WIN32K_NtUserGetWindowDC);
+    if (Original == nullptr)
+        return nullptr;
+
+    DC = ((HDC (NTAPI *)(HWND))Original)(hWnd);
+    Font = (HFONT)GetStockObject(SYSTEM_FONT);
+    if (Font != nullptr)
+        SelectObject(DC, Font);
+
+    return DC;
+}
+
+HDC
+HPCALL
+LepHpNtUserBeginPaint(
+    HPARGS
+    HWND hWnd,
+    LPPAINTSTRUCT lpPaint
+)
+{
+    HDC DC;
+    HFONT Font;
+    PVOID Original;
+    PLepGlobalData GlobalData;
+
+    HpSetFilterAction(BlockSystemCall);
+
+    Original = HpGetSystemCallOriginal(WIN32K_NtUserBeginPaint);
+    if (Original == nullptr)
+        return nullptr;
+
+    DC = ((HDC (NTAPI *)(HWND, LPPAINTSTRUCT))Original)(hWnd, lpPaint);
+    GlobalData = LepGetGlobalData();
+    Font = GetFontFromDC(GlobalData, DC);
+    if (Font != nullptr)
+    {
+        SelectObject(DC, Font);
+        DeleteObject(Font);
+    }
+
+    return DC;
+}
+
+HWND
+HPCALL
+LepHpNtUserCreateWindowEx(
+    HPARGS
+    ULONG                   ExStyle,
+    PLARGE_UNICODE_STRING   ClassName,
+    PLARGE_UNICODE_STRING   ClassVersion,
+    PLARGE_UNICODE_STRING   WindowName,
+    ULONG                   Style,
+    LONG                    X,
+    LONG                    Y,
+    LONG                    Width,
+    LONG                    Height,
+    HWND                    ParentWnd,
+    HMENU                   Menu,
+    PVOID                   Instance,
+    LPVOID                  Param,
+    ULONG                   ShowMode,
+    ULONG_PTR               Unknown1,
+    ULONG_PTR               Unknown2,
+    ULONG_PTR               Unknown3
+)
+{
+    USER_CREATE_WINDOW Parameters;
+    LEP_NTUSER_SYSCALL_FRAME Frame;
+
+    HpSetFilterAction(BlockSystemCall);
+    LepInitNtUserSyscallFrame(&Frame);
+    Frame.Push();
+
+    Parameters.ExStyle      = ExStyle;
+    Parameters.ClassName    = ClassName;
+    Parameters.ClassVersion = ClassVersion;
+    Parameters.WindowName   = WindowName;
+    Parameters.Style        = Style;
+    Parameters.X            = X;
+    Parameters.Y            = Y;
+    Parameters.Width        = Width;
+    Parameters.Height       = Height;
+    Parameters.ParentWnd    = ParentWnd;
+    Parameters.Menu         = Menu;
+    Parameters.Instance     = Instance;
+    Parameters.Param        = Param;
+    Parameters.ShowMode     = ShowMode;
+    Parameters.Unknown1     = Unknown1;
+    Parameters.Unknown2     = Unknown2;
+    Parameters.Unknown3     = Unknown3;
+
+    return LepNtUserCreateWindowExWorker(&Parameters,
+        [] (PVOID Routine, PUSER_CREATE_WINDOW Parameters) -> HWND
+        {
+            RTL_OSVERSIONINFOW VersionInfo;
+
+            if (NT_SUCCESS(Nt_QueryOsVersion(&VersionInfo)) &&
+                VersionInfo.dwMajorVersion == 6)
+            {
+                if (VersionInfo.dwMinorVersion < 2)
+                {
+                    typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG_PTR);
+                    return ((PFN)Routine)(Parameters->ExStyle, Parameters->ClassName, Parameters->ClassVersion, Parameters->WindowName, Parameters->Style, Parameters->X, Parameters->Y, Parameters->Width, Parameters->Height, Parameters->ParentWnd, Parameters->Menu, Parameters->Instance, Parameters->Param, Parameters->ShowMode, Parameters->Unknown1);
+                }
+
+                typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG, ULONG_PTR);
+                return ((PFN)Routine)(Parameters->ExStyle, Parameters->ClassName, Parameters->ClassVersion, Parameters->WindowName, Parameters->Style, Parameters->X, Parameters->Y, Parameters->Width, Parameters->Height, Parameters->ParentWnd, Parameters->Menu, Parameters->Instance, Parameters->Param, Parameters->ShowMode, Parameters->Unknown1, Parameters->Unknown2);
+            }
+
+            typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG, ULONG, ULONG_PTR);
+            return ((PFN)Routine)(Parameters->ExStyle, Parameters->ClassName, Parameters->ClassVersion, Parameters->WindowName, Parameters->Style, Parameters->X, Parameters->Y, Parameters->Width, Parameters->Height, Parameters->ParentWnd, Parameters->Menu, Parameters->Instance, Parameters->Param, Parameters->ShowMode, Parameters->Unknown1, Parameters->Unknown2, Parameters->Unknown3);
+        });
+}
+#endif
 
 template<class PARAM_TYPE>
 HWND NtUserCreateWindowExInvoker(PVOID Routine, PUSER_CREATE_WINDOW Parameters)
@@ -935,8 +1174,18 @@ HWND LepNtUserCreateWindowExWorker(PUSER_CREATE_WINDOW Parameters, HWND (*Invoke
     PLepGlobalData           GlobalData;
     CBT_PROC_PARAM          CbtParam;
     CBT_CREATE_PARAM        CreateParam;
+    PVOID                   OriginalRoutine;
 
     GlobalData = LepGetGlobalData();
+    OriginalRoutine = GlobalData->HookStub.StubNtUserCreateWindowEx;
+
+#if ML_AMD64
+    {
+        LEP_NTUSER_SYSCALL_FRAME* Frame = LEP_NTUSER_SYSCALL_FRAME::Current();
+        if (Frame != nullptr && Frame->NtUserCreateWindowEx != nullptr)
+            OriginalRoutine = Frame->NtUserCreateWindowEx;
+    }
+#endif
 
     InitEmptyLargeString(&UnicodeWindowName);
 
@@ -959,9 +1208,10 @@ HWND LepNtUserCreateWindowExWorker(PUSER_CREATE_WINDOW Parameters, HWND (*Invoke
         InstallCbtHook(GlobalData, &CbtParam, &CreateParam, _AddressOfReturnAddress(), Parameters->Param);
     }
 
-    hWnd = Invoker(GlobalData->HookStub.StubNtUserCreateWindowEx, Parameters);
+    hWnd = Invoker(OriginalRoutine, Parameters);
 
     LastError = RtlGetLastWin32Error();
+
 /*
     if (hWnd != nullptr)
     {
@@ -1021,9 +1271,9 @@ LepNtUserCreateWindowEx(
     PVOID                   Instance,
     LPVOID                  Param,
     ULONG                   ShowMode,
-    ULONG                   Unknown1,
-    ULONG                   Unknown2,
-    ULONG                   Unknown3
+    ULONG_PTR               Unknown1,
+    ULONG_PTR               Unknown2,
+    ULONG_PTR               Unknown3
 )
 {
     USER_CREATE_WINDOW Parameters;
@@ -1064,9 +1314,9 @@ LepNtUserCreateWindowEx(
                 PVOID,
                 LPVOID,
                 ULONG,
-                ULONG,
-                ULONG,
-                ULONG
+                ULONG_PTR,
+                ULONG_PTR,
+                ULONG_PTR
             );
 
             return ((PFN)Routine)(
@@ -1092,10 +1342,19 @@ LepNtUserCreateWindowEx(
 }
 #endif
 
+ForceInline LONG_PTR LepGetWindowLongAWorker(PLepGlobalData GlobalData, HWND hWnd, int Index, BOOL UsePtrApi);
+ForceInline LONG_PTR LepSetWindowLongAWorker(PLepGlobalData GlobalData, HWND hWnd, int Index, LONG_PTR NewLong, BOOL UsePtrApi);
+
 LONG_PTR NTAPI LepGetWindowLongA(HWND hWnd, int Index)
 {
-    PVOID           Proc;
     PLepGlobalData   GlobalData = LepGetGlobalData();
+
+    return LepGetWindowLongAWorker(GlobalData, hWnd, Index, FALSE);
+}
+
+ForceInline LONG_PTR LepGetWindowLongAWorker(PLepGlobalData GlobalData, HWND hWnd, int Index, BOOL UsePtrApi)
+{
+    PVOID Proc;
 
     switch (Index)
     {
@@ -1107,13 +1366,18 @@ LONG_PTR NTAPI LepGetWindowLongA(HWND hWnd, int Index)
             return (LONG_PTR)Proc;
     }
 
+#if ML_AMD64
+    if (UsePtrApi)
+        return GlobalData->GetWindowLongPtrA(hWnd, Index);
+#else
+    (VOID)UsePtrApi;
+#endif
     return GlobalData->GetWindowLongA(hWnd, Index);
 }
 
-LONG_PTR NTAPI LepSetWindowLongA(HWND hWnd, int Index, LONG_PTR NewLong)
+ForceInline LONG_PTR LepSetWindowLongAWorker(PLepGlobalData GlobalData, HWND hWnd, int Index, LONG_PTR NewLong, BOOL UsePtrApi)
 {
-    PVOID           OriginalProcA;
-    PLepGlobalData   GlobalData = LepGetGlobalData();
+    PVOID OriginalProcA;
 
     switch (Index)
     {
@@ -1125,15 +1389,49 @@ LONG_PTR NTAPI LepSetWindowLongA(HWND hWnd, int Index, LONG_PTR NewLong)
             }
             else
             {
-                OriginalProcA = (PVOID)GlobalData->SetWindowLongA(hWnd, Index, NewLong);
+#if ML_AMD64
+                if (UsePtrApi)
+                    OriginalProcA = (PVOID)GlobalData->SetWindowLongPtrA(hWnd, Index, NewLong);
+                else
+#endif
+                    OriginalProcA = (PVOID)GlobalData->SetWindowLongA(hWnd, Index, NewLong);
                 InitUnicodeProc(GlobalData, hWnd, WindowProcW, (PVOID)NewLong);
             }
 
             return (LONG_PTR)OriginalProcA;
     }
 
+#if ML_AMD64
+    if (UsePtrApi)
+        return GlobalData->SetWindowLongPtrA(hWnd, Index, NewLong);
+#else
+    (VOID)UsePtrApi;
+#endif
     return GlobalData->SetWindowLongA(hWnd, Index, NewLong);
 }
+
+LONG_PTR NTAPI LepSetWindowLongA(HWND hWnd, int Index, LONG_PTR NewLong)
+{
+    PLepGlobalData   GlobalData = LepGetGlobalData();
+
+    return LepSetWindowLongAWorker(GlobalData, hWnd, Index, NewLong, FALSE);
+}
+
+#if ML_AMD64
+LONG_PTR NTAPI LepGetWindowLongPtrA(HWND hWnd, int Index)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+
+    return LepGetWindowLongAWorker(GlobalData, hWnd, Index, TRUE);
+}
+
+LONG_PTR NTAPI LepSetWindowLongPtrA(HWND hWnd, int Index, LONG_PTR NewLong)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+
+    return LepSetWindowLongAWorker(GlobalData, hWnd, Index, NewLong, TRUE);
+}
+#endif
 
 BOOL NTAPI LepIsWindowUnicode(HWND hWnd)
 {
@@ -1314,6 +1612,466 @@ HDC NTAPI LepBeginPaint(HWND hWnd, LPPAINTSTRUCT lpPaint)
 
     return DC;
 }
+
+#if ML_AMD64
+static BOOL IsX64SyscallStub(PVOID Routine)
+{
+    PBYTE Function;
+
+    Function = (PBYTE)Routine;
+    if (Function == nullptr)
+        return FALSE;
+
+    if (Function[0] != 0x4C ||
+        Function[1] != 0x8B ||
+        Function[2] != 0xD1 ||
+        Function[3] != 0xB8)
+        return FALSE;
+
+    for (ULONG_PTR i = 8; i != 0x20; ++i)
+        if (Function[i] == 0x0F && Function[i + 1] == 0x05 && Function[i + 2] == 0xC3)
+            return TRUE;
+
+    return FALSE;
+}
+
+static NTSTATUS CheckX64SyscallRoutine(PVOID Routine, ULONG IdForLog, PVOID* CheckedRoutine)
+{
+    *CheckedRoutine = Routine;
+    if (*CheckedRoutine == nullptr)
+        return STATUS_NOT_FOUND;
+
+    if (!IsX64SyscallStub(*CheckedRoutine))
+    {
+#if ENABLE_LOG
+        PBYTE Bytes = (PBYTE)*CheckedRoutine;
+        WriteLog(L"user32 x64 export is not syscall stub hash=%08X routine=%p bytes=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+            IdForLog,
+            *CheckedRoutine,
+            Bytes[0], Bytes[1], Bytes[2], Bytes[3],
+            Bytes[4], Bytes[5], Bytes[6], Bytes[7],
+            Bytes[8], Bytes[9], Bytes[10], Bytes[11]);
+#endif
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS GetX64SyscallExport(PVOID Module, ULONG Hash, PVOID* Routine)
+{
+    return CheckX64SyscallRoutine(LookupExportTable(Module, Hash), Hash, Routine);
+}
+
+static NTSTATUS GetX64SyscallExportByName(PVOID Module, PCSTR Name, ULONG IdForLog, PVOID* Routine)
+{
+    return CheckX64SyscallRoutine(Nt_GetProcAddress(Module, Name), IdForLog, Routine);
+}
+
+static BOOL IsAddressInModule(PVOID Module, PVOID Address)
+{
+    PIMAGE_DOS_HEADER DosHeader;
+    PIMAGE_NT_HEADERS NtHeaders;
+    PBYTE ImageBase;
+    PBYTE ImageEnd;
+
+    if (Module == nullptr || Address == nullptr)
+        return FALSE;
+
+    DosHeader = (PIMAGE_DOS_HEADER)Module;
+    NtHeaders = (PIMAGE_NT_HEADERS)PtrAdd(Module, DosHeader->e_lfanew);
+    ImageBase = (PBYTE)Module;
+    ImageEnd = PtrAdd(ImageBase, NtHeaders->OptionalHeader.SizeOfImage);
+
+    return IN_RANGEEX(ImageBase, (PBYTE)Address, ImageEnd);
+}
+
+static PVOID FindFirstX64SyscallCall(PVOID Routine, ULONG_PTR Range)
+{
+    PVOID SyscallRoutine = nullptr;
+
+    if (Routine == nullptr)
+        return nullptr;
+
+    WalkOpCodeT(Routine, Range,
+        WalkOpCodeM(Buffer, OpLength, Ret)
+        {
+            if (Buffer[0] == CALL)
+            {
+                PVOID Destination;
+
+                SEH_TRY
+                {
+                    Destination = GetCallDestination(Buffer);
+                    if (IsX64SyscallStub(Destination))
+                    {
+                        SyscallRoutine = Destination;
+                        return STATUS_SUCCESS;
+                    }
+                }
+                SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+                {
+                    return STATUS_NOT_FOUND;
+                }
+            }
+
+            if (Buffer[0] == 0xC2 || Buffer[0] == 0xC3)
+                return STATUS_NOTHING_TO_TERMINATE;
+
+            return STATUS_NOT_FOUND;
+        }
+    );
+
+    return SyscallRoutine;
+}
+
+static BOOL HasC0000000Immediate(PBYTE Buffer, ULONG_PTR OpLength)
+{
+    for (ULONG_PTR i = 0; i + sizeof(ULONG) <= OpLength; ++i)
+    {
+        if (Buffer[i] == 0x00 &&
+            Buffer[i + 1] == 0x00 &&
+            Buffer[i + 2] == 0x00 &&
+            Buffer[i + 3] == 0xC0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static PVOID FindX64NtUserMessageCallNoWin32U(PVOID User32)
+{
+    PVOID Routines[] =
+    {
+        LookupExportTable(User32, USER32_SendNotifyMessageW),
+        LookupExportTable(User32, USER32_SendNotifyMessageA),
+    };
+
+    for (ULONG_PTR i = 0; i != countof(Routines); ++i)
+    {
+        PVOID NtUserMessageCall = FindFirstX64SyscallCall(Routines[i], 0x30);
+        if (NtUserMessageCall != nullptr)
+            return NtUserMessageCall;
+    }
+
+    return nullptr;
+}
+
+static PVOID FindX64InternalCreateWindowEx(PVOID User32)
+{
+    PVOID Routines[] =
+    {
+        LookupExportTable(User32, USER32_CreateWindowExW),
+        LookupExportTable(User32, USER32_CreateWindowExA),
+    };
+
+    for (ULONG_PTR i = 0; i != countof(Routines); ++i)
+    {
+        PVOID InternalCreateWindowEx = nullptr;
+
+        if (Routines[i] == nullptr)
+            continue;
+
+        WalkOpCodeT(Routines[i], 0x80,
+            WalkOpCodeM(Buffer, OpLength, Ret)
+            {
+                if (Buffer[0] == CALL)
+                {
+                    PVOID Destination;
+
+                    SEH_TRY
+                    {
+                        Destination = GetCallDestination(Buffer);
+                        if (IsAddressInModule(User32, Destination) && !IsX64SyscallStub(Destination))
+                        {
+                            InternalCreateWindowEx = Destination;
+                            return STATUS_SUCCESS;
+                        }
+                    }
+                    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+                    {
+                        return STATUS_NOT_FOUND;
+                    }
+                }
+
+                if (Buffer[0] == 0xC2 || Buffer[0] == 0xC3)
+                    return STATUS_NOTHING_TO_TERMINATE;
+
+                return STATUS_NOT_FOUND;
+            }
+        );
+
+        if (InternalCreateWindowEx != nullptr)
+            return InternalCreateWindowEx;
+    }
+
+    return nullptr;
+}
+
+static PVOID FindX64VerNtUserCreateWindowExNoWin32U(PVOID User32, PVOID* NtUserCreateWindowEx)
+{
+    PVOID InternalCreateWindowEx;
+    PVOID VerNtUserCreateWindowEx;
+    BOOL FoundStyleMask;
+
+    if (NtUserCreateWindowEx != nullptr)
+        *NtUserCreateWindowEx = nullptr;
+
+    InternalCreateWindowEx = FindX64InternalCreateWindowEx(User32);
+    if (InternalCreateWindowEx == nullptr)
+        return nullptr;
+
+    VerNtUserCreateWindowEx = nullptr;
+    FoundStyleMask = FALSE;
+
+    WalkOpCodeT(InternalCreateWindowEx, 0x2C0,
+        WalkOpCodeM(Buffer, OpLength, Ret)
+        {
+            if (!FoundStyleMask)
+            {
+                if (HasC0000000Immediate(Buffer, OpLength))
+                    FoundStyleMask = TRUE;
+
+                return STATUS_NOT_FOUND;
+            }
+
+            if (Buffer[0] == CALL)
+            {
+                PVOID Destination;
+
+                SEH_TRY
+                {
+                    Destination = GetCallDestination(Buffer);
+                    if (IsAddressInModule(User32, Destination) && !IsX64SyscallStub(Destination))
+                    {
+                        VerNtUserCreateWindowEx = Destination;
+                        return STATUS_SUCCESS;
+                    }
+                }
+                SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+                {
+                }
+            }
+
+            if (Buffer[0] == 0xC2 || Buffer[0] == 0xC3)
+                return STATUS_NOTHING_TO_TERMINATE;
+
+            return STATUS_NOT_FOUND;
+        }
+    );
+
+#if ENABLE_LOG
+    WriteLog(L"user32 x64 no-win32u VerNtUserCreateWindowEx=%p", VerNtUserCreateWindowEx);
+#endif
+
+    if (VerNtUserCreateWindowEx == nullptr)
+        return nullptr;
+
+    PVOID SyscallRoutine = FindFirstX64SyscallCall(VerNtUserCreateWindowEx, 0x300);
+#if ENABLE_LOG
+    WriteLog(L"user32 x64 no-win32u NtUserCreateWindowEx syscall=%p", SyscallRoutine);
+#endif
+
+    if (NtUserCreateWindowEx != nullptr)
+        *NtUserCreateWindowEx = SyscallRoutine;
+
+    return VerNtUserCreateWindowEx;
+}
+
+static PVOID FindX64NtUserCreateWindowExNoWin32U(PVOID User32)
+{
+    PVOID NtUserCreateWindowEx;
+
+    FindX64VerNtUserCreateWindowExNoWin32U(User32, &NtUserCreateWindowEx);
+    return NtUserCreateWindowEx;
+}
+
+static PVOID FindX64RtlInitLargeUnicodeStringNoWin32U(PVOID User32)
+{
+    PVOID InternalCreateWindowEx;
+    PVOID RtlInitLargeUnicodeString;
+    PVOID PreviousCall;
+
+    InternalCreateWindowEx = FindX64InternalCreateWindowEx(User32);
+    if (InternalCreateWindowEx == nullptr)
+        return nullptr;
+
+    RtlInitLargeUnicodeString = nullptr;
+    PreviousCall = nullptr;
+
+    WalkOpCodeT(InternalCreateWindowEx, 0x2C0,
+        WalkOpCodeM(Buffer, OpLength, Ret)
+        {
+            if (HasC0000000Immediate(Buffer, OpLength))
+            {
+                RtlInitLargeUnicodeString = PreviousCall;
+                return STATUS_SUCCESS;
+            }
+
+            if (Buffer[0] == CALL)
+            {
+                SEH_TRY
+                {
+                    PVOID Destination = GetCallDestination(Buffer);
+                    if (IsAddressInModule(User32, Destination) && !IsX64SyscallStub(Destination))
+                        PreviousCall = Destination;
+                }
+                SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+                {
+                }
+            }
+
+            if (Buffer[0] == 0xC2 || Buffer[0] == 0xC3)
+                return STATUS_NOTHING_TO_TERMINATE;
+
+            return STATUS_NOT_FOUND;
+        }
+    );
+
+#if ENABLE_LOG
+    WriteLog(L"user32 x64 no-win32u RtlInitLargeUnicodeString=%p", RtlInitLargeUnicodeString);
+#endif
+
+    return RtlInitLargeUnicodeString;
+}
+
+static BOOL GetTextRange(PVOID Module, PBYTE* TextStart, PBYTE* TextEnd)
+{
+    PIMAGE_DOS_HEADER DosHeader;
+    PIMAGE_NT_HEADERS NtHeaders;
+    PIMAGE_SECTION_HEADER Section;
+    ULONG TextSize;
+
+    if (Module == nullptr || TextStart == nullptr || TextEnd == nullptr)
+        return FALSE;
+
+    DosHeader = (PIMAGE_DOS_HEADER)Module;
+    NtHeaders = (PIMAGE_NT_HEADERS)PtrAdd(Module, DosHeader->e_lfanew);
+    Section = IMAGE_FIRST_SECTION(NtHeaders);
+    TextSize = Section->Misc.VirtualSize != 0 ? Section->Misc.VirtualSize : Section->SizeOfRawData;
+    if (TextSize == 0)
+        return FALSE;
+
+    *TextStart = (PBYTE)PtrAdd(Module, Section->VirtualAddress);
+    *TextEnd = PtrAdd(*TextStart, TextSize);
+
+    return TRUE;
+}
+
+static PVOID CheckX64NtUserDefSetTextAfterRtlInit(PBYTE CallSite, PBYTE TextEnd)
+{
+    PBYTE Start;
+    ULONG_PTR Range;
+    PVOID SyscallRoutine;
+    BOOL SawRet;
+    BOOL BadCandidate;
+
+    Start = PtrAdd(CallSite, 5);
+    Range = PtrOffset(TextEnd, Start);
+    if (Range > 0x20)
+        Range = 0x20;
+
+    SyscallRoutine = nullptr;
+    SawRet = FALSE;
+    BadCandidate = FALSE;
+
+    WalkOpCodeT(Start, Range,
+        WalkOpCodeM(Buffer, OpLength, Ret)
+        {
+            if (Buffer[0] == CALL)
+            {
+                PVOID Destination;
+
+                SEH_TRY
+                {
+                    Destination = GetCallDestination(Buffer);
+                    if (!IsX64SyscallStub(Destination))
+                    {
+                        BadCandidate = TRUE;
+                        return STATUS_SUCCESS;
+                    }
+
+                    if (SyscallRoutine != nullptr)
+                    {
+                        BadCandidate = TRUE;
+                        return STATUS_SUCCESS;
+                    }
+
+                    SyscallRoutine = Destination;
+                }
+                SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+                {
+                    BadCandidate = TRUE;
+                    return STATUS_SUCCESS;
+                }
+            }
+
+            if (Buffer[0] == 0xC2 || Buffer[0] == 0xC3)
+            {
+                SawRet = SyscallRoutine != nullptr;
+                return STATUS_SUCCESS;
+            }
+
+            return STATUS_NOT_FOUND;
+        }
+    );
+
+    if (BadCandidate || !SawRet)
+        return nullptr;
+
+    return SyscallRoutine;
+}
+
+static PVOID FindX64NtUserDefSetTextNoWin32U(PVOID User32)
+{
+    PVOID RtlInitLargeUnicodeString;
+    PBYTE TextStart;
+    PBYTE TextEnd;
+
+    RtlInitLargeUnicodeString = FindX64RtlInitLargeUnicodeStringNoWin32U(User32);
+    if (RtlInitLargeUnicodeString == nullptr)
+        return nullptr;
+
+    if (!GetTextRange(User32, &TextStart, &TextEnd))
+        return nullptr;
+
+    for (PBYTE Buffer = TextStart; Buffer + 5 < TextEnd; ++Buffer)
+    {
+        PVOID Destination;
+        PVOID NtUserDefSetText;
+
+        if (Buffer[0] != CALL)
+            continue;
+
+        SEH_TRY
+        {
+            Destination = GetCallDestination(Buffer);
+        }
+        SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+        {
+            continue;
+        }
+
+        if (Destination != RtlInitLargeUnicodeString)
+            continue;
+
+        NtUserDefSetText = CheckX64NtUserDefSetTextAfterRtlInit(Buffer, TextEnd);
+        if (NtUserDefSetText != nullptr)
+        {
+#if ENABLE_LOG
+            WriteLog(L"user32 x64 no-win32u DefSetText rtlcall=%p syscall=%p", Buffer, NtUserDefSetText);
+#endif
+            return NtUserDefSetText;
+        }
+    }
+
+#if ENABLE_LOG
+    WriteLog(L"user32 x64 no-win32u DefSetText not found, RtlInitLargeUnicodeString=%p", RtlInitLargeUnicodeString);
+#endif
+
+    return nullptr;
+}
+#endif
 
 /************************************************************************
   init
@@ -1640,7 +2398,11 @@ PVOID FindSendMessageWorker(PVOID User32)
     PVOID       SendMessageWorker;
 
     *(PVOID *)&CreateWindowExA      = LookupExportTable(User32, USER32_CreateWindowExA);
+#if ML_AMD64
+    *(PVOID *)&SetWindowLongPtrA    = LookupExportTable(User32, USER32_SetWindowLongPtrA);
+#else
     *(PVOID *)&SetWindowLongPtrA    = LookupExportTable(User32, USER32_SetWindowLongA);
+#endif
     *(PVOID *)&SendMessageA         = LookupExportTable(User32, USER32_SendMessageA);
     *(PVOID *)&DestroyWindow        = LookupExportTable(User32, USER32_DestroyWindow);
 
@@ -1660,6 +2422,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     PVOID       NtUserDefSetText;
     PVOID       SendMessageWorker;
     PVOID       LepNtUserCreateWindowEx;
+    RTL_OSVERSIONINFOW VersionInfo;
     NTSTATUS    Status;
 
     Status = NtAddAtom(PROP_WINDOW_ANSI_PROC, CONST_STRLEN(PROP_WINDOW_ANSI_PROC) * sizeof(WCHAR), &this->AtomAnsiProc);
@@ -1668,6 +2431,9 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     Status = NtAddAtom(PROP_WINDOW_UNICODE_PROC, CONST_STRLEN(PROP_WINDOW_UNICODE_PROC) * sizeof(WCHAR), &this->AtomUnicodeProc);
     FAIL_RETURN(Status);
 */
+    Status = Nt_QueryOsVersion(&VersionInfo);
+    FAIL_RETURN(Status);
+
     if (this->HasWin32U)
     {
         HMODULE Win32uMod = (HMODULE)Nt_GetModuleHandle(L"win32u.dll");
@@ -1681,28 +2447,64 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     }
     else
     {
+#if ML_AMD64
+        NtUserMessageCall = FindX64NtUserMessageCallNoWin32U(User32);
+#else
         NtUserMessageCall = FindNtUserMessageCall2(User32);
+#endif
+#if ENABLE_LOG
+        WriteLog(L"user32 find NtUserMessageCall=%p", NtUserMessageCall);
+#endif
         if (NtUserMessageCall == nullptr)
             return STATUS_NOT_FOUND;
 
+#if ML_AMD64
+        NtUserCreateWindowEx = FindX64NtUserCreateWindowExNoWin32U(User32);
+#else
         NtUserCreateWindowEx = FindNtUserCreateWindowEx(User32);
+#endif
+#if ENABLE_LOG
+        WriteLog(L"user32 find NtUserCreateWindowEx=%p", NtUserCreateWindowEx);
+#endif
         if (NtUserCreateWindowEx == nullptr)
             return STATUS_NOT_FOUND;
 
+#if ML_AMD64
+        NtUserDefSetText = FindX64NtUserDefSetTextNoWin32U(User32);
+#else
         NtUserDefSetText = FindNtUserDefSetText(User32);
+#endif
+#if ENABLE_LOG
+        WriteLog(L"user32 find NtUserDefSetText=%p", NtUserDefSetText);
+#endif
         if (NtUserDefSetText == nullptr)
             return STATUS_NOT_FOUND;
     }
+
+#if ENABLE_LOG
+    WriteLog(L"user32 native routines msg=%p create=%p deftext=%p", NtUserMessageCall, NtUserCreateWindowEx, NtUserDefSetText);
+#endif
 
     if (HookStub.StubEnumFontFamiliesExW != nullptr)
     {
         InitFontCharsetInfo();
     }
 
-    switch (CurrentPeb()->OSMajorVersion)
+#if ENABLE_LOG
+    WriteLog(L"user32 hook os=%u.%u build=%u peb=%u.%u build=%u win32u=%u",
+        VersionInfo.dwMajorVersion,
+        VersionInfo.dwMinorVersion,
+        VersionInfo.dwBuildNumber,
+        LepCurrentPeb()->OSMajorVersion,
+        LepCurrentPeb()->OSMinorVersion,
+        LepCurrentPeb()->OSBuildNumber,
+        this->HasWin32U);
+#endif
+
+    switch (VersionInfo.dwMajorVersion)
     {
         case 6:
-            switch (CurrentPeb()->OSMinorVersion)
+            switch (VersionInfo.dwMinorVersion)
             {
                 case 2: // win 8
                 case 3: // win 8.1
@@ -1731,6 +2533,127 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
             return STATUS_UNKNOWN_REVISION;
     }
 
+#if ML_AMD64
+    LOOP_ONCE
+    {
+        PVOID NtUserGetDC;
+        PVOID NtUserGetDCEx;
+        PVOID NtUserGetWindowDC;
+        PVOID NtUserBeginPaint;
+
+        if (this->HasWin32U)
+        {
+            PVOID Win32uMod = Nt_GetModuleHandle(L"win32u.dll");
+            if (Win32uMod == nullptr)
+                return STATUS_NOT_FOUND;
+
+            Status = GetX64SyscallExportByName(Win32uMod, "NtUserGetDC", WIN32K_NtUserGetDC, &NtUserGetDC);
+            FAIL_RETURN(Status);
+
+            Status = GetX64SyscallExportByName(Win32uMod, "NtUserGetDCEx", WIN32K_NtUserGetDCEx, &NtUserGetDCEx);
+            FAIL_RETURN(Status);
+
+            Status = GetX64SyscallExportByName(Win32uMod, "NtUserGetWindowDC", WIN32K_NtUserGetWindowDC, &NtUserGetWindowDC);
+            FAIL_RETURN(Status);
+
+            Status = GetX64SyscallExportByName(Win32uMod, "NtUserBeginPaint", WIN32K_NtUserBeginPaint, &NtUserBeginPaint);
+            FAIL_RETURN(Status);
+        }
+        else
+        {
+            Status = GetX64SyscallExport(User32, USER32_GetDC, &NtUserGetDC);
+            FAIL_RETURN(Status);
+
+            Status = GetX64SyscallExport(User32, USER32_GetDCEx, &NtUserGetDCEx);
+            FAIL_RETURN(Status);
+
+            Status = GetX64SyscallExport(User32, USER32_GetWindowDC, &NtUserGetWindowDC);
+            FAIL_RETURN(Status);
+
+            Status = GetX64SyscallExport(User32, USER32_BeginPaint, &NtUserBeginPaint);
+            FAIL_RETURN(Status);
+        }
+
+        PVOID Routines[7];
+        ULONG Hashes[7];
+        ULONG_PTR RoutineCount = 0;
+
+        Routines[RoutineCount] = NtUserCreateWindowEx;
+        Hashes[RoutineCount++] = WIN32K_NtUserCreateWindowEx;
+        Routines[RoutineCount] = NtUserMessageCall;
+        Hashes[RoutineCount++] = WIN32K_NtUserMessageCall;
+        Routines[RoutineCount] = NtUserDefSetText;
+        Hashes[RoutineCount++] = WIN32K_NtUserDefSetText;
+        Routines[RoutineCount] = NtUserGetDC;
+        Hashes[RoutineCount++] = WIN32K_NtUserGetDC;
+        Routines[RoutineCount] = NtUserGetDCEx;
+        Hashes[RoutineCount++] = WIN32K_NtUserGetDCEx;
+        Routines[RoutineCount] = NtUserGetWindowDC;
+        Hashes[RoutineCount++] = WIN32K_NtUserGetWindowDC;
+        Routines[RoutineCount] = NtUserBeginPaint;
+        Hashes[RoutineCount++] = WIN32K_NtUserBeginPaint;
+
+        Status = HpAddSystemCallByRoutineRange(Routines, Hashes, RoutineCount);
+        WriteLog(L"user32 add syscall routines: %08X", Status);
+        FAIL_RETURN(Status);
+
+        Status = HpAddSystemCallFilter(WIN32K_NtUserCreateWindowEx, LepHpNtUserCreateWindowEx, this);
+        WriteLog(L"user32 hook NtUserCreateWindowEx: %08X", Status);
+        FAIL_RETURN(Status);
+
+        Status = HpAddSystemCallFilter(WIN32K_NtUserMessageCall, LepHpNtUserMessageCall, this);
+        WriteLog(L"user32 hook NtUserMessageCall: %08X", Status);
+        FAIL_RETURN(Status);
+
+        Status = HpAddSystemCallFilter(WIN32K_NtUserDefSetText, LepHpNtUserDefSetText, this);
+        WriteLog(L"user32 hook NtUserDefSetText: %08X", Status);
+        FAIL_RETURN(Status);
+
+        Status = HpAddSystemCallFilter(WIN32K_NtUserGetDC, LepHpNtUserGetDC, this);
+        WriteLog(L"user32 hook NtUserGetDC: %08X", Status);
+        FAIL_RETURN(Status);
+
+        Status = HpAddSystemCallFilter(WIN32K_NtUserGetDCEx, LepHpNtUserGetDCEx, this);
+        WriteLog(L"user32 hook NtUserGetDCEx: %08X", Status);
+        FAIL_RETURN(Status);
+
+        Status = HpAddSystemCallFilter(WIN32K_NtUserGetWindowDC, LepHpNtUserGetWindowDC, this);
+        WriteLog(L"user32 hook NtUserGetWindowDC: %08X", Status);
+        FAIL_RETURN(Status);
+
+        Status = HpAddSystemCallFilter(WIN32K_NtUserBeginPaint, LepHpNtUserBeginPaint, this);
+        WriteLog(L"user32 hook NtUserBeginPaint: %08X", Status);
+        FAIL_RETURN(Status);
+
+        ULONG_PTR SetWindowLongHookOp;
+
+        SetWindowLongHookOp =
+            (VersionInfo.dwMajorVersion == 6 && VersionInfo.dwMinorVersion == 1) ?
+                LEP_FUNCTION_NO_ABSOLUTE_JUMP_OP :
+                LEP_FUNCTION_JUMP_OP;
+
+        Mp::PATCH_MEMORY_DATA p[] =
+        {
+            LepHookFromEATOp(User32, USER32, SetWindowLongA, SetWindowLongHookOp),
+            LepHookFromEAT(User32, USER32, GetWindowLongA),
+            LepHookFromEATOp(User32, USER32, SetWindowLongPtrA, SetWindowLongHookOp),
+            LepHookFromEAT(User32, USER32, GetWindowLongPtrA),
+            LepHookFromEAT(User32, USER32, IsWindowUnicode),
+
+            LepHookFromEAT(User32, USER32, GetClipboardData),
+            LepHookFromEAT(User32, USER32, SetClipboardData),
+        };
+
+        Status = Mp::PatchMemory(p, countof(p));
+
+#if ENABLE_LOG
+        WriteLog(L"user32 patch eat status=%08X", Status);
+#endif
+
+        return Status;
+    }
+#endif
+
     Mp::PATCH_MEMORY_DATA p[] =
     {
         LepFunctionJump(NtUserCreateWindowEx),
@@ -1744,24 +2667,46 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
         LepHookFromEAT(User32, USER32, GetClipboardData),
         LepHookFromEAT(User32, USER32, SetClipboardData),
 
+#if !ML_AMD64
         LepHookFromEAT(User32, USER32, GetDC),
+#endif
         LepHookFromEAT(User32, USER32, GetDCEx),
         LepHookFromEAT(User32, USER32, GetWindowDC),
 
         LepHookFromEAT(User32, USER32, BeginPaint),
     };
 
-    return Mp::PatchMemory(p, countof(p));
+    Status = Mp::PatchMemory(p, countof(p));
+
+#if ENABLE_LOG
+    WriteLog(L"user32 generic patch status=%08X", Status);
+#endif
+
+    return Status;
 }
 
 NTSTATUS LepGlobalData::UnHookUser32Routines()
 {
+#if ML_AMD64
+    HpRemoveSystemCallFilter(WIN32K_NtUserCreateWindowEx, LepHpNtUserCreateWindowEx);
+    HpRemoveSystemCallFilter(WIN32K_NtUserMessageCall, LepHpNtUserMessageCall);
+    HpRemoveSystemCallFilter(WIN32K_NtUserDefSetText, LepHpNtUserDefSetText);
+    HpRemoveSystemCallFilter(WIN32K_NtUserGetDC, LepHpNtUserGetDC);
+    HpRemoveSystemCallFilter(WIN32K_NtUserGetDCEx, LepHpNtUserGetDCEx);
+    HpRemoveSystemCallFilter(WIN32K_NtUserGetWindowDC, LepHpNtUserGetWindowDC);
+    HpRemoveSystemCallFilter(WIN32K_NtUserBeginPaint, LepHpNtUserBeginPaint);
+#endif
+
     Mp::RestoreMemory(HookStub.StubNtUserCreateWindowEx);
     Mp::RestoreMemory(HookStub.StubNtUserMessageCall);
     Mp::RestoreMemory(HookStub.StubNtUserDefSetText);
 
     Mp::RestoreMemory(HookStub.StubSetWindowLongA);
     Mp::RestoreMemory(HookStub.StubGetWindowLongA);
+#if ML_AMD64
+    Mp::RestoreMemory(HookStub.StubSetWindowLongPtrA);
+    Mp::RestoreMemory(HookStub.StubGetWindowLongPtrA);
+#endif
     Mp::RestoreMemory(HookStub.StubIsWindowUnicode);
 
     Mp::RestoreMemory(HookStub.StubGetClipboardData);

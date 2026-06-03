@@ -253,12 +253,14 @@ NTSTATUS HookSysCall_x86(HOOK_PORT_GLOBAL_INFO *GlobalInfo)
         ProtectVirtualMemory(BaseKiFastSystemCall, 12, OldProtect, &OldProtect);
     }
 
-    PPEB_BASE Peb = CurrentPeb();
+    RTL_OSVERSIONINFOW VersionInfo;
 
-    switch (Peb->OSMajorVersion)
+    Nt_QueryOsVersion(&VersionInfo);
+
+    switch (VersionInfo.dwMajorVersion)
     {
         case 6:
-            switch (Peb->OSMinorVersion)
+            switch (VersionInfo.dwMinorVersion)
             {
                 case 2: // win 8
                 case 3: // win 8.1
@@ -535,7 +537,7 @@ NTSTATUS HookSysCall_Wow64(HOOK_PORT_GLOBAL_INFO *GlobalInfo)
     ULONG_PTR   SrcLength, DestLength;
     PVOID       Wow64SyscallJumpStub, HookRoutine;
     NTSTATUS    Status;
-    PPEB_BASE   Peb;
+    RTL_OSVERSIONINFOW VersionInfo;
 
     const static ULONG_PTR Wow64FsC0Size = 7;
 
@@ -582,13 +584,13 @@ NTSTATUS HookSysCall_Wow64(HOOK_PORT_GLOBAL_INFO *GlobalInfo)
 
     Buffer = (PBYTE)&Temp;
 
-    Peb = CurrentPeb();
+    Nt_QueryOsVersion(&VersionInfo);
 
-    if (Peb->OSMajorVersion <= 6 && Peb->OSMinorVersion <= 1)
+    if (VersionInfo.dwMajorVersion <= 6 && VersionInfo.dwMinorVersion <= 1)
     {
         HookRoutine = HookSysEnter_Wow64;
     }
-    else if (Peb->OSMajorVersion == 6 && Peb->OSMinorVersion > 1)
+    else if (VersionInfo.dwMajorVersion == 6 && VersionInfo.dwMinorVersion > 1)
     {
         HookRoutine = HookSysEnter_Wow64_Win8;
     }

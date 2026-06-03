@@ -8,14 +8,13 @@
 *.mdmp
 
 # Reverse-engineering scratch files
-/kernelbase_x86/
-/kernelbase_x64/
-/*.i64
-/KernelBase_x86.dll
-/KernelBase_x64.dll
+/win7/
+/win10/
+/win11/
 
 # Visual Studio and editor state
 .vs/
+.vscode/
 *.user
 *.suo
 *.VC.db

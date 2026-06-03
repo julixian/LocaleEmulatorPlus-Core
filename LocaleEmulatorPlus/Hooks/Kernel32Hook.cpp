@@ -243,6 +243,235 @@ void* GetKthCallTarget(void* start_offset, DWORD parse_range_each, int K) {
 
 typedef DWORD(__stdcall* pSetupAnsiOemCodeHashNodes)();
 
+VOID LepSyncUser32ClientCodePage()
+{
+#if ML_AMD64
+    PLepGlobalData GlobalData;
+    ULONG_PTR Value;
+
+    GlobalData = LepGetGlobalData();
+    if (GlobalData == nullptr)
+        return;
+
+    Value = LepGetWin32ClientInfo()[LEP_WIN32_CLIENT_INFO_CODE_PAGE_INDEX];
+    LepGetWin32ClientInfo()[LEP_WIN32_CLIENT_INFO_CODE_PAGE_INDEX] =
+        (Value & ~0xFFFFull) | (USHORT)GlobalData->GetLepb()->AnsiCodePage;
+#endif
+}
+
+static VOID LepProbeRtlAnsiTable(PCWSTR Tag, PCPTABLEINFO TargetTable)
+{
+#if ML_AMD64 && ENABLE_LOG
+    WCHAR Sample[] = { 0xFF24, 0xFF49, 0xFF52, 0xFF45, 0xFF43, 0xFF54, 0xFF38, 0x3000, 0 };
+    CHAR DefaultAnsi[32];
+    CHAR CustomAnsi[32];
+    ULONG DefaultBytes, CustomBytes;
+    NTSTATUS DefaultStatus, CustomStatus;
+
+    ZeroMemory(DefaultAnsi, sizeof(DefaultAnsi));
+    ZeroMemory(CustomAnsi, sizeof(CustomAnsi));
+    DefaultBytes = 0;
+    CustomBytes = 0;
+
+    DefaultStatus = RtlUnicodeToMultiByteN(DefaultAnsi, sizeof(DefaultAnsi), &DefaultBytes, Sample, (countof(Sample) - 1) * sizeof(WCHAR));
+    CustomStatus = RtlUnicodeToCustomCPN(TargetTable, CustomAnsi, sizeof(CustomAnsi), &CustomBytes, Sample, (countof(Sample) - 1) * sizeof(WCHAR));
+
+    WriteLog(L"nls rtl probe %s ntdll=%u mb=%u table=%u dbcs=%u def=%08X/%u %02X %02X %02X %02X %02X %02X %02X %02X custom=%08X/%u %02X %02X %02X %02X %02X %02X %02X %02X",
+        Tag,
+        NlsAnsiCodePage,
+        NlsMbCodePageTag,
+        TargetTable->CodePage,
+        TargetTable->DBCSCodePage,
+        DefaultStatus,
+        DefaultBytes,
+        (ULONG)(UCHAR)DefaultAnsi[0],
+        (ULONG)(UCHAR)DefaultAnsi[1],
+        (ULONG)(UCHAR)DefaultAnsi[2],
+        (ULONG)(UCHAR)DefaultAnsi[3],
+        (ULONG)(UCHAR)DefaultAnsi[4],
+        (ULONG)(UCHAR)DefaultAnsi[5],
+        (ULONG)(UCHAR)DefaultAnsi[6],
+        (ULONG)(UCHAR)DefaultAnsi[7],
+        CustomStatus,
+        CustomBytes,
+        (ULONG)(UCHAR)CustomAnsi[0],
+        (ULONG)(UCHAR)CustomAnsi[1],
+        (ULONG)(UCHAR)CustomAnsi[2],
+        (ULONG)(UCHAR)CustomAnsi[3],
+        (ULONG)(UCHAR)CustomAnsi[4],
+        (ULONG)(UCHAR)CustomAnsi[5],
+        (ULONG)(UCHAR)CustomAnsi[6],
+        (ULONG)(UCHAR)CustomAnsi[7]);
+#else
+    UNREFERENCED_PARAMETER(Tag);
+    UNREFERENCED_PARAMETER(TargetTable);
+#endif
+}
+
+#if ML_AMD64
+typedef NTSTATUS(NTAPI* pRtlpInitCodePageTables)(USHORT AnsiCodePage, USHORT OemCodePage);
+#else
+typedef NTSTATUS(__fastcall* pRtlpInitCodePageTables)(USHORT AnsiCodePage, USHORT OemCodePage);
+#endif
+
+static BOOL GetImageTextRange(PVOID Module, PBYTE* TextStart, PBYTE* TextEnd)
+{
+    PIMAGE_DOS_HEADER DosHeader;
+    PIMAGE_NT_HEADERS NtHeaders;
+    PIMAGE_SECTION_HEADER Section;
+
+    if (Module == nullptr || TextStart == nullptr || TextEnd == nullptr)
+        return FALSE;
+
+    DosHeader = (PIMAGE_DOS_HEADER)Module;
+    NtHeaders = (PIMAGE_NT_HEADERS)PtrAdd(Module, DosHeader->e_lfanew);
+    Section = IMAGE_FIRST_SECTION(NtHeaders);
+    for (ULONG Index = 0; Index != NtHeaders->FileHeader.NumberOfSections; ++Index, ++Section)
+    {
+        ULONG TextSize;
+
+        if (memcmp(Section->Name, ".text", 5) != 0)
+            continue;
+
+        TextSize = Section->Misc.VirtualSize != 0 ? Section->Misc.VirtualSize : Section->SizeOfRawData;
+        if (TextSize == 0)
+            return FALSE;
+
+        *TextStart = (PBYTE)PtrAdd(Module, Section->VirtualAddress);
+        *TextEnd = PtrAdd(*TextStart, TextSize);
+
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOL IsCodePadding(BYTE Value)
+{
+    return Value == 0xCC || Value == 0x90;
+}
+
+static PVOID FindFunctionStartByPadding(PBYTE CallSite, PBYTE TextStart)
+{
+    PBYTE Limit;
+    ULONG_PTR BackwardRange;
+
+    BackwardRange = PtrOffset(CallSite, TextStart);
+    BackwardRange = ML_MIN(BackwardRange, 0x120);
+    Limit = PtrSub(CallSite, BackwardRange);
+    for (PBYTE Buffer = PtrSub(CallSite, 1); Buffer > Limit; --Buffer)
+    {
+        PBYTE PaddingStart, PaddingEnd;
+
+        if (!IsCodePadding(Buffer[0]))
+            continue;
+
+        PaddingEnd = PtrAdd(Buffer, 1);
+        PaddingStart = Buffer;
+        while (PaddingStart > Limit && IsCodePadding(PaddingStart[-1]))
+            --PaddingStart;
+
+        if (PtrOffset(PaddingEnd, PaddingStart) >= 4)
+            return PaddingEnd;
+
+        Buffer = PaddingStart;
+    }
+
+    return nullptr;
+}
+
+static BOOL IsCallSiteNearFunction(PBYTE CallSite, PBYTE Function, ULONG_PTR Range)
+{
+    if (CallSite < Function)
+        return FALSE;
+
+    return PtrOffset(CallSite, Function) < Range;
+}
+
+PVOID FindRtlpInitCodePageTables()
+{
+    PBYTE RtlInitCodePageTableRoutine;
+    PBYTE TextStart;
+    PBYTE TextEnd;
+    PVOID Ntdll;
+    PBYTE RtlInitNlsTablesRoutine;
+
+    Ntdll = GetNtdllHandle();
+    RtlInitCodePageTableRoutine = (PBYTE)::RtlInitCodePageTable;
+    RtlInitNlsTablesRoutine = (PBYTE)::RtlInitNlsTables;
+    if (!GetImageTextRange(Ntdll, &TextStart, &TextEnd))
+        return nullptr;
+
+    for (PBYTE Buffer = TextStart; Buffer + 5 < TextEnd; ++Buffer)
+    {
+        PVOID Destination;
+        PVOID FunctionStart;
+        BOOL HasSecondInitCall;
+
+        if (Buffer[0] != CALL)
+            continue;
+
+        SEH_TRY
+        {
+            Destination = GetCallDestination(Buffer);
+        }
+        SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+        {
+            continue;
+        }
+
+        if ((PBYTE)Destination != RtlInitCodePageTableRoutine)
+            continue;
+
+        if (IsCallSiteNearFunction(Buffer, RtlInitNlsTablesRoutine, 0x80))
+            continue;
+
+        FunctionStart = FindFunctionStartByPadding(Buffer, TextStart);
+        if (FunctionStart == nullptr)
+            continue;
+
+        HasSecondInitCall = FALSE;
+        for (PBYTE Next = Buffer + 5; Next + 5 < Buffer + 0x100 && Next + 5 < TextEnd; ++Next)
+        {
+            if (Next[0] != CALL)
+                continue;
+
+            SEH_TRY
+            {
+                Destination = GetCallDestination(Next);
+            }
+            SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+            {
+                continue;
+            }
+
+            if ((PBYTE)Destination == RtlInitCodePageTableRoutine)
+            {
+                HasSecondInitCall = TRUE;
+                break;
+            }
+        }
+        if (!HasSecondInitCall)
+            continue;
+
+        return FunctionStart;
+    }
+
+    return nullptr;
+}
+
+NTSTATUS LepInitNtdllCodePageTables(USHORT AnsiCodePage, USHORT OemCodePage)
+{
+    pRtlpInitCodePageTables RtlpInitCodePageTables;
+
+    *(PVOID *)&RtlpInitCodePageTables = FindRtlpInitCodePageTables();
+    if (RtlpInitCodePageTables == nullptr)
+        return STATUS_PROCEDURE_NOT_FOUND;
+
+    WriteLog(L"RtlpInitCodePageTables: %p", RtlpInitCodePageTables);
+    return RtlpInitCodePageTables(AnsiCodePage, OemCodePage);
+}
+
 #if ML_AMD64
 #define LEP_NLS_DIAG 1
 #else
@@ -261,15 +490,83 @@ VOID LepNlsDiag(PCWSTR Format, ...)
 }
 #endif
 
+PVOID FindSetupAnsiOemCodeHashNodes(PLDR_MODULE Kernel)
+{
+    PBYTE ImageBase, ImageEnd;
+    PVOID KernelBaseBaseDllInitialize;
+    PVOID KernelBaseBaseDllInitializeInternal;
+    PVOID BaseNlsDllInitialize;
+    PVOID NlsProcessInitialize;
+    PVOID SetupAnsiOemCodeHashNodes;
+
+    ImageBase = (PBYTE)Kernel->DllBase;
+    ImageEnd = ImageBase + Kernel->SizeOfImage;
+
+    KernelBaseBaseDllInitialize = GetKthCallTarget(Kernel->EntryPoint, 0x40, 1);
+    if (!IN_RANGEEX(ImageBase, (PBYTE)KernelBaseBaseDllInitialize, ImageEnd))
+    {
+        WriteLog(L"find kbase nls: KernelBaseBaseDllInitialize failed: %p", KernelBaseBaseDllInitialize);
+        return nullptr;
+    }
+    WriteLog(L"KernelBaseBaseDllInitialize: %p", KernelBaseBaseDllInitialize);
+
+    KernelBaseBaseDllInitializeInternal = GetKthCallOrJumpTarget(KernelBaseBaseDllInitialize, 0x100, 2);
+    if (!IN_RANGEEX(ImageBase, (PBYTE)KernelBaseBaseDllInitializeInternal, ImageEnd))
+    {
+        WriteLog(L"find kbase nls: _KernelBaseBaseDllInitialize failed: %p", KernelBaseBaseDllInitializeInternal);
+        return nullptr;
+    }
+    WriteLog(L"KernelBaseBaseDllInitializeInternal: %p", KernelBaseBaseDllInitializeInternal);
+
+    BaseNlsDllInitialize = nullptr;
+    WalkOpCodeT(KernelBaseBaseDllInitializeInternal, 0x800,
+        WalkOpCodeM(Buffer, OpLength, Ret)
+        {
+            UNREFERENCED_PARAMETER(OpLength);
+            UNREFERENCED_PARAMETER(Ret);
+
+            if (Buffer[0] != 0xB8 || *((DWORD *)&Buffer[1]) != 0x190)
+                return STATUS_NOT_FOUND;
+
+            BaseNlsDllInitialize = GetKthCallTarget(Buffer, 0x30, 1);
+            return STATUS_SUCCESS;
+        }
+    );
+
+    if (!IN_RANGEEX(ImageBase, (PBYTE)BaseNlsDllInitialize, ImageEnd))
+    {
+        WriteLog(L"find kbase nls: BaseNlsDllInitialize failed: %p", BaseNlsDllInitialize);
+        return nullptr;
+    }
+    WriteLog(L"BaseNlsDllInitialize: %p", BaseNlsDllInitialize);
+
+    NlsProcessInitialize = GetKthCallTarget(BaseNlsDllInitialize, 0x30, 1);
+    if (!IN_RANGEEX(ImageBase, (PBYTE)NlsProcessInitialize, ImageEnd))
+    {
+        WriteLog(L"find kbase nls: NlsProcessInitialize failed: %p", NlsProcessInitialize);
+        return nullptr;
+    }
+    WriteLog(L"NlsProcessInitialize: %p", NlsProcessInitialize);
+
+    SetupAnsiOemCodeHashNodes = GetKthCallTarget(NlsProcessInitialize, 0x30, 3);
+    if (!IN_RANGEEX(ImageBase, (PBYTE)SetupAnsiOemCodeHashNodes, ImageEnd))
+    {
+        WriteLog(L"find kbase nls: SetupAnsiOemCodeHashNodes failed: %p", SetupAnsiOemCodeHashNodes);
+        return nullptr;
+    }
+    WriteLog(L"SetupAnsiOemCodeHashNodes: %p", SetupAnsiOemCodeHashNodes);
+
+    return SetupAnsiOemCodeHashNodes;
+}
+
 NTSTATUS LepSetupAnsiOemCodeHashNodes() {
 
-    RTL_OSVERSIONINFOW osvi;
+    RTL_OSVERSIONINFOW VersionInfo;
+    NTSTATUS Status;
 
-    ZeroMemory(&osvi, sizeof(RTL_OSVERSIONINFOW));
-    osvi.dwOSVersionInfoSize = sizeof(RTL_OSVERSIONINFOW);
-
-    RtlGetVersion(&osvi);
-    if (osvi.dwMajorVersion < 10 || osvi.dwBuildNumber < 19042)
+    Status = Nt_QueryOsVersion(&VersionInfo);
+    FAIL_RETURN(Status);
+    if (VersionInfo.dwMajorVersion < 10 || VersionInfo.dwBuildNumber < 19042)
         return STATUS_SUCCESS; // does not need this trick for older versions.
 
 
@@ -277,46 +574,9 @@ NTSTATUS LepSetupAnsiOemCodeHashNodes() {
     if (Kernel == nullptr)
         return STATUS_PROCEDURE_NOT_FOUND;
 
-    void* pKernelBaseBaseDllInitialize = GetKthCallTarget(Kernel->EntryPoint, 0x30, 1);
-    if (pKernelBaseBaseDllInitialize == nullptr)
-        return STATUS_PROCEDURE_NOT_FOUND;
-
-    WriteLog(L"KernelBaseBaseDllInitialize: %p\n", pKernelBaseBaseDllInitialize);
-
-    void* pKernelBaseBaseDllInitializeInternal = GetKthCallOrJumpTarget(pKernelBaseBaseDllInitialize, 0x80, 2);
-    if (pKernelBaseBaseDllInitializeInternal == nullptr)
-        return STATUS_PROCEDURE_NOT_FOUND;
-
-    WriteLog(L"KernelBaseBaseDllInitializeInternal: %p\n", pKernelBaseBaseDllInitializeInternal);
-
-    void* pBaseNlsDllInitialize = nullptr;
-    WalkOpCodeT(pKernelBaseBaseDllInitializeInternal, 0x800,
-        WalkOpCodeM(Buffer, OpLength, Ret)
-    {
-        if (Buffer[0] != 0xB8 || *((DWORD*)&Buffer[1]) != 0x190) {
-            // locate first `mov eax, 0x190`
-            return STATUS_NOT_FOUND;
-        }
-        pBaseNlsDllInitialize = GetKthCallTarget(Buffer, 0x30, 1);
-        return STATUS_SUCCESS;
-    }
-    );
-    if (pBaseNlsDllInitialize == nullptr)
-        return STATUS_PROCEDURE_NOT_FOUND;
-
-    WriteLog(L"BaseNlsDllInitialize: %p\n", pBaseNlsDllInitialize);
-
-    void* pNlsProcessInitialize = GetKthCallTarget(pBaseNlsDllInitialize, 0x30, 1);
-    if (pNlsProcessInitialize == nullptr)
-        return STATUS_PROCEDURE_NOT_FOUND;
-
-    WriteLog(L"NlsProcessInitialize: %p\n", pNlsProcessInitialize);
-
-    auto the_func = (pSetupAnsiOemCodeHashNodes)GetKthCallTarget(pNlsProcessInitialize, 0x30, 3);
+    auto the_func = (pSetupAnsiOemCodeHashNodes)FindSetupAnsiOemCodeHashNodes(Kernel);
     if (the_func == nullptr)
         return STATUS_PROCEDURE_NOT_FOUND;
-
-    WriteLog(L"SetupAnsiOemCodeHashNodes: %p\n", the_func);
 
     the_func();
     return STATUS_SUCCESS;
@@ -326,20 +586,99 @@ NTSTATUS LepGlobalData::HackAnsiOemCodeHashNodes() {
     PLepGlobalData GlobalData = LepGetGlobalData();
     LepNlsDiag(L"HackAnsiOemCodeHashNodes entry target=%u/%u", GlobalData->GetLepb()->AnsiCodePage, GlobalData->GetLepb()->OemCodePage);
 
+    NLSTABLEINFO NlsTableInfo;
+    CPTABLEINFO AnsiTableInfo, OemTableInfo;
+    NTSTATUS Status, NtdllStatus;
+
+    RtlInitCodePageTable((PUSHORT)PtrAdd(GlobalData->CodePageMapView, GlobalData->AnsiCodePageOffset), &AnsiTableInfo);
+    RtlInitCodePageTable((PUSHORT)PtrAdd(GlobalData->CodePageMapView, GlobalData->OemCodePageOffset), &OemTableInfo);
+
 #if ML_AMD64
-    PPEB_BASE Peb = CurrentPeb();
+    WriteLog(L"nls sync before peb=%u/%u ntdll=%u mb=%u oemmb=%u table=%u/%u",
+        LepGetProcessAnsiCodePage(),
+        LepGetProcessOemCodePage(),
+        NlsAnsiCodePage,
+        NlsMbCodePageTag,
+        NlsMbOemCodePageTag,
+        AnsiTableInfo.CodePage,
+        OemTableInfo.CodePage);
 
-    *(PUSHORT)PtrAdd(Peb, 0x34C) = (USHORT)GlobalData->GetLepb()->AnsiCodePage;
-    *(PUSHORT)PtrAdd(Peb, 0x34E) = (USHORT)GlobalData->GetLepb()->OemCodePage;
+    LepProbeRtlAnsiTable(L"before", &AnsiTableInfo);
 
-    return LepSetupAnsiOemCodeHashNodes();
+    LepSetProcessCodePagePair(
+        (USHORT)GlobalData->GetLepb()->AnsiCodePage,
+        (USHORT)GlobalData->GetLepb()->OemCodePage);
+    LepSyncUser32ClientCodePage();
 #else
-    unsigned char* pTeb = (unsigned char*)(__readfsdword(48));
-    *(short*)(pTeb + 0x228) = GlobalData->GetLepb()->AnsiCodePage;
-    *(short*)(pTeb + 0x22a) = GlobalData->GetLepb()->OemCodePage;
+    PUSHORT ThreadCodePagePair = LepGetThreadCodePagePair();
 
-    return LepSetupAnsiOemCodeHashNodes();
+    WriteLog(L"nls sync before teb=%u/%u ntdll=%u mb=%u oemmb=%u table=%u/%u",
+        ThreadCodePagePair[0],
+        ThreadCodePagePair[1],
+        NlsAnsiCodePage,
+        NlsMbCodePageTag,
+        NlsMbOemCodePageTag,
+        AnsiTableInfo.CodePage,
+        OemTableInfo.CodePage);
+
+    LepSetThreadCodePagePair(
+        (USHORT)GlobalData->GetLepb()->AnsiCodePage,
+        (USHORT)GlobalData->GetLepb()->OemCodePage);
 #endif
+
+    RtlInitNlsTables(
+        (PUSHORT)PtrAdd(GlobalData->CodePageMapView, GlobalData->AnsiCodePageOffset),
+        (PUSHORT)PtrAdd(GlobalData->CodePageMapView, GlobalData->OemCodePageOffset),
+        (PUSHORT)PtrAdd(GlobalData->CodePageMapView, GlobalData->UnicodeCaseTableOffset),
+        &NlsTableInfo);
+    RtlResetRtlTranslations(&NlsTableInfo);
+    LepSyncNtdllNlsGlobals(
+        (USHORT)GlobalData->GetLepb()->AnsiCodePage,
+        (BOOLEAN)(AnsiTableInfo.DBCSCodePage != 0),
+        (BOOLEAN)(OemTableInfo.DBCSCodePage != 0));
+    LepProbeRtlAnsiTable(L"after-reset", &AnsiTableInfo);
+
+    NtdllStatus = LepInitNtdllCodePageTables(
+        (USHORT)GlobalData->GetLepb()->AnsiCodePage,
+        (USHORT)GlobalData->GetLepb()->OemCodePage);
+    if (NT_FAILED(NtdllStatus))
+    {
+#if ENABLE_LOG
+        WriteLog(L"nls sync ignores RtlpInitCodePageTables status=%08X", NtdllStatus);
+#endif
+    }
+
+    // Keep LepSetupAnsiOemCodeHashNodes() available, but skip the kernelbase
+    // private refresh on both architectures. The process/ntdll/user32 state is
+    // synchronized above, and this private kernelbase path is not needed in the
+    // currently observed conversion paths.
+    Status = STATUS_SUCCESS;
+
+#if ML_AMD64
+    LepProbeRtlAnsiTable(L"after-kbase", &AnsiTableInfo);
+
+    WriteLog(L"nls sync after peb=%u/%u ntdll=%u mb=%u oemmb=%u user32cp=%u ntdllStatus=%08X status=%08X",
+        LepGetProcessAnsiCodePage(),
+        LepGetProcessOemCodePage(),
+        NlsAnsiCodePage,
+        NlsMbCodePageTag,
+        NlsMbOemCodePageTag,
+        LepGetUser32ClientCodePage(),
+        NtdllStatus,
+        Status);
+#else
+    ThreadCodePagePair = LepGetThreadCodePagePair();
+    WriteLog(L"nls sync after teb=%u/%u ntdll=%u mb=%u oemmb=%u ntdllStatus=%08X status=%08X",
+        ThreadCodePagePair[0],
+        ThreadCodePagePair[1],
+        NlsAnsiCodePage,
+        NlsMbCodePageTag,
+        NlsMbOemCodePageTag,
+        NtdllStatus,
+        Status);
+#endif
+
+    return Status;
 }
 
 NTSTATUS LepGlobalData::HookKernel32Routines(PVOID Kernel32)

@@ -864,7 +864,8 @@ int NTAPI LepEnumFontsA(HDC hdc, PCSTR lpFaceName, FONTENUMPROCA lpProc, LPARAM 
 
 HFONT
 NTAPI
-LepNtGdiHfontCreate(
+LepNtGdiHfontCreateWorker(
+    PVOID               OriginalRoutine,
     PENUMLOGFONTEXDVW   EnumLogFont,
     ULONG               SizeOfEnumLogFont,
     LONG                LogFontType,
@@ -898,8 +899,64 @@ LepNtGdiHfontCreate(
         EnumLogFont = enumlfex;
     }
 
-    return GlobalData->HookStub.StubNtGdiHfontCreate(EnumLogFont, SizeOfEnumLogFont, LogFontType, Unknown, FreeListLocalFont);
+    return ((HFONT (NTAPI *)(PENUMLOGFONTEXDVW, ULONG, LONG, LONG, PVOID))OriginalRoutine)(
+        EnumLogFont,
+        SizeOfEnumLogFont,
+        LogFontType,
+        Unknown,
+        FreeListLocalFont);
 }
+
+HFONT
+NTAPI
+LepNtGdiHfontCreate(
+    PENUMLOGFONTEXDVW   EnumLogFont,
+    ULONG               SizeOfEnumLogFont,
+    LONG                LogFontType,
+    LONG                Unknown,
+    PVOID               FreeListLocalFont
+)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+
+    return LepNtGdiHfontCreateWorker(
+        GlobalData->HookStub.StubNtGdiHfontCreate,
+        EnumLogFont,
+        SizeOfEnumLogFont,
+        LogFontType,
+        Unknown,
+        FreeListLocalFont);
+}
+
+#if ML_AMD64
+HFONT
+HPCALL
+LepHpNtGdiHfontCreate(
+    HPARGS
+    PENUMLOGFONTEXDVW   EnumLogFont,
+    ULONG               SizeOfEnumLogFont,
+    LONG                LogFontType,
+    LONG                Unknown,
+    PVOID               FreeListLocalFont
+)
+{
+    PVOID Original;
+
+    HpSetFilterAction(BlockSystemCall);
+
+    Original = HpGetSystemCallOriginal(WIN32K_NtGdiHfontCreate);
+    if (Original == nullptr)
+        return nullptr;
+
+    return LepNtGdiHfontCreateWorker(
+        Original,
+        EnumLogFont,
+        SizeOfEnumLogFont,
+        LogFontType,
+        Unknown,
+        FreeListLocalFont);
+}
+#endif
 
 API_POINTER(SelectObject)  StubSelectObject;
 
@@ -943,6 +1000,10 @@ HGDIOBJ NTAPI LepSelectObject(HDC hdc, HGDIOBJ h)
   init
 ************************************************************************/
 
+#if ML_AMD64
+static BOOL IsX64SyscallStub(PVOID Routine);
+#endif
+
 PVOID FindNtGdiHfontCreate(PVOID Gdi32)
 {
     PVOID CreateFontIndirectExW, NtGdiHfontCreate;
@@ -956,8 +1017,13 @@ PVOID FindNtGdiHfontCreate(PVOID Gdi32)
                                 {
                                     case CALL:
                                         Buffer = GetCallDestination(Buffer);
+#if ML_AMD64
+                                        if (IsX64SyscallStub(Buffer) == FALSE)
+                                            break;
+#else
                                         if (IsSystemCall(Buffer) == FALSE)
                                             break;
+#endif
 
                                         Ret = Buffer;
                                         //return STATUS_SUCCESS;
@@ -971,6 +1037,51 @@ PVOID FindNtGdiHfontCreate(PVOID Gdi32)
     return NtGdiHfontCreate;
 }
 
+#if ML_AMD64
+static BOOL IsX64SyscallStub(PVOID Routine)
+{
+    PBYTE Function;
+
+    Function = (PBYTE)Routine;
+    if (Function == nullptr)
+        return FALSE;
+
+    if (Function[0] != 0x4C ||
+        Function[1] != 0x8B ||
+        Function[2] != 0xD1 ||
+        Function[3] != 0xB8)
+        return FALSE;
+
+    for (ULONG_PTR i = 8; i != 0x20; ++i)
+        if (Function[i] == 0x0F && Function[i + 1] == 0x05 && Function[i + 2] == 0xC3)
+            return TRUE;
+
+    return FALSE;
+}
+
+static NTSTATUS CheckX64GdiSyscallRoutine(PVOID Routine, ULONG IdForLog)
+{
+    if (Routine == nullptr)
+        return STATUS_NOT_FOUND;
+
+    if (!IsX64SyscallStub(Routine))
+    {
+#if ENABLE_LOG
+        PBYTE Bytes = (PBYTE)Routine;
+        WriteLog(L"gdi32 x64 export is not syscall stub hash=%08X routine=%p bytes=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+            IdForLog,
+            Routine,
+            Bytes[0], Bytes[1], Bytes[2], Bytes[3],
+            Bytes[4], Bytes[5], Bytes[6], Bytes[7],
+            Bytes[8], Bytes[9], Bytes[10], Bytes[11]);
+#endif
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    return STATUS_SUCCESS;
+}
+#endif
+
 
 /************************************************************************
   init end
@@ -979,6 +1090,7 @@ PVOID FindNtGdiHfontCreate(PVOID Gdi32)
 NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
 {
     PVOID NtGdiHfontCreate, Fms;
+    NTSTATUS Status;
 
     *(PVOID *)&GdiGetCodePage = GetRoutineAddress(Gdi32, "GdiGetCodePage");
 
@@ -1013,6 +1125,15 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
     //LdrAddRefDll(LDR_ADDREF_DLL_PIN, Fms);
 
 #if ML_AMD64
+    Status = CheckX64GdiSyscallRoutine(NtGdiHfontCreate, WIN32K_NtGdiHfontCreate);
+    FAIL_RETURN(Status);
+
+    Status = HpAddSystemCallByRoutine(NtGdiHfontCreate, WIN32K_NtGdiHfontCreate);
+    FAIL_RETURN(Status);
+
+    Status = HpAddSystemCallFilter(WIN32K_NtGdiHfontCreate, LepHpNtGdiHfontCreate, this);
+    FAIL_RETURN(Status);
+
     PVOID EnumFontModule = Nt_GetModuleHandle(L"gdi32full.dll");
     if (EnumFontModule == nullptr)
         EnumFontModule = Gdi32;
@@ -1030,8 +1151,6 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontFamiliesW),
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontFamiliesExA),
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontFamiliesExW),
-
-        LepFunctionJump(NtGdiHfontCreate),
     };
 
 #undef LepHookEnumFontFromEAT
@@ -1062,6 +1181,10 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
 
 NTSTATUS LepGlobalData::UnHookGdi32Routines()
 {
+#if ML_AMD64
+    HpRemoveSystemCallFilter(WIN32K_NtGdiHfontCreate, LepHpNtGdiHfontCreate);
+#endif
+
     Mp::RestoreMemory(HookStub.StubGetStockObject);
     Mp::RestoreMemory(HookStub.StubDeleteObject);
     Mp::RestoreMemory(HookStub.StubCreateCompatibleDC);
