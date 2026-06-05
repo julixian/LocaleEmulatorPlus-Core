@@ -1,7 +1,5 @@
-//#pragma comment(linker, "/ENTRY:DllMain")
 #pragma comment(linker, "/SECTION:.text,ERW /MERGE:.rdata=.text /MERGE:.data=.text")
 #pragma comment(linker, "/SECTION:.Asuna,ERW /MERGE:.text=.Asuna")
-//#pragma comment(linker, "/EXPORT:LepCreateProcess=_LeCreateProcess@44")
 
 #include "ml.cpp"
 #include "LoaderDll.h"
@@ -167,7 +165,7 @@ EXTC
 NTSTATUS
 NTAPI
 LepCreateProcess(
-	PLEPB                    EnvironmentBlock,
+	PLEPB                   EnvironmentBlock,
 	PCWSTR                  ApplicationName,
 	PWSTR                   CommandLine,
 	PCWSTR                  CurrentDirectory,
