@@ -2057,6 +2057,30 @@ HANDLE NTAPI LepGetClipboardData(UINT Format)
     return GlobalData->GetClipboardData(Format);
 }
 
+#ifndef SPI_GETDEFAULTINPUTLANG
+#define SPI_GETDEFAULTINPUTLANG 0x0059
+#endif
+
+static const ULONG_PTR LEP_JAPANESE_DEFAULT_INPUT_LANG = 0x04110411;
+
+BOOL NTAPI LepSystemParametersInfoA(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni)
+{
+    BOOL Result;
+    PLepGlobalData GlobalData;
+
+    GlobalData = LepGetGlobalData();
+    Result = GlobalData->SystemParametersInfoA(uiAction, uiParam, pvParam, fWinIni);
+
+    if (Result &&
+        uiAction == SPI_GETDEFAULTINPUTLANG &&
+        pvParam != nullptr)
+    {
+        *(HKL *)pvParam = (HKL)LEP_JAPANESE_DEFAULT_INPUT_LANG;
+    }
+
+    return Result;
+}
+
 #define GetSystemFont(...) (HFONT)GetStockObject(SYSTEM_FONT)
 
 HDC NTAPI LepGetDCEx(HWND hWnd, HRGN hrgnClip, DWORD flags)
@@ -3155,19 +3179,22 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
                 LEP_FUNCTION_NO_ABSOLUTE_JUMP_OP :
                 LEP_FUNCTION_JUMP_OP;
 
-        Mp::PATCH_MEMORY_DATA p[] =
-        {
-            LepHookFromEATOp(User32, USER32, SetWindowLongA, SetWindowLongHookOp),
-            LepHookFromEAT(User32, USER32, GetWindowLongA),
-            LepHookFromEATOp(User32, USER32, SetWindowLongPtrA, SetWindowLongHookOp),
-            LepHookFromEAT(User32, USER32, GetWindowLongPtrA),
-            LepHookFromEAT(User32, USER32, IsWindowUnicode),
+        Mp::PATCH_MEMORY_DATA p[8];
+        ULONG_PTR Count = 0;
 
-            LepHookFromEAT(User32, USER32, GetClipboardData),
-            LepHookFromEAT(User32, USER32, SetClipboardData),
-        };
+        p[Count++] = LepHookFromEATOp(User32, USER32, SetWindowLongA, SetWindowLongHookOp);
+        p[Count++] = LepHookFromEAT(User32, USER32, GetWindowLongA);
+        p[Count++] = LepHookFromEATOp(User32, USER32, SetWindowLongPtrA, SetWindowLongHookOp);
+        p[Count++] = LepHookFromEAT(User32, USER32, GetWindowLongPtrA);
+        p[Count++] = LepHookFromEAT(User32, USER32, IsWindowUnicode);
 
-        Status = Mp::PatchMemory(p, countof(p));
+        p[Count++] = LepHookFromEAT(User32, USER32, GetClipboardData);
+        p[Count++] = LepHookFromEAT(User32, USER32, SetClipboardData);
+
+        if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
+            p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoA);
+
+        Status = Mp::PatchMemory(p, Count);
 
 #if ENABLE_LOG
         WriteLog(L"user32 patch eat status=%08X", Status);
@@ -3177,29 +3204,32 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     }
 #endif
 
-    Mp::PATCH_MEMORY_DATA p[] =
-    {
-        LepFunctionJump(NtUserCreateWindowEx),
-        LepFunctionJump(NtUserMessageCall),
-        LepFunctionJump(NtUserDefSetText),
+    Mp::PATCH_MEMORY_DATA p[13];
+    ULONG_PTR Count = 0;
 
-        LepHookFromEAT(User32, USER32, SetWindowLongA),
-        LepHookFromEAT(User32, USER32, GetWindowLongA),
-        LepHookFromEAT(User32, USER32, IsWindowUnicode),
+    p[Count++] = LepFunctionJump(NtUserCreateWindowEx);
+    p[Count++] = LepFunctionJump(NtUserMessageCall);
+    p[Count++] = LepFunctionJump(NtUserDefSetText);
 
-        LepHookFromEAT(User32, USER32, GetClipboardData),
-        LepHookFromEAT(User32, USER32, SetClipboardData),
+    p[Count++] = LepHookFromEAT(User32, USER32, SetWindowLongA);
+    p[Count++] = LepHookFromEAT(User32, USER32, GetWindowLongA);
+    p[Count++] = LepHookFromEAT(User32, USER32, IsWindowUnicode);
+
+    p[Count++] = LepHookFromEAT(User32, USER32, GetClipboardData);
+    p[Count++] = LepHookFromEAT(User32, USER32, SetClipboardData);
+
+    if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
+        p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoA);
 
 #if !ML_AMD64
-        LepHookFromEAT(User32, USER32, GetDC),
+    p[Count++] = LepHookFromEAT(User32, USER32, GetDC);
 #endif
-        LepHookFromEAT(User32, USER32, GetDCEx),
-        LepHookFromEAT(User32, USER32, GetWindowDC),
+    p[Count++] = LepHookFromEAT(User32, USER32, GetDCEx);
+    p[Count++] = LepHookFromEAT(User32, USER32, GetWindowDC);
 
-        LepHookFromEAT(User32, USER32, BeginPaint),
-    };
+    p[Count++] = LepHookFromEAT(User32, USER32, BeginPaint);
 
-    Status = Mp::PatchMemory(p, countof(p));
+    Status = Mp::PatchMemory(p, Count);
 
 #if ENABLE_LOG
     WriteLog(L"user32 generic patch status=%08X", Status);
@@ -3234,6 +3264,7 @@ NTSTATUS LepGlobalData::UnHookUser32Routines()
 
     Mp::RestoreMemory(HookStub.StubGetClipboardData);
     Mp::RestoreMemory(HookStub.StubSetClipboardData);
+    Mp::RestoreMemory(HookStub.StubSystemParametersInfoA);
 
     Mp::RestoreMemory(HookStub.StubGetDC);
     Mp::RestoreMemory(HookStub.StubGetDCEx);

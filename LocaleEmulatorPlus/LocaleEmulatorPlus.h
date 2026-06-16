@@ -39,6 +39,7 @@ class LepGlobalData;
 typedef LepGlobalData* PLepGlobalData;
 
 typedef ULONG (NTAPI *PLEP_QUERY_FONT_ASSOC_STATUS)();
+typedef LANGID (WINAPI *PLEP_GET_DEFAULT_UI_LANGUAGE)();
 
 VOID LepNlsDiag(PCWSTR Format, ...);
 VOID LepSyncUser32ClientCodePage();
@@ -869,6 +870,8 @@ public:
         API_POINTER(NtContinue)                 StubLdrInitNtContinue;
         API_POINTER(LdrResSearchResource)       StubLdrResSearchResource;
         API_POINTER(RtlCustomCPToUnicodeN)      StubRtlCustomCPToUnicodeN;
+        PLEP_GET_DEFAULT_UI_LANGUAGE     StubGetSystemDefaultUILanguage;
+        PLEP_GET_DEFAULT_UI_LANGUAGE     StubGetUserDefaultUILanguage;
 
         API_POINTER(NtUserMessageCall)          StubNtUserMessageCall;
         API_POINTER(NtUserDefSetText)           StubNtUserDefSetText;
@@ -881,6 +884,7 @@ public:
         API_POINTER(IsWindowUnicode)            StubIsWindowUnicode;
         API_POINTER(GetClipboardData)           StubGetClipboardData;
         API_POINTER(SetClipboardData)           StubSetClipboardData;
+        API_POINTER(SystemParametersInfoA)      StubSystemParametersInfoA;
         API_POINTER(GetDC)                      StubGetDC;
         API_POINTER(GetDCEx)                    StubGetDCEx;
         API_POINTER(GetWindowDC)                StubGetWindowDC;
@@ -1112,6 +1116,11 @@ public:
     HANDLE GetClipboardData(UINT Format)
     {
         return HookStub.StubGetClipboardData(Format);
+    }
+
+    BOOL SystemParametersInfoA(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni)
+    {
+        return HookStub.StubSystemParametersInfoA(uiAction, uiParam, pvParam, fWinIni);
     }
 
     HDC GetDC(HWND hWnd)

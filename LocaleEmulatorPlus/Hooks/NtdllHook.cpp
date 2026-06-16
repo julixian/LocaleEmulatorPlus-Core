@@ -975,11 +975,6 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
     ADD_FILTER_(NtContinue,                 LepNtContinue,               this);
 #endif
 
-    if (LepGetGlobalData()->GetLepb()->HookUILanguageApi != 0)
-    {
-        ADD_FILTER_(NtQueryInstallUILanguage, LepNtQueryInstallUILanguage, this);
-        WriteLog(L"NtQueryInstallUILanguage hooked");
-    }
     //ADD_FILTER_(NtQueryInformationThread,   LepNtQueryInformationThread, this);
     //ADD_FILTER_(NtTerminateThread,          LepNtTerminateThread,        this);
 

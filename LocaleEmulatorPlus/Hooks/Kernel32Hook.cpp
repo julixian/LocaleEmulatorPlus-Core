@@ -15,6 +15,16 @@ LCID NTAPI LepGetUserDefaultLCID()
     return LepGetGlobalData()->GetLepb()->LocaleID;
 }
 
+LANGID WINAPI LepGetSystemDefaultUILanguage()
+{
+    return (LANGID)LepGetGlobalData()->GetLepb()->LocaleID;
+}
+
+LANGID WINAPI LepGetUserDefaultUILanguage()
+{
+    return (LANGID)LepGetGlobalData()->GetLepb()->LocaleID;
+}
+
 NTSTATUS LepGlobalData::HackUserDefaultLCID(PVOID Kernel32)
 {
     LCID        Lcid;
@@ -686,6 +696,7 @@ NTSTATUS LepGlobalData::HackAnsiOemCodeHashNodes() {
 NTSTATUS LepGlobalData::HookKernel32Routines(PVOID Kernel32)
 {
     PVOID GetCurrentNlsCache;
+    PLDR_MODULE Kernel;
     NTSTATUS Status;
 
     LepNlsDiag(L"HookKernel32Routines entry Kernel32=%p", Kernel32);
@@ -698,10 +709,39 @@ NTSTATUS LepGlobalData::HookKernel32Routines(PVOID Kernel32)
 
     WriteLog(L"hook k32: %p", Status);
 
+    Kernel = FindLdrModuleByHandle(Kernel32);
+    if (Kernel != nullptr &&
+        GetLepb()->HookUILanguageApi != 0 &&
+        RtlEqualUnicodeString(&Kernel->BaseDllName, &USTR(L"KERNEL32.dll"), TRUE))
+    {
+        PVOID GetSystemDefaultUILanguage;
+        PVOID GetUserDefaultUILanguage;
+
+        GetSystemDefaultUILanguage = GetRoutineAddress(Kernel32, "GetSystemDefaultUILanguage");
+        GetUserDefaultUILanguage = GetRoutineAddress(Kernel32, "GetUserDefaultUILanguage");
+        if (GetSystemDefaultUILanguage == nullptr || GetUserDefaultUILanguage == nullptr)
+            return STATUS_PROCEDURE_NOT_FOUND;
+
+        Mp::PATCH_MEMORY_DATA p[] =
+        {
+            Mp::FunctionJumpVa(GetSystemDefaultUILanguage, LepGetSystemDefaultUILanguage, &HookStub.StubGetSystemDefaultUILanguage, LEP_FUNCTION_JUMP_OP),
+            Mp::FunctionJumpVa(GetUserDefaultUILanguage, LepGetUserDefaultUILanguage, &HookStub.StubGetUserDefaultUILanguage, LEP_FUNCTION_JUMP_OP),
+        };
+
+        Status = Mp::PatchMemory(p, countof(p));
+#if ENABLE_LOG
+        WriteLog(L"hook ui language api: %08X", Status);
+#endif
+        FAIL_RETURN(Status);
+    }
+
     return Status;
 }
 
 NTSTATUS LepGlobalData::UnHookKernel32Routines()
 {
+    Mp::RestoreMemory(HookStub.StubGetSystemDefaultUILanguage);
+    Mp::RestoreMemory(HookStub.StubGetUserDefaultUILanguage);
+
     return 0;
 }
