@@ -152,7 +152,7 @@ x86/x64：走 HookPort filter。
 
 做法：两个函数都使用普通 inline hook。
 
-- `RtlKnownExceptionFilter` -> `LepKnownExceptionFilter`：在转交原 filter 前生成 minidump。
+- `RtlKnownExceptionFilter` -> `LepKnownExceptionFilter`：在转交原 filter 前生成 minidump。感觉没什么用，暂时跳过了，只保留实现。
 - `RtlCustomCPToUnicodeN` -> `LepCustomCPToUnicodeN`：当调用者传入非目标、非 UTF-8 的 CP table 时，先用目标 ANSI codepage table 重新初始化，再执行转换。
 
 作用：前者用于诊断，后者修正部分绕过默认 ACP 的转换路径。

@@ -1041,7 +1041,9 @@ public:
 
     LONG RtlKnownExceptionFilter(PEXCEPTION_POINTERS ExceptionPointers)
     {
-        return HookStub.StubRtlKnownExceptionFilter(ExceptionPointers);
+        return HookStub.StubRtlKnownExceptionFilter == nullptr ?
+            ::RtlKnownExceptionFilter(ExceptionPointers) :
+            HookStub.StubRtlKnownExceptionFilter(ExceptionPointers);
     }
 
     /************************************************************************

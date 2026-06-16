@@ -19059,7 +19059,14 @@ Bool IsShiftJISString(PCChar pString, SizeT Length);
 
 inline int GetFormatedSize(PCWSTR Format, ...)
 {
-    return _vscwprintf(Format, (va_list)((PVOID *)&Format + 1));
+    va_list Arguments;
+    int Count;
+
+    va_start(Arguments, Format);
+    Count = _vscwprintf(Format, Arguments);
+    va_end(Arguments);
+
+    return Count;
 }
 
 Int FormatStringA  (PChar  pszBuffer, PCChar  pszFormat, ...);
@@ -28269,17 +28276,25 @@ public:
 
     NoInline static StringT Format(STRING_CONST_POINTER_TYPE format, ...)
     {
+        StringT Result;
         va_list Arguments;
+
         va_start(Arguments, format);
-        return FormatV(format, Arguments);
+        Result = FormatV(format, Arguments);
+        va_end(Arguments);
+
+        return Result;
     }
 
     NoInline static StringT FormatV(STRING_CONST_POINTER_TYPE Format, va_list Arguments)
     {
         NTSTATUS    Status;
         StringT      NewString;
+        va_list      CountArguments;
 
-        Status = NewString.ResizeBuffer(NewString.GetImplement()->FormatCountV(Format, Arguments));
+        va_copy(CountArguments, Arguments);
+        Status = NewString.ResizeBuffer(NewString.GetImplement()->FormatCountV(Format, CountArguments));
+        va_end(CountArguments);
         if (NT_FAILED(Status))
             return NewString;
 
@@ -28971,10 +28986,22 @@ protected:
     {
         BOOL        Success;
         WCHAR       NlsIndexBuffer[16];
+        WCHAR       Digits[16];
+        ULONG       DigitCount;
         NTSTATUS    Status;
         PKEY_VALUE_PARTIAL_INFORMATION FileName;
 
-        _snwprintf(NlsIndexBuffer, countof(NlsIndexBuffer), L"%d", NlsIndex);
+        DigitCount = 0;
+        do
+        {
+            Digits[DigitCount++] = (WCHAR)(L'0' + NlsIndex % 10);
+            NlsIndex /= 10;
+        } while (NlsIndex != 0);
+
+        for (ULONG Index = 0; Index != DigitCount; ++Index)
+            NlsIndexBuffer[Index] = Digits[DigitCount - Index - 1];
+
+        NlsIndexBuffer[DigitCount] = 0;
 
         Status = GetKeyValue(HKEY_LOCAL_MACHINE, SubKey, NlsIndexBuffer, &FileName);
         FAIL_RETURN(Status);

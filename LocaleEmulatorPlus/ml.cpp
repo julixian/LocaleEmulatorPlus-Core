@@ -1837,16 +1837,17 @@ BOOL Nt_IsPathExists(LPCWSTR pszPath)
 ULONG_PTR Nt_GetModulePath(PVOID ModuleBase, PWSTR Path, ULONG_PTR BufferCount)
 {
     PLDR_MODULE LdrModule;
-    ULONG_PTR   PathLength;
+    ULONG_PTR   PathLength, ReturnLength;
 
     LdrModule   = Nt_FindLdrModuleByHandle(ModuleBase);
-    PathLength  = (LdrModule->FullDllName.Length - LdrModule->BaseDllName.Length) / sizeof(WCHAR);
+    ReturnLength = (LdrModule->FullDllName.Length - LdrModule->BaseDllName.Length) / sizeof(WCHAR);
+    PathLength = MY_MIN(ReturnLength, BufferCount);
 
     InternalCopyUnicodeString(&LdrModule->FullDllName, Path, PathLength);
     if (PathLength < BufferCount)
         Path[PathLength] = 0;
 
-    return PathLength;
+    return ReturnLength;
 }
 
 ULONG Nt_GetExeDirectory(PWCHAR Path, ULONG BufferCount)
@@ -1883,7 +1884,7 @@ ULONG_PTR Nt_GetModuleFileName(PVOID ModuleBase, LPWSTR Filename, ULONG_PTR Buff
 
     Length = InternalCopyUnicodeString(&LdrModule->FullDllName, Filename, BufferCount);
     if (LdrModule->FullDllName.Length / sizeof(WCHAR) < BufferCount)
-        Filename[BufferCount] = 0;
+        Filename[Length] = 0;
 /*
     Length = min(nSize * sizeof(*lpFilename), LdrModule->FullDllName.Length);
     CopyMemory(lpFilename, LdrModule->FullDllName.Buffer, Length);
@@ -1940,9 +1941,29 @@ _ML_C_HEAD_
 #pragma comment(lib, "dbghelp.lib")
 #include <DbgHelp.h>
 
+static PWSTR AppendHex64NoLeading(PWSTR Buffer, ULONG64 Value)
+{
+    static const WCHAR Hex[] = L"0123456789ABCDEF";
+    BOOLEAN Started = FALSE;
+
+    for (LONG_PTR Shift = 60; Shift >= 0; Shift -= 4)
+    {
+        ULONG Digit = (ULONG)((Value >> Shift) & 0xF);
+
+        if (Digit != 0 || Started || Shift == 0)
+        {
+            *Buffer++ = Hex[Digit];
+            Started = TRUE;
+        }
+    }
+
+    return Buffer;
+}
+
 NTSTATUS CreateMiniDump(PEXCEPTION_POINTERS ExceptionPointers)
 {
     WCHAR           MiniDumpFile[MAX_NTPATH];
+    PWSTR           MiniDumpExt;
     NtFileDisk      File;
     BOOL            Success;
     NTSTATUS        Status;
@@ -1953,7 +1974,10 @@ NTSTATUS CreateMiniDump(PEXCEPTION_POINTERS ExceptionPointers)
     NtQueryInformationProcess(NtCurrentProcess(), ProcessTimes, &Times, sizeof(Times), NULL);
 
     Nt_GetModuleFileName(NULL, MiniDumpFile, countof(MiniDumpFile));
-    swprintf(findextw(MiniDumpFile), L".%I64X.crash.dmp", Times.CreationTime.QuadPart);
+    MiniDumpExt = findextw(MiniDumpFile);
+    *MiniDumpExt++ = L'.';
+    MiniDumpExt = AppendHex64NoLeading(MiniDumpExt, (ULONG64)Times.CreationTime.QuadPart);
+    CopyMemory(MiniDumpExt, L".crash.dmp", sizeof(L".crash.dmp"));
 
     Status = File.Create(MiniDumpFile);
     FAIL_RETURN(Status);
@@ -4612,18 +4636,26 @@ Int FormatStringvW(PWChar pszBuffer, PCWChar pszFormat, va_list args)
 
 Int FormatStringA(PChar pszBuffer, PCChar pszFormat, ...)
 {
+    Int Result;
     va_list valist;
 
     va_start(valist, pszFormat);
-    return FormatStringvA(pszBuffer, pszFormat, valist);
+    Result = FormatStringvA(pszBuffer, pszFormat, valist);
+    va_end(valist);
+
+    return Result;
 }
 
 Int FormatStringW(PWChar pszBuffer, PCWChar pszFormat, ...)
 {
+    Int Result;
     va_list valist;
 
     va_start(valist, pszFormat);
-    return FormatStringvW(pszBuffer, pszFormat, valist);
+    Result = FormatStringvW(pszBuffer, pszFormat, valist);
+    va_end(valist);
+
+    return Result;
 }
 
 _ML_C_TAIL_
@@ -4641,6 +4673,7 @@ ULONG_PTR PrintConsoleA(PCSTR Format, ...)
 
     va_start(Args, Format);
     Length = _vsnprintf(Buffer, countof(Buffer) - 1, Format, Args);
+    va_end(Args);
     if (Length == -1)
         return Length;
 
@@ -4682,6 +4715,7 @@ ULONG_PTR PrintConsole(PCWSTR Format, ...)
 
     va_start(Args, Format);
     Length = _vsnwprintf(Buffer, countof(Buffer) - 1, Format, Args);
+    va_end(Args);
     if (Length == -1)
         return Length;
 
@@ -7401,6 +7435,7 @@ Print(
     va_start(Arg, Format);
     //Length = _vsnwprintf(Buffer, countof(Buffer) - 1, Format, Arg);
     Length = FormatStringvnW(Buffer, countof(Buffer) - 1, Format, Arg);
+    va_end(Arg);
     if (Length == -1)
         return STATUS_BUFFER_TOO_SMALL;
 

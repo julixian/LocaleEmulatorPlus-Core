@@ -6,5 +6,4 @@ EXPORTS
     _stricmp
     _vscwprintf
     _vsnwprintf
-    _vswprintf
     _wcsicmp

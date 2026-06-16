@@ -988,7 +988,6 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
 #if !ML_AMD64
         Mp::FunctionCallVa(LdrInitNtContinue, LepLdrInitNtContinue, &HookStub.StubLdrInitNtContinue),
 #endif
-        Mp::FunctionJumpVa(::RtlKnownExceptionFilter, LepKnownExceptionFilter, &HookStub.StubRtlKnownExceptionFilter, LEP_FUNCTION_JUMP_OP),
         Mp::FunctionJumpVa(::RtlCustomCPToUnicodeN, LepCustomCPToUnicodeN, &HookStub.StubRtlCustomCPToUnicodeN, LEP_FUNCTION_JUMP_OP),
     };
 
