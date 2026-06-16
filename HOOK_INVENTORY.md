@@ -345,7 +345,15 @@ x64 无 win32u：从 `gdi32!CreateFontIndirectExW` 开始最多扫 `0xA0` 字节
 
 作用：控制/记录字体 charset 创建路径，让字体选择符合目标 locale。
 
-### 21. gdi32 字体枚举和 DC/对象辅助 hook
+### 21. `QueryFontAssocStatus`
+
+时机：`GDI32.dll` 加载后，`HookGdi32Routines()`，仅当目标 ANSI codepage 为 `932` 时安装。
+
+x86/x64：统一使用普通 inline hook，不走 `NtGdiQueryFontAssocInfo` syscall hook。查找时优先从已加载的 `gdi32full.dll` 导出表取 `QueryFontAssocStatus`，找不到则退回当前 `gdi32.dll` 导出表。hook 后 `LepQueryFontAssocStatus()` 固定返回 `0`。
+
+作用：模拟日文 Windows 上 GDI font association status 为 `0` 的状态，避免中文系统转日区时 GDI A 文本路径进入 `FontAssocHack`，把 `TextOutA`/度量路径中的单字节半角假名按 `1252` 而不是 `932` 解释。
+
+### 22. gdi32 字体枚举和 DC/对象辅助 hook
 
 时机：`GDI32.dll` 加载后，`HookGdi32Routines()`。
 
@@ -355,7 +363,7 @@ x64：EAT inline hook `GetStockObject`、`DeleteObject`、`CreateCompatibleDC`�
 
 作用：调整字体枚举、stock font、兼容 DC 等路径中的 charset/font 行为。
 
-### 22. DLL load notification
+### 23. DLL load notification
 
 时机：`LepGlobalData::Initialize()` 注册 `LdrRegisterDllNotification()`。
 
@@ -367,7 +375,7 @@ x64：EAT inline hook `GetStockObject`、`DeleteObject`、`CreateCompatibleDC`�
 
 作用：对后加载模块补装 hook 和 locale cache 同步。
 
-### 23. `LoadMemoryDll()` shadow ntdll hook
+### 24. `LoadMemoryDll()` shadow ntdll hook
 
 时机：从内存加载 DLL 的辅助路径中。
 
@@ -375,7 +383,7 @@ x64：EAT inline hook `GetStockObject`、`DeleteObject`、`CreateCompatibleDC`�
 
 作用：让内存 DLL 加载辅助逻辑能模拟/接管文件与 section 相关操作。它不是普通运行时 locale hook。
 
-### 24. Heap corruption helper
+### 25. Heap corruption helper
 
 时机：调试辅助功能启用时。
 
@@ -383,7 +391,7 @@ hook：`RtlAllocateHeap`、`RtlReAllocateHeap`、`RtlFreeHeap`、`RtlSizeHeap`�
 
 作用：辅助定位 heap corruption，不属于转区必需路径。
 
-### 25. 当前存在但未接入主路径的 helper
+### 26. 当前存在但未接入主路径的 helper
 
 `FindNtUserMessageCall(user32)`：旧版 x86 helper，从 `SendNotifyMessageW` 最多扫 `0x40` 字节，找第一个 call 到 syscall stub；当前 `HookUser32Routines()` 使用的是 `FindNtUserMessageCall2()`。
 
