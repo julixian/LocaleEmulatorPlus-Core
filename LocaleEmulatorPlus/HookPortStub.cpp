@@ -1126,25 +1126,6 @@ namespace
             });
     }
 
-    ULONG NTAPI HpNtGdiQueryFontAssocInfo(ULONG_PTR InfoClass)
-    {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtGdiQueryFontAssocInfo);
-        PVOID Original = LookupSyscallOriginal(WIN32K_NtGdiQueryFontAssocInfo);
-
-        auto CallOriginal = [&]() -> ULONG
-        {
-            typedef ULONG (NTAPI *PFN)(ULONG_PTR);
-            return ((PFN)Original)(InfoClass);
-        };
-
-        return DispatchTypedFilter(SysCall, CallOriginal,
-            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> ULONG
-            {
-                typedef ULONG (HPCALL *FILTER)(HPARGS ULONG_PTR);
-                return ((FILTER)Callback)(Info, FltInfo, InfoClass);
-            });
-    }
-
     PVOID FindWrapperByHash(ULONG RoutineHash)
     {
         RTL_OSVERSIONINFOW VersionInfo;
@@ -1174,7 +1155,6 @@ namespace
             case WIN32K_NtUserGetWindowDC:        return HpNtUserGetWindowDC;
             case WIN32K_NtUserBeginPaint:         return HpNtUserBeginPaint;
             case WIN32K_NtGdiHfontCreate:         return HpNtGdiHfontCreate;
-            case WIN32K_NtGdiQueryFontAssocInfo:  return HpNtGdiQueryFontAssocInfo;
         }
 
         return nullptr;

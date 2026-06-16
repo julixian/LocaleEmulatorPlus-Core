@@ -38,7 +38,6 @@
 class LepGlobalData;
 typedef LepGlobalData* PLepGlobalData;
 
-typedef ULONG (NTAPI *PLEP_NTGDI_QUERY_FONT_ASSOC_INFO)(ULONG_PTR);
 typedef ULONG (NTAPI *PLEP_QUERY_FONT_ASSOC_STATUS)();
 
 VOID LepNlsDiag(PCWSTR Format, ...);
@@ -898,7 +897,6 @@ public:
         API_POINTER(DeleteObject)               StubDeleteObject;
         API_POINTER(CreateFontIndirectExW)      StubCreateFontIndirectExW;
         API_POINTER(NtGdiHfontCreate)           StubNtGdiHfontCreate;
-        PLEP_NTGDI_QUERY_FONT_ASSOC_INFO        StubNtGdiQueryFontAssocInfo;
         PLEP_QUERY_FONT_ASSOC_STATUS            StubQueryFontAssocStatus;
         API_POINTER(CreateCompatibleDC)         StubCreateCompatibleDC;
         API_POINTER(EnumFontsA)                 StubEnumFontsA;

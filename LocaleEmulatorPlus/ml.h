@@ -4192,7 +4192,6 @@ typedef HANDLE64 *PHANDLE64;
 #define WIN32K_NtUserGetWindowDC                                             0x2BC567A6u
 #define WIN32K_NtUserBeginPaint                                              0xBC65FC95u
 #define WIN32K_NtGdiHfontCreate                                              0xA2C7D037u
-#define WIN32K_NtGdiQueryFontAssocInfo                                       0xC68BB5CEu
 #define NTDLL_A_SHAFinal                                                     0x2C5E4B6Du
 #define NTDLL_A_SHAInit                                                      0x44098567u
 #define NTDLL_A_SHAUpdate                                                    0xC8FEA0C8u
