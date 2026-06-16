@@ -956,7 +956,39 @@ LepHpNtGdiHfontCreate(
         Unknown,
         FreeListLocalFont);
 }
+
+ULONG
+HPCALL
+LepHpNtGdiQueryFontAssocInfo(
+    HPARGS
+    ULONG_PTR InfoClass
+)
+{
+    UNREFERENCED_PARAMETER(HPARG_SYSCALL);
+    UNREFERENCED_PARAMETER(HPARG_FLTINFO);
+    UNREFERENCED_PARAMETER(InfoClass);
+
+    HpSetFilterAction(BlockSystemCall);
+    return 0;
+}
 #endif
+
+ULONG
+NTAPI
+LepNtGdiQueryFontAssocInfo(
+    ULONG_PTR InfoClass
+)
+{
+    UNREFERENCED_PARAMETER(InfoClass);
+    return 0;
+}
+
+ULONG
+NTAPI
+LepQueryFontAssocStatus()
+{
+    return 0;
+}
 
 API_POINTER(SelectObject)  StubSelectObject;
 
@@ -1090,9 +1122,12 @@ static NTSTATUS CheckX64GdiSyscallRoutine(PVOID Routine, ULONG IdForLog)
 NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
 {
     PVOID NtGdiHfontCreate, Fms;
+    PVOID NtGdiQueryFontAssocInfo, QueryFontAssocStatus;
     NTSTATUS Status;
 
     *(PVOID *)&GdiGetCodePage = GetRoutineAddress(Gdi32, "GdiGetCodePage");
+    NtGdiQueryFontAssocInfo = nullptr;
+    QueryFontAssocStatus = nullptr;
 
     if (this->HasWin32U)
     {
@@ -1102,12 +1137,26 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
         NtGdiHfontCreate = Nt_GetProcAddress(Win32uMod, "NtGdiHfontCreate");
         if (NtGdiHfontCreate == nullptr)
             return STATUS_NOT_FOUND;
+
+        if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
+        {
+            NtGdiQueryFontAssocInfo = Nt_GetProcAddress(Win32uMod, "NtGdiQueryFontAssocInfo");
+            if (NtGdiQueryFontAssocInfo == nullptr)
+                return STATUS_NOT_FOUND;
+        }
     }
     else
     {
         NtGdiHfontCreate = FindNtGdiHfontCreate(Gdi32);
         if (NtGdiHfontCreate == nullptr)
             return STATUS_NOT_FOUND;
+
+        if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
+        {
+            QueryFontAssocStatus = LookupExportTable(Gdi32, GDI32_QueryFontAssocStatus);
+            if (QueryFontAssocStatus == nullptr)
+                return STATUS_NOT_FOUND;
+        }
     }
 
     RtlInitializeCriticalSectionAndSpinCount(&HookRoutineData.Gdi32.GdiLock, 4000);
@@ -1133,6 +1182,32 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
 
     Status = HpAddSystemCallFilter(WIN32K_NtGdiHfontCreate, LepHpNtGdiHfontCreate, this);
     FAIL_RETURN(Status);
+
+    if (NtGdiQueryFontAssocInfo != nullptr)
+    {
+        Status = CheckX64GdiSyscallRoutine(NtGdiQueryFontAssocInfo, WIN32K_NtGdiQueryFontAssocInfo);
+        FAIL_RETURN(Status);
+
+        Status = HpAddSystemCallByRoutine(NtGdiQueryFontAssocInfo, WIN32K_NtGdiQueryFontAssocInfo);
+        FAIL_RETURN(Status);
+
+        Status = HpAddSystemCallFilter(WIN32K_NtGdiQueryFontAssocInfo, LepHpNtGdiQueryFontAssocInfo, this);
+        FAIL_RETURN(Status);
+    }
+    else if (QueryFontAssocStatus != nullptr)
+    {
+        Mp::PATCH_MEMORY_DATA FontAssocPatch[] =
+        {
+            Mp::FunctionJumpVa(
+                QueryFontAssocStatus,
+                LepQueryFontAssocStatus,
+                &HookStub.StubQueryFontAssocStatus,
+                LEP_FUNCTION_JUMP_OP),
+        };
+
+        Status = Mp::PatchMemory(FontAssocPatch, countof(FontAssocPatch));
+        FAIL_RETURN(Status);
+    }
 
     PVOID EnumFontModule = Nt_GetModuleHandle(L"gdi32full.dll");
     if (EnumFontModule == nullptr)
@@ -1176,6 +1251,21 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
     };
 #endif
 
+#if !ML_AMD64
+    if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
+    {
+        Mp::PATCH_MEMORY_DATA FontAssocPatch[] =
+        {
+            this->HasWin32U ?
+                Mp::FunctionJumpVa(NtGdiQueryFontAssocInfo, LepNtGdiQueryFontAssocInfo, &HookStub.StubNtGdiQueryFontAssocInfo, LEP_FUNCTION_JUMP_OP) :
+                Mp::FunctionJumpVa(QueryFontAssocStatus, LepQueryFontAssocStatus, &HookStub.StubQueryFontAssocStatus, LEP_FUNCTION_JUMP_OP),
+        };
+
+        Status = Mp::PatchMemory(FontAssocPatch, countof(FontAssocPatch));
+        FAIL_RETURN(Status);
+    }
+#endif
+
     return Mp::PatchMemory(p, countof(p));
 }
 
@@ -1183,6 +1273,7 @@ NTSTATUS LepGlobalData::UnHookGdi32Routines()
 {
 #if ML_AMD64
     HpRemoveSystemCallFilter(WIN32K_NtGdiHfontCreate, LepHpNtGdiHfontCreate);
+    HpRemoveSystemCallFilter(WIN32K_NtGdiQueryFontAssocInfo, LepHpNtGdiQueryFontAssocInfo);
 #endif
 
     Mp::RestoreMemory(HookStub.StubGetStockObject);
@@ -1193,6 +1284,8 @@ NTSTATUS LepGlobalData::UnHookGdi32Routines()
     Mp::RestoreMemory(HookStub.StubEnumFontsA);
     Mp::RestoreMemory(HookStub.StubEnumFontsW);
     Mp::RestoreMemory(HookStub.StubNtGdiHfontCreate);
+    Mp::RestoreMemory(HookStub.StubNtGdiQueryFontAssocInfo);
+    Mp::RestoreMemory(HookStub.StubQueryFontAssocStatus);
 
     return 0;
 }
