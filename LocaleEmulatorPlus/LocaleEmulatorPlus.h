@@ -115,29 +115,6 @@ ForceInline VOID LepSetProcessCodePagePair(USHORT AnsiCodePage, USHORT OemCodePa
 
 #define THREAD_LOCAL_BUFFER_CONTEXT TAG4('LTLB')
 #define LEP_LOADER_PROCESS           TAG4('LepL')
-#define LEP_NTUSER_SYSCALL_CONTEXT   TAG4('UNSC')
-
-#if ML_AMD64
-struct LEP_NTUSER_SYSCALL_FRAME : public TEB_ACTIVE_FRAME
-{
-    PVOID NtUserCreateWindowEx;
-    PVOID NtUserMessageCall;
-    PVOID NtUserDefSetText;
-
-    LEP_NTUSER_SYSCALL_FRAME()
-    {
-        this->Context = LEP_NTUSER_SYSCALL_CONTEXT;
-        NtUserCreateWindowEx = nullptr;
-        NtUserMessageCall = nullptr;
-        NtUserDefSetText = nullptr;
-    }
-
-    static LEP_NTUSER_SYSCALL_FRAME* Current()
-    {
-        return (LEP_NTUSER_SYSCALL_FRAME*)FindThreadFrame(LEP_NTUSER_SYSCALL_CONTEXT);
-    }
-};
-#endif
 
 #if LEP_DIAG_INIT
 #define LEP_DIAG_HEADER(_stage) ExceptionBox(_stage, L"LEP modern init diag")
@@ -1143,56 +1120,52 @@ public:
         return HookStub.StubBeginPaint(hWnd, lpPaint);
     }
 
+#if ML_AMD64
+    PVOID GetNtUserSystemCallOriginal(ULONG RoutineHash);
+#endif
+
     LRESULT NtUserMessageCall(HWND hWnd, UINT Message, WPARAM wParam, LPARAM lParam, ULONG_PTR xParam, DWORD xpfnProc, ULONG Flags)
     {
 #if ML_AMD64
-        LEP_NTUSER_SYSCALL_FRAME* Frame = LEP_NTUSER_SYSCALL_FRAME::Current();
-        if (Frame != nullptr && Frame->NtUserMessageCall != nullptr)
-        {
-            typedef LRESULT (NTAPI *PFN)(HWND, UINT, WPARAM, LPARAM, ULONG_PTR, DWORD, ULONG);
-            return ((PFN)Frame->NtUserMessageCall)(hWnd, Message, wParam, lParam, xParam, xpfnProc, Flags);
-        }
-#endif
+        typedef LRESULT (NTAPI *PFN)(HWND, UINT, WPARAM, LPARAM, ULONG_PTR, DWORD, ULONG);
+        PVOID Original = GetNtUserSystemCallOriginal(WIN32K_NtUserMessageCall);
+        return Original == nullptr ? 0 : ((PFN)Original)(hWnd, Message, wParam, lParam, xParam, xpfnProc, Flags);
+#else
         return HookStub.StubNtUserMessageCall(hWnd, Message, wParam, lParam, xParam, xpfnProc, Flags);
+#endif
     }
 
     HWND NtUserCreateWindowEx_Win7(ULONG ExStyle, PLARGE_UNICODE_STRING ClassName, PLARGE_UNICODE_STRING ClassVersion, PLARGE_UNICODE_STRING WindowName, ULONG Style, LONG X, LONG Y, LONG Width, LONG Height, HWND ParentWnd, HMENU Menu, PVOID Instance, LPVOID Param, ULONG ShowMode, ULONG_PTR Unknown)
     {
 #if ML_AMD64
-        LEP_NTUSER_SYSCALL_FRAME* Frame = LEP_NTUSER_SYSCALL_FRAME::Current();
-        if (Frame != nullptr && Frame->NtUserCreateWindowEx != nullptr)
-        {
-            typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG_PTR);
-            return ((PFN)Frame->NtUserCreateWindowEx)(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown);
-        }
-#endif
+        typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG_PTR);
+        PVOID Original = GetNtUserSystemCallOriginal(WIN32K_NtUserCreateWindowEx);
+        return Original == nullptr ? nullptr : ((PFN)Original)(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown);
+#else
         return HookStub.StubNtUserCreateWindowEx_Win7(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown);
+#endif
     }
 
     HWND NtUserCreateWindowEx_Win8(ULONG ExStyle, PLARGE_UNICODE_STRING ClassName, PLARGE_UNICODE_STRING ClassVersion, PLARGE_UNICODE_STRING WindowName, ULONG Style, LONG X, LONG Y, LONG Width, LONG Height, HWND ParentWnd, HMENU Menu, PVOID Instance, LPVOID Param, ULONG ShowMode, ULONG Unknown, ULONG_PTR Unknown2)
     {
 #if ML_AMD64
-        LEP_NTUSER_SYSCALL_FRAME* Frame = LEP_NTUSER_SYSCALL_FRAME::Current();
-        if (Frame != nullptr && Frame->NtUserCreateWindowEx != nullptr)
-        {
-            typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG, ULONG_PTR);
-            return ((PFN)Frame->NtUserCreateWindowEx)(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown, Unknown2);
-        }
-#endif
+        typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG, ULONG_PTR);
+        PVOID Original = GetNtUserSystemCallOriginal(WIN32K_NtUserCreateWindowEx);
+        return Original == nullptr ? nullptr : ((PFN)Original)(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown, Unknown2);
+#else
         return HookStub.StubNtUserCreateWindowEx_Win8(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown, Unknown2);
+#endif
     }
 
     BOOL NtUserSetDefText(HWND hWnd, PLARGE_UNICODE_STRING Text)
     {
 #if ML_AMD64
-        LEP_NTUSER_SYSCALL_FRAME* Frame = LEP_NTUSER_SYSCALL_FRAME::Current();
-        if (Frame != nullptr && Frame->NtUserDefSetText != nullptr)
-        {
-            typedef BOOL (NTAPI *PFN)(HWND, PLARGE_UNICODE_STRING);
-            return ((PFN)Frame->NtUserDefSetText)(hWnd, Text);
-        }
-#endif
+        typedef BOOL (NTAPI *PFN)(HWND, PLARGE_UNICODE_STRING);
+        PVOID Original = GetNtUserSystemCallOriginal(WIN32K_NtUserDefSetText);
+        return Original == nullptr ? FALSE : ((PFN)Original)(hWnd, Text);
+#else
         return HookStub.StubNtUserDefSetText(hWnd, Text);
+#endif
     }
 
     /************************************************************************

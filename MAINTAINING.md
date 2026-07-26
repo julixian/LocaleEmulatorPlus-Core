@@ -170,24 +170,24 @@ set EXTRA_CL=
 
 替代方式：
 
-- `dep\libs\LepDelayLoad.cpp`
+- `dep\libs\LepDelayLoad_x86_x64.cpp`
   - 自定义 delay-load helper。
   - 使用 `LdrLoadDll` 和 `LdrGetProcedureAddress`。
   - 避免依赖 kernel32。
-- `dep\libs\LepCrtShim.cpp`
+- `dep\libs\LepCrtShim_x64.cpp`
   - x64 下极小的 runtime 兜底，只提供 `abort`、`terminate`、`calloc`、`free`。
   - `calloc`/`free` 直接走进程堆和 `RtlAllocateHeap`/`RtlFreeHeap`，避免引入普通 ucrt/vcruntime import。
-- `dep\libs\lep_ntdll_alias.def`
+- `dep\libs\lep_ntdll_x86.def`
   - x86：把 `_LdrInitializeThunk@8` 等 stdcall 修饰名映射到 ntdll 无修饰导出。
   - 同时导出 `_stricmp`、`_vscwprintf`、`_vsnwprintf`、`_wcsicmp` 等 ntdll 里的 CRT 风格字符串处理函数。
 - `dep\libs\lep_ntdll_x64.def`
   - x64：导出 `LdrInitializeThunk`、`LdrRegisterDllNotification`、`LdrUnregisterDllNotification`。
   - 同时导出 ntdll 里的几个 CRT 风格字符串处理函数。
-- `dep\libs\lep_k32_alias.def`
+- `dep\libs\lep_k32_x86.def`
   - x86：`CreateProcessInternalW=_CreateProcessInternalW@48`
 - `dep\libs\lep_k32_x64.def`
   - x64：`CreateProcessInternalW`
-- `dep\libs\ntdll_vsnprintf.def`
+- `dep\libs\ntdll_vsnprintf_x86_x64.def`
   - 暴露 ntdll 中可用的格式化函数。
 
 注意不要在核心 DLL 里重新引入 `swprintf`、`_snwprintf` 这类高层 CRT printf 包装器。当前工具链可能把它们降成 `_vswprintf` 一类调用，但 ntdll 导出的 `_vswprintf` 语义/参数布局和 CRT 包装器预期不一致；确实需要格式化时优先使用已有的手写整数格式化，或直接调用已核对签名的 `_vsnwprintf` / `_vscwprintf`。

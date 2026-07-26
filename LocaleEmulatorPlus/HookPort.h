@@ -111,6 +111,7 @@ enum
 {
     SystemCallFilterEnable      = 0x00000001,
     SystemCallFilterUnsupport   = 0x00000002,
+    SystemCallHasInt2ESelector  = 0x00000004,
 };
 
 enum

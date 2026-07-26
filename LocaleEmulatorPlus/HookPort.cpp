@@ -414,20 +414,11 @@ HpUserModeDispatcher(
     return ReturnValue;
 }
 
-NAKED VOID HookSysEnter_Wow64_Win10()
+NAKED VOID HookSysEnter_Wow64_Win8Plus()
 {
     INLINE_ASM
     {
         lea edx, [esp + 08h];
-        jmp HookSysEnter_Wow64;
-    }
-}
-
-NAKED VOID HookSysEnter_Wow64_Win8()
-{
-    INLINE_ASM
-    {
-        lea edx, [esp + 8];
         jmp HookSysEnter_Wow64;
     }
 }
@@ -586,17 +577,16 @@ NTSTATUS HookSysCall_Wow64(HOOK_PORT_GLOBAL_INFO *GlobalInfo)
 
     Nt_QueryOsVersion(&VersionInfo);
 
-    if (VersionInfo.dwMajorVersion <= 6 && VersionInfo.dwMinorVersion <= 1)
+    if (
+         VersionInfo.dwMajorVersion > 6 ||
+         (VersionInfo.dwMajorVersion == 6 && VersionInfo.dwMinorVersion >= 2)
+       )
     {
-        HookRoutine = HookSysEnter_Wow64;
-    }
-    else if (VersionInfo.dwMajorVersion == 6 && VersionInfo.dwMinorVersion > 1)
-    {
-        HookRoutine = HookSysEnter_Wow64_Win8;
+        HookRoutine = HookSysEnter_Wow64_Win8Plus;
     }
     else
     {
-        HookRoutine = HookSysEnter_Wow64_Win10;
+        HookRoutine = HookSysEnter_Wow64;
     }
 
     Buffer[0] = PUSH;

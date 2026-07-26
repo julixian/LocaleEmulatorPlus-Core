@@ -71,8 +71,23 @@ namespace
         return Hash;
     }
 
-    BOOL ParseX64SysCallStub(PBYTE Function, PULONG ServiceIndex, PVOID* ReturnOpAddress)
+    BOOL ParseX64SysCallStub(
+        PBYTE Function,
+        PULONG ServiceIndex,
+        PVOID* ReturnOpAddress,
+        PBOOLEAN HasInt2ESelector = nullptr
+    )
     {
+        const static BYTE SystemCallSelector[] =
+        {
+            0xF6, 0x04, 0x25, 0x08, 0x03, 0xFE, 0x7F, 0x01,
+            0x75, 0x03,
+        };
+        const static BYTE Int2EReturn[] = { 0xCD, 0x2E, 0xC3 };
+
+        if (HasInt2ESelector != nullptr)
+            *HasInt2ESelector = FALSE;
+
         for (ULONG_PTR i = 0; i != 8; ++i)
         {
             if (Function[i + 0] == 0x4C &&
@@ -88,6 +103,18 @@ namespace
                     {
                         *ServiceIndex = *(PULONG)&Function[i + 4];
                         *ReturnOpAddress = &Function[j + 2];
+
+                        if (
+                             HasInt2ESelector != nullptr &&
+                             j >= countof(SystemCallSelector) &&
+                             j + 5 < X64_SYSCALL_STUB_SIZE &&
+                             RtlEqualMemory(&Function[j - countof(SystemCallSelector)], SystemCallSelector, sizeof(SystemCallSelector)) &&
+                             RtlEqualMemory(&Function[j + 3], Int2EReturn, sizeof(Int2EReturn))
+                           )
+                        {
+                            *HasInt2ESelector = TRUE;
+                        }
+
                         return TRUE;
                     }
                 }
@@ -101,10 +128,11 @@ namespace
     {
         ULONG ServiceIndex;
         PVOID ReturnOpAddress;
+        BOOLEAN HasInt2ESelector;
 
         ZeroMemory(SysCall, sizeof(*SysCall));
 
-        if (!ParseX64SysCallStub((PBYTE)Routine, &ServiceIndex, &ReturnOpAddress))
+        if (!ParseX64SysCallStub((PBYTE)Routine, &ServiceIndex, &ReturnOpAddress, &HasInt2ESelector))
             return STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM;
 
         SysCall->NameHash = RoutineHash;
@@ -112,6 +140,8 @@ namespace
         SysCall->FunctionAddress = Routine;
         SysCall->ReturnOpAddress = ReturnOpAddress;
         SysCall->ArgumentSize = 0;
+        if (HasInt2ESelector)
+            SET_FLAG(SysCall->Flags, SystemCallHasInt2ESelector);
 
         return STATUS_SUCCESS;
     }
@@ -209,6 +239,17 @@ namespace
 
     PVOID AllocateSyscallStub(PSYSCALL_INFO SysCall)
     {
+        const static BYTE DirectTail[] =
+        {
+            0x0F, 0x05, 0xC3,
+        };
+        const static BYTE SelectorTail[] =
+        {
+            0xF6, 0x04, 0x25, 0x08, 0x03, 0xFE, 0x7F, 0x01,
+            0x75, 0x03,
+            0x0F, 0x05, 0xC3,
+            0xCD, 0x2E, 0xC3,
+        };
         PBYTE Stub = nullptr;
         NTSTATUS Status;
 
@@ -221,9 +262,10 @@ namespace
         Stub[2] = 0xD1;
         Stub[3] = 0xB8;
         *(PULONG)&Stub[4] = SysCall->ServiceData;
-        Stub[8] = 0x0F;
-        Stub[9] = 0x05;
-        Stub[10] = 0xC3;
+        if (FLAG_ON(SysCall->Flags, SystemCallHasInt2ESelector))
+            CopyMemory(&Stub[8], SelectorTail, sizeof(SelectorTail));
+        else
+            CopyMemory(&Stub[8], DirectTail, sizeof(DirectTail));
         NtFlushInstructionCache(CurrentProcess, Stub, X64_SYSCALL_STUB_SIZE);
 
         return Stub;

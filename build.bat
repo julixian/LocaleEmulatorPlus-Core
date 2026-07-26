@@ -72,6 +72,8 @@ if not exist "%SDK_INC%\um\winnt.h" (
 set "LIBOUT=%ROOT%\out\libs\%TARGET%"
 set "LEP_DLL=LocaleEmulatorPlus_%SUFFIX%.dll"
 set "LOADER_DLL=LoaderDll_%SUFFIX%.dll"
+set "NTDLL_IMPORT_LIB=lep_ntdll_%SUFFIX%.lib"
+set "K32_IMPORT_LIB=lep_k32_%SUFFIX%.lib"
 
 if not exist "%OBJ%" mkdir "%OBJ%"
 if not exist "%LIBOUT%" mkdir "%LIBOUT%"
@@ -83,18 +85,18 @@ set "LIBPATHS=/libpath:"%SDK_LIB%\um\%SDK_ARCH%" /libpath:"%SDK_LIB%\ucrt\%SDK_A
 
 echo [%TARGET% 1/5] Generating import libraries
 if /I "%TARGET%"=="x86" (
-  "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_ntdll_alias.def" /out:"%LIBOUT%\lep_ntdll_alias.lib" || exit /b 1
-  "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_k32_alias.def" /out:"%LIBOUT%\lep_k32_alias.lib" || exit /b 1
+  "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_ntdll_x86.def" /out:"%LIBOUT%\%NTDLL_IMPORT_LIB%" || exit /b 1
+  "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_k32_x86.def" /out:"%LIBOUT%\%K32_IMPORT_LIB%" || exit /b 1
 ) else (
-  "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_ntdll_x64.def" /out:"%LIBOUT%\lep_ntdll_alias.lib" || exit /b 1
-  "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_k32_x64.def" /out:"%LIBOUT%\lep_k32_alias.lib" || exit /b 1
+  "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_ntdll_x64.def" /out:"%LIBOUT%\%NTDLL_IMPORT_LIB%" || exit /b 1
+  "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_k32_x64.def" /out:"%LIBOUT%\%K32_IMPORT_LIB%" || exit /b 1
 )
-"%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\ntdll_vsnprintf.def" /out:"%LIBOUT%\ntdll_vsnprintf.lib" || exit /b 1
+"%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\ntdll_vsnprintf_x86_x64.def" /out:"%LIBOUT%\ntdll_vsnprintf.lib" || exit /b 1
 
 echo [%TARGET% 2/5] Building LEP delay-load helper
-"%CL_EXE%" %COMMON_CL% /Fo"%OBJ%\LepDelayLoad.obj" %COMMON_INC% "%DEP%\libs\LepDelayLoad.cpp" || exit /b 1
+"%CL_EXE%" %COMMON_CL% /Fo"%OBJ%\LepDelayLoad.obj" %COMMON_INC% "%DEP%\libs\LepDelayLoad_x86_x64.cpp" || exit /b 1
 if /I "%TARGET%"=="x64" (
-  "%CL_EXE%" %COMMON_CL% /Oi- /Fo"%OBJ%\LepCrtShim.obj" %COMMON_INC% "%DEP%\libs\LepCrtShim.cpp" || exit /b 1
+  "%CL_EXE%" %COMMON_CL% /Oi- /Fo"%OBJ%\LepCrtShim.obj" %COMMON_INC% "%DEP%\libs\LepCrtShim_x64.cpp" || exit /b 1
   "%LIB%" /nologo /out:"%LIBOUT%\LepMyLib.lib" "%OBJ%\LepDelayLoad.obj" "%OBJ%\LepCrtShim.obj" || exit /b 1
 ) else (
   "%LIB%" /nologo /out:"%LIBOUT%\LepMyLib.lib" "%OBJ%\LepDelayLoad.obj" || exit /b 1
@@ -132,7 +134,7 @@ if /I "%TARGET%"=="x64" set "LEP_OBJECTS=%LEP_OBJECTS% "%OBJ%\LEP_HookPortStub.o
   %LIBPATHS% /nodefaultlib /debug:none /opt:ref /ignore:4254 %SAFESEH% /manifest:no /dynamicbase:no /nxcompat /machine:%MACHINE% /entry:DllMain /subsystem:windows ^
   /delayload:KERNEL32.dll /delayload:USER32.dll /delayload:GDI32.dll /delayload:DBGHELP.dll ^
   %ALT_UNDOC% ^
-  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\lep_ntdll_alias.lib" "%LIBOUT%\lep_k32_alias.lib" "%LIBOUT%\ntdll_vsnprintf.lib" kernel32.lib user32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
+  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" "%LIBOUT%\ntdll_vsnprintf.lib" kernel32.lib user32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
 
 echo [%TARGET% 5/5] Building %LOADER_DLL%
 pushd "%ROOT%" || exit /b 1
@@ -143,7 +145,7 @@ popd
   "%OBJ%\LoaderDll.obj" ^
   %LIBPATHS% /nodefaultlib /debug:none /opt:ref /ignore:4254 %SAFESEH% /manifest:no /machine:%MACHINE% /subsystem:windows ^
   %ALT_UNDOC% ^
-  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\lep_ntdll_alias.lib" "%LIBOUT%\lep_k32_alias.lib" "%LIBOUT%\ntdll_vsnprintf.lib" kernel32.lib user32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
+  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" "%LIBOUT%\ntdll_vsnprintf.lib" kernel32.lib user32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
 
 echo.
 echo [%TARGET%] Build succeeded.

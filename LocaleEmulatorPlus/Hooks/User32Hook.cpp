@@ -1446,11 +1446,9 @@ HWND LepNtUserCreateWindowExWorker(PUSER_CREATE_WINDOW Parameters, HWND (*Invoke
 HFONT GetFontFromDC(PLepGlobalData GlobalData, HDC hDC);
 
 #if ML_AMD64
-static VOID LepInitNtUserSyscallFrame(LEP_NTUSER_SYSCALL_FRAME* Frame)
+PVOID LepGlobalData::GetNtUserSystemCallOriginal(ULONG RoutineHash)
 {
-    Frame->NtUserCreateWindowEx = HpGetSystemCallOriginal(WIN32K_NtUserCreateWindowEx);
-    Frame->NtUserMessageCall = HpGetSystemCallOriginal(WIN32K_NtUserMessageCall);
-    Frame->NtUserDefSetText = HpGetSystemCallOriginal(WIN32K_NtUserDefSetText);
+    return HpGetSystemCallOriginal(RoutineHash);
 }
 
 LRESULT
@@ -1466,11 +1464,7 @@ LepHpNtUserMessageCall(
     ULONG        Flags
 )
 {
-    LEP_NTUSER_SYSCALL_FRAME Frame;
-
     HpSetFilterAction(BlockSystemCall);
-    LepInitNtUserSyscallFrame(&Frame);
-    Frame.Push();
 
     return LepNtUserMessageCall(Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
 }
@@ -1483,11 +1477,7 @@ LepHpNtUserDefSetText(
     PLARGE_UNICODE_STRING   Text
 )
 {
-    LEP_NTUSER_SYSCALL_FRAME Frame;
-
     HpSetFilterAction(BlockSystemCall);
-    LepInitNtUserSyscallFrame(&Frame);
-    Frame.Push();
 
     return LepNtUserDefSetText(hWnd, Text);
 }
@@ -1624,11 +1614,8 @@ LepHpNtUserCreateWindowEx(
 )
 {
     USER_CREATE_WINDOW Parameters;
-    LEP_NTUSER_SYSCALL_FRAME Frame;
 
     HpSetFilterAction(BlockSystemCall);
-    LepInitNtUserSyscallFrame(&Frame);
-    Frame.Push();
 
     Parameters.ExStyle      = ExStyle;
     Parameters.ClassName    = ClassName;
@@ -1690,15 +1677,14 @@ HWND LepNtUserCreateWindowExWorker(PUSER_CREATE_WINDOW Parameters, HWND (*Invoke
     CBT_CREATE_PARAM        CreateParam;
     PVOID                   OriginalRoutine;
 
+#if ML_AMD64
+    GlobalData = LepGetGlobalData();
+    OriginalRoutine = GlobalData->GetNtUserSystemCallOriginal(WIN32K_NtUserCreateWindowEx);
+    if (OriginalRoutine == nullptr)
+        return nullptr;
+#else
     GlobalData = LepGetGlobalData();
     OriginalRoutine = GlobalData->HookStub.StubNtUserCreateWindowEx;
-
-#if ML_AMD64
-    {
-        LEP_NTUSER_SYSCALL_FRAME* Frame = LEP_NTUSER_SYSCALL_FRAME::Current();
-        if (Frame != nullptr && Frame->NtUserCreateWindowEx != nullptr)
-            OriginalRoutine = Frame->NtUserCreateWindowEx;
-    }
 #endif
 
     InitEmptyLargeString(&UnicodeWindowName);

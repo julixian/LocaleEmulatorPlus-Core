@@ -40,16 +40,58 @@ dq target
 
 实现位置：`LocaleEmulatorPlus/HookPort.cpp`。
 
-32 位 HookPort 从干净 ntdll 镜像枚举 `Zw*` 导出，解析 `mov eax, service_id` 形式的 syscall stub，建立 syscall/filter 表。native x86 和 WOW64 共用 filter 表和 `HpUserModeDispatcher()`，区别只在入口拦截点：
+32 位 HookPort 从干净 ntdll 镜像枚举 `Zw*` 导出，解析 `mov eax, service_id` 形式的 syscall stub，并建立 service id、参数长度、返回指令地址和 filter callback 表。native x86 和 WOW64 共用这张表以及 `HpUserModeDispatcher()`，但入口 patch 点不同：
 
-- native x86：patch `ntdll!KiFastSystemCall`；Win8+ 还会用 `PatchNtdllSysCallStub()` 把 ntdll `Zw*` stub 内部 call site 重新指向 `KiFastSystemCall`。
-- WOW64：通过 `NtCancelTimer` stub 找 WOW64 syscall jump stub，通常是 `fs:[0xC0]` 路径，然后 patch 这个 jump stub；按系统版本选择 `HookSysEnter_Wow64` / `_Win8` / `_Win10`。
+- native x86 patch `ntdll!KiFastSystemCall`。Win8+ 还会由 `PatchNtdllSysCallStub()` 把 ntdll `Zw*` stub 内部 call site 重新指向该入口。
+- WOW64 由 `GetWow64SyscallJumpStub()` 扫描 `NtCancelTimer`，识别 Win7 常见的 `call dword ptr fs:[0xC0]`、较新系统常见的 `mov edx, address; call edx`，以及兼容形式 `mov edx, address; call [edx]`。`NtCancelTimer` 只是用来发现所有 32 位 syscall 共用的代码入口，本身不会被修改。
+
+WOW64 的实际 patch 地址取决于 ntdll stub 的形式：
+
+- 现代 `mov edx, address; call edx` 中的 `address` 通常指向 ntdll 内的 32 位共享 gateway，例如内容为 `jmp dword ptr [Wow64Transition]` 的 `Wow64SystemServiceCall`。此时 patch 的就是这个 gateway，例如调试器里看到的 `77345150: jmp dword ptr [Wow64Transition]`。
+- Win7 `call dword ptr fs:[0xC0]` 会通过 `TEB32.WOW32Reserved` 直接取得目标。该目标通常已经是以 far jump 开头的 32/64 位切换入口，因此 patch 的是这个目标地址，不是 ntdll 中的 `call fs:[0xC0]` 指令，也不存在上面那层 ntdll gateway。
+
+安装 WOW64 hook 时，`CopyOneOpCode()` 把 patch 地址处的第一条完整指令复制到 `StubSysEnter`。现代 gateway 对应的副本通常是 `jmp dword ptr [Wow64Transition]`；Win7 目标对应的副本通常是 far jump。随后 patch 地址的开头被改成 `push HookRoutine; ret`。下文中的 `StubSysEnter` 专指这段“被覆盖首指令的可执行副本”，不是一个按 C 调用约定调用的原函数。
+
+Win7 syscall stub 会在 `call fs:[0xC0]` 前执行 `lea edx, [esp+4]`，进入 hook 时 `EDX` 已指向第一个 syscall 参数。现代 `mov edx, address; call edx` 进入 hook 时 `EDX` 仍是 gateway 地址，所以 `HookSysEnter_Wow64_Win8Plus` 用 `lea edx, [esp+8]` 重建第一个参数的地址，再进入公共汇编入口。这个改写只用于满足 HookPort 把 `EDX` 作为 `HpUserModeDispatcher()` 的 `Arguments` 参数这一内部约定；现代 Windows 自己的 WOW64 切换代码不要求这个值。
+
+#### `HpUserModeDispatcher()`
+
+`HookSysEnter_Wow64` 保存 EFLAGS 和通用寄存器后只调用一次 `HpUserModeDispatcher()`。它不执行 syscall，职责是运行 callback 链并产生最终 filter 决策：
+
+1. 从 `EAX` 取得 service id，并拆分 service table index 和 table 内 index。
+2. 在 syscall 表中找到 `SYSCALL_INFO`，取得参数长度、filter callback 和 ntdll syscall stub 中的 `ret` 地址。
+3. 检查当前线程是否通过 `HookPortBypassFilter` 要求跳过这个 syscall 的 filter。命中 bypass 时不调用任何 callback，`Action` 保持默认的 `ContinueSystemCall`，随后仍执行原 syscall；bypass 不是阻止 syscall。
+4. `HpServiceDispatcherInternal()` 按 `FilterBitmap` 顺序调用 callback。每个 callback 通过普通 C 返回值产生候选 syscall 结果，通过 `FltInfo.Action` 产生控制动作；callback 返回后立即检查 Action。`ContinueSystemCall` 才调用下一个 callback，`PermitSystemCall` 或 `BlockSystemCall` 都立即结束 callback 循环。每次普通返回值都会覆盖前一个，所以循环结束时只保留最后一个实际执行的 callback 返回值。callback 抛出的用户态异常由 dispatcher 的 SEH 转成异常状态值。
+5. callback 循环结束后，`HpUserModeDispatcher()` 只对最终的 `BlockSystemCall` 做返回地址处理：把原 `call` 留在栈上的返回地址改成 ntdll syscall stub 中的 `ret` 地址。随后它把最后保留的 callback 返回值作为自己的 C 返回值，并把最终 Action 留在汇编入口传入的 `FltInfo` 中。
+
+这里有两层不同的 Action 检查，不能混为一次“放行/阻止选择”：`HpServiceDispatcherInternal()` 中的检查只决定是否继续调用下一个 callback，不会执行或跳过 syscall；`HookSysEnter_Wow64` 在 dispatcher 整体返回后读取最终 Action，才决定恢复寄存器并执行原 syscall，还是采用 callback 返回值并跳过原 syscall。例如 callback 1 返回 `ContinueSystemCall` 时只会进入 callback 2；callback 2 返回 `BlockSystemCall` 后循环停止，最终由汇编入口执行阻止路径。
+
+代码保留了 x86 全局 filter 接口 `HpSetGlobalFilter()`，但当前项目没有调用它安装全局 filter，因此正常运行不会进入该分支，下面的运行流程也不把它列为可用步骤。该分支本身也没有形成可靠闭环，所以 `GlobalFilterHandled` 和 `GlobalFilterModified` 都不是当前项目可依赖的 Action；实际支持的是以下 per-syscall Action：
+
+| Action | 是否继续后续 callback | HookPort 是否自动执行原 syscall | 对调用者可见的返回值 |
+| --- | --- | --- | --- |
+| `ContinueSystemCall` | 是；也是默认值 | 所有 callback 结束后执行 | Windows syscall 返回值；callback 返回值被忽略 |
+| `PermitSystemCall` | 否 | 执行 | Windows syscall 返回值；callback 返回值被忽略 |
+| `BlockSystemCall` | 否 | 不执行 | 当前 callback 返回值 |
+
+当前项目没有显式设置 `PermitSystemCall` 的调用点。未设置 Action 的 callback 保持 `ContinueSystemCall`；需要完全替代 syscall，或者已经在 callback 内显式调用过原 syscall、不希望 HookPort 再调用一次时，callback 设置 `BlockSystemCall`。因此表中的“不执行”只表示 callback 返回后 HookPort 不再自动执行；callback 本身仍可通过 `HpCallSysCall()` 调用原 syscall。
+
+#### WOW64 运行时返回路径
+
+为区分栈上的三个控制流地址，记：A 是 ntdll syscall stub 中原 `call edx`/`call fs:[0xC0]` 后面的地址，B 是 `HookSysEnter_Wow64` 中 `call HpUserModeDispatcher` 后面的地址，C 是 HookPort 人工压栈的 `StubSysEnter` 地址。
+
+1. ntdll 执行原 `call` 时压入 A。patch 地址执行 `push HookRoutine; ret` 只模拟一次跳转，进入 `HookRoutine` 后 A 仍在栈顶。
+2. `HookSysEnter_Wow64` 先压入 C，再保存 EFLAGS 和通用寄存器，然后调用 `HpUserModeDispatcher()`。该 C/C++ 调用临时压入 B；dispatcher 正常返回 B 后，B 和它的调用参数已经清理，A 与 C 仍在更深的栈中。
+3. `ContinueSystemCall` 和 `PermitSystemCall` 都执行放行路径：恢复寄存器和 EFLAGS，然后 `ret` 到 C。`StubSysEnter` 执行安装期复制的首指令。现代路径由复制的 `jmp [Wow64Transition]` 跳到 far jump；Win7 路径直接执行复制的 far jump。两者随后都进入 Windows 原有的 WOW64 系统调用处理，完成后使用仍在栈上的 A 返回 ntdll syscall stub，再由该 stub 返回应用程序。
+4. `BlockSystemCall` 执行阻止路径：dispatcher 先把栈中的 A 改成 ntdll syscall stub 的 `ret` 地址；汇编入口保留 callback 返回值在 `EAX`，丢弃已保存的寄存器区并跳过 C，最后 `ret` 到改写后的 A。这样会直接执行 ntdll stub 的 `ret` 并返回应用程序，不执行 `StubSysEnter`，也不由 HookPort 再触发 WOW64 模式切换和原 syscall。callback 如果此前自行调用过原 syscall，那次调用已经完成，不受这里的跳过影响。
+
+这里的“放行”仅表示 HookPort 在 callback 之后继续自动执行 Windows 原 syscall；“阻止”表示 HookPort 直接采用 callback 返回值并跳过这次自动调用，不是安全权限判定，也不限制 callback 自己调用原 syscall。
 
 ### x64 HookPort
 
 实现位置：`LocaleEmulatorPlus/HookPortStub.cpp`。
 
-x64 HookPort 枚举 ntdll `Zw*` 导出并验证 syscall stub：
+x64 HookPort 枚举 ntdll `Zw*` 导出，要求前 `0x20` 字节内包含 `mov r10, rcx`、`mov eax, service_id` 和 `syscall; ret`。它同时识别两种 stub：
 
 ```asm
 4C 8B D1              ; mov r10, rcx
@@ -57,6 +99,21 @@ B8 xx xx xx xx        ; mov eax, service_id
 0F 05                 ; syscall
 C3                    ; ret
 ```
+
+以及带运行时入口选择的现代形式：
+
+```asm
+4C 8B D1                         ; mov r10, rcx
+B8 xx xx xx xx                   ; mov eax, service_id
+F6 04 25 08 03 FE 7F 01         ; test byte ptr [0x7FFE0308], 1
+75 03                            ; jne int2e_path
+0F 05                            ; syscall
+C3                               ; ret
+CD 2E                            ; int 2e
+C3                               ; ret
+```
+
+`0x7FFE0308` 是 `KUSER_SHARED_DATA.SystemCall`。parser 只有在 selector、`syscall; ret` 和 `int 2e; ret` 都符合上述布局时才记录 `SystemCallHasInt2ESelector`。安装 hook 时，HookPort 会为被 patch 的 syscall 重新生成一段可直接调用的最小 syscall stub，下文统一称为“人工原始调用 stub”；它会保留同一段动态判断，而不是固定强制走 `syscall`。
 
 user32/win32u/gdi32 中找到的 syscall stub 通过 `HpAddSystemCallByRoutine()` 或 `HpAddSystemCallByRoutineRange()` 额外注册。每个被 hook 的 syscall 必须在 `FindWrapperByHash()` 中有强类型 wrapper。
 
@@ -69,7 +126,7 @@ FF E0                 ; jmp rax
 
 它和普通 inline hook 的 14 字节 `OpJumpIndirect` 不是同一套取舍。12 字节跳转的优点是更短，不需要目标在 +/-2GB 内；缺点是会改写 `rax`，不如 `FF 25 [rip+0]` 那种 14 字节间接跳转“寄存器透明”。因此它不适合作为普通 inline hook 的默认绝对跳：普通 hook 要面对任意函数入口或 call-site 场景，最好不要在进入 hook 目标前无条件破坏寄存器状态。
 
-syscall 入口可以选择这条路，是因为 HookPort 已经先解析了 syscall stub，记录 service id，并为“原函数”人工构造最小 syscall stub；被 patch 的原入口不会作为 trampoline 执行。入口 patch 的唯一职责是跳到强类型 wrapper，`rax` 原本也会在 syscall stub 中被 `mov eax, service_id` 覆盖，所以这里使用 `mov rax; jmp rax` 的寄存器破坏可以接受。更重要的是，标准 x64 syscall stub 常见长度是 11 字节，12 字节绝对跳比 14 字节更可能只覆盖到 `ret` 后的 padding，而不是跨进下一个函数。
+syscall 入口可以选择这条路，是因为 HookPort 已经先解析了 syscall stub 并记录 service id，原 syscall 由上文定义的人工原始调用 stub 执行，被 patch 的入口不会作为 trampoline 继续执行。入口 patch 的唯一职责是跳到强类型 wrapper，`rax` 原本也会在 syscall stub 中被 `mov eax, service_id` 覆盖，所以这里使用 `mov rax; jmp rax` 的寄存器破坏可以接受。更重要的是，标准 x64 syscall stub 常见长度是 11 字节，12 字节绝对跳比 14 字节更可能只覆盖到 `ret` 后的 padding，而不是跨进下一个函数。
 
 x64 syscall 入口 patch 策略：
 
@@ -78,9 +135,33 @@ x64 syscall 入口 patch 策略：
 - relay 失败后，只在 `ret` 位于 12 字节覆盖范围末尾，或 `ret` 后面直到覆盖末尾全是 padding 时，才允许上面的 12 字节绝对跳。
 - 否则失败，避免覆盖后续仍会执行的真实指令。
 
+#### x64 filter 与返回路径
+
+x64 不使用 `HpUserModeDispatcher()`，也不 patch WOW64 共享 gateway。每个受支持的 syscall 都有一个参数类型与原 syscall 相同的 wrapper，运行流程是：
+
+1. 调用者照常调用 ntdll/win32u/gdi32 的 syscall stub；该 stub 的入口 patch 直接跳到对应 wrapper，调用者原先压入的返回地址和 x64 ABI 参数保持不变。
+2. wrapper 通过 hash 找到 `SYSCALL_INFO` 和安装时生成的人工原始调用 stub，再由 `DispatchTypedFilter()` 运行该 syscall 的 callback。命中 `HookPortBypassFilter`、没有 callback 或 filter 未启用时，wrapper 直接调用人工 stub。
+3. `ContinueSystemCall` 继续调用剩余 callback；全部 callback 返回后，wrapper 调用人工 stub。`PermitSystemCall` 停止调用剩余 callback，然后同样调用人工 stub。`BlockSystemCall` 停止调用剩余 callback，跳过这次自动调用，直接把当前 callback 的返回值返回给原调用者。
+4. 人工 stub 重新执行 `mov r10, rcx`、`mov eax, service_id` 和系统调用尾部。原 stub 带 `KUSER_SHARED_DATA.SystemCall` 判断时，人工 stub 也按运行时状态选择 `syscall` 或 `int 2e`；否则直接执行 `syscall`。内核返回后，人工 stub 的 `ret` 回到 wrapper，wrapper 再按普通 x64 函数调用返回原调用者。
+
+人工原始调用 stub 不是从被覆盖入口继续执行的 trampoline，而是按解析结果重新生成的独立代码。callback 若通过 `HpGetSystemCallOriginal()` 自己调用它，通常还要设置 `BlockSystemCall`，否则 callback 返回后 `DispatchTypedFilter()` 会再自动调用一次。x64 没有全局 filter 流程：`HpSetGlobalFilter()` 固定返回 `STATUS_NOT_SUPPORTED`；`GlobalFilterHandled` 和 `GlobalFilterModified` 也不是 x64 per-syscall callback 支持的 Action。若错误地设置其中之一，callback 循环会因为 Action 不再是 `ContinueSystemCall` 而停止，但最终仍走人工原始调用 stub，并不会执行名字所暗示的全局处理。另一个与 x86 的差异是，`DispatchTypedFilter()` 没有用 SEH 包裹 callback；callback 抛出的异常会继续向外传播。
+
+#### 原调用与线程级防重入
+
+`TEB_ACTIVE_FRAME::Push()` 所说的“压入”不是向 CPU 栈压一个返回地址，而是用 `RtlPushFrame()` 把带 Context 标记的记录挂到当前线程 TEB active-frame 链表头。`FindThreadFrame(Context)` 只能在当前线程的链表中找到它；记录析构或显式 `Pop()` 后恢复前一个链表头，因此其它线程不可见，并且支持嵌套调用。
+
+HookPort 的通用防重入记录是 `SYSCALL_FILTER_SKIP_INFO`，Context 为 `SYSCALL_SKIP_MAGIC`，并保存要跳过 filter 的 service id。`HpCallSysCall()` 和 `CallSysCall()` 都通过临时 `HookPortAutoBypassFilter` 在调用期间压入该记录；嵌套调用再次进入 HookPort 时，`HpIsCurrentCallSkip()` 发现 service id 匹配便跳过 callback，但仍执行原 syscall。x86 和 x64 编译的是同一套 `HookPortAutoBypassFilter`，所以两边调用这两个宏时都会压 frame，区别在于实际必要性：
+
+- x86 的 `SYSCALL_INFO.FunctionAddress` 是 ntdll syscall stub。callback 调它以后会再次经过已经 patch 的共享 syscall 入口，所以必须依靠 skip frame 防止同一个 filter 递归。
+- x64 安装 hook 后，`SYSCALL_INFO.FunctionAddress` 已改为人工原始调用 stub。调用它直接执行 `syscall`/`int 2e`，不会再次进入被 patch 的 wrapper；当前 `HpCallSysCall()` 仍因共用宏而压相同的 frame，但对这条直接人工-stub 路径实际上不需要它。x64 的 `DispatchTypedFilter()` 仍保留 `HpIsCurrentCallSkip()` 检查，供确实再次进入 wrapper 的调用使用。
+
+GDI 字体路径另有一套与 HookPort 无关的线程级保护。`CreateFontIndirectBypassA/W()` 压入 Context 为 `GDI_HOOK_BYPASS` 的 `TEB_ACTIVE_FRAME`，再调用公开的 `CreateFontIndirectA/W()`；这些 API 会在更深处到达被 hook 的 `NtGdiHfontCreate`，`LepNtGdiHfontCreateWorker()` 发现该标记后跳过 charset 二次改写。这个保护在 x86/x64 都使用，作用域仅限当前线程的这次字体创建调用。
+
+NtUser 不使用上述两种 frame。x86 对找到的 `NtUserCreateWindowEx`、`NtUserMessageCall` 和 `NtUserDefSetText` 做普通 inline hook，原调用通过 `HookStub.StubNtUser*` trampoline 执行，trampoline 从被覆盖指令后继续，因此不会重新进入函数开头的 hook。x64 由 HookPort patch syscall stub，原调用统一通过 `HpGetSystemCallOriginal(hash)` 查询进程级人工原始调用 stub；该地址由所有线程共享，直接调用也不会重新进入 wrapper。查询失败表示对应 x64 syscall hook 没有成功建立，不会回退到 x86 使用的 `HookStub`。
+
 强类型 wrapper 当前覆盖：
 
-- ntdll：`NtCreateUserProcess`、`NtQuerySystemInformation`、`NtQueryValueKey`、`NtInitializeNlsFiles`、`NtQueryDefaultLocale`、`NtQueryDefaultUILanguage`、`NtContinue`
+- ntdll：`NtCreateUserProcess`、`NtQuerySystemInformation`、`NtQueryValueKey`、`NtInitializeNlsFiles`、`NtQueryDefaultLocale`、`NtQueryDefaultUILanguage`、`NtQueryInstallUILanguage`、`NtContinue`
 - user32/win32u：`NtUserCreateWindowEx`、`NtUserMessageCall`、`NtUserDefSetText`、`NtUserGetDC`、`NtUserGetDCEx`、`NtUserGetWindowDC`、`NtUserBeginPaint`
 - gdi/win32u：`NtGdiHfontCreate`
 
@@ -116,11 +197,11 @@ x86/x64：`NtCreateUserProcess` 本身走 HookPort syscall filter。子进程 `L
 
 时机：`HookNtdllRoutines()`。
 
-x86：先用 `SearchLdrInitNtContinue()` 扫描 `LdrInitializeThunk` 前 `0x5B` 字节，查找目标为 `NtContinue` 的 call site，然后用 `LepFunctionCall` 改写到 `LepLdrInitNtContinue`。
+x86：`SearchLdrInitNtContinue()` 扫描 `LdrInitializeThunk` 前 `0x5B` 字节，只改写其中目标为 `NtContinue` 的 call site，不 hook `NtContinue` 函数入口。`LepLdrInitNtContinue()` 在 loader 即将恢复线程初始 context 前，把当前线程的 `TEB.CurrentLocale` 设置为 `LEPB.LocaleID`，然后通过 `StubLdrInitNtContinue` 调用原 `NtContinue`。因此异常恢复、APC 等其它 x86 `NtContinue` 调用不受影响。
 
-x64：当前只记录 `SearchLdrInitNtContinue()` 的查找结果；实际直接对 `NtContinue` 安装 HookPort syscall filter。
+x64：`SearchLdrInitNtContinue()` 的结果只用于兼容性检查和日志；实际通过 HookPort 对 `NtContinue` syscall 入口安装 filter。`LepNtContinue()` 同样只设置当前线程的 `TEB.CurrentLocale`，不修改传入的 `CONTEXT` 和 `TestAlert`，也不设置 `BlockSystemCall`，所以 filter 返回后仍调用原 `NtContinue`。这会覆盖所有经过该 ntdll syscall stub 的 x64 `NtContinue`，范围比 x86 的 loader call-site hook 更广。
 
-作用：拦截 loader/system callback 附近的 continuation 路径，让早期 hook 有机会接入后续初始化流程。
+作用：`TEB.CurrentLocale` 是线程级状态。这个 hook 以 loader 结束线程初始化并通过 `NtContinue` 恢复用户执行现场的时刻为锚点，确保新线程进入用户入口前看到 LEP 的目标 locale；它不改写即将恢复的 CPU context。
 
 ### 4. ntdll locale/sysinfo syscall filter
 
@@ -133,7 +214,7 @@ x64：当前只记录 `SearchLdrInitNtContinue()` 的查找结果；实际直接
 - `NtQueryDefaultLocale`：返回目标 LCID。
 - `NtQueryDefaultUILanguage`：返回目标 UI language。
 
-x86/x64：均走 HookPort filter；x64 需要对应强类型 wrapper。
+x86/x64：均走 HookPort filter。
 
 作用：让直接查询 ntdll 层默认区域、UI language、时区和 NLS 文件的路径看到目标 locale。
 
@@ -141,7 +222,7 @@ x86/x64：均走 HookPort filter；x64 需要对应强类型 wrapper。
 
 时机：`HookNtdllRoutines()` 中，仅当 `RegistryRedirectionEntry` 非空时安装。
 
-x86/x64：走 HookPort filter。
+x86/x64：均走 HookPort filter。
 
 作用：把 NLS/codepage/language 相关注册表查询重定向到 `LEPB` 中保存的值，让直接读注册表的 API 也符合目标 locale。
 
