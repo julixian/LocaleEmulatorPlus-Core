@@ -117,17 +117,12 @@ for %%F in (
 ) do (
   "%CL_EXE%" %COMMON_CL% /Fo"%OBJ%\LEP_%%~nF.obj" %COMMON_INC% "%%F" || exit /b 1
 )
-if /I "%TARGET%"=="x86" (
-  "%CL_EXE%" %COMMON_CL% /Fo"%OBJ%\LEP_HookPort.obj" %COMMON_INC% "HookPort.cpp" || exit /b 1
-) else (
-  "%CL_EXE%" %COMMON_CL% /Fo"%OBJ%\LEP_HookPortStub.obj" %COMMON_INC% "HookPortStub.cpp" || exit /b 1
-)
+"%CL_EXE%" %COMMON_CL% /Fo"%OBJ%\LEP_HookPort.obj" %COMMON_INC% "HookPort.cpp" || exit /b 1
 popd
 
 echo [%TARGET% 4/5] Linking %LEP_DLL%
 set "LEP_OBJECTS="%OBJ%\LEP_HandleTable.obj" "%OBJ%\LEP_Gdi32Hook.obj" "%OBJ%\LEP_Kernel32Hook.obj" "%OBJ%\LEP_NtdllHook.obj" "%OBJ%\LEP_User32Hook.obj" "%OBJ%\LEP_LocaleEmulatorPlus.obj" "%OBJ%\LEP_ml.obj" "%OBJ%\LEP_stdafx.obj" "%OBJ%\LEP_Utility.obj""
-if /I "%TARGET%"=="x86" set "LEP_OBJECTS=%LEP_OBJECTS% "%OBJ%\LEP_HookPort.obj""
-if /I "%TARGET%"=="x64" set "LEP_OBJECTS=%LEP_OBJECTS% "%OBJ%\LEP_HookPortStub.obj""
+set "LEP_OBJECTS=%LEP_OBJECTS% "%OBJ%\LEP_HookPort.obj""
 
 "%LINK_EXE%" /nologo /dll /out:"%OUT%\%LEP_DLL%" /implib:"%OUT%\LocaleEmulatorPlus_%SUFFIX%.lib" ^
   %LEP_OBJECTS% ^

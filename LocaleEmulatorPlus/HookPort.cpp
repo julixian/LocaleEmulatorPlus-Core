@@ -1,1057 +1,1459 @@
-#include "HookPort.h"
-#include "SectionProtector.h"
+#include "stdafx.h"
 
-VOID InterlockedExchangeDoublePointer(PVOID p1, PVOID p2)
+namespace
 {
-#if ML_X86
+#if ML_AMD64
+    enum
+    {
+        X64_SYSCALL_STUB_SIZE = 0x20,
+        X64_SYSCALL_RELATIVE_JUMP_SIZE = 5,
+        SYSCALL_PATCH_SIZE = 12,
+    };
 
-    _InterlockedExchange64((PLONG64)p1, *(PLONG64)p2);
-
-#elif ML_AMD64
-
-    InterlockedCompare64Exchange128((PLONG64)p1, 0, 0, 0);
-
+    struct SYSCALL_PATCH
+    {
+        PSYSCALL_INFO SysCall;
+        PVOID Target;
+        PVOID Original;
+        PVOID Relay;
+        BYTE Backup[SYSCALL_PATCH_SIZE];
+    };
 #else
-
-    #error
-
+    struct SYSCALL_PATCH
+    {
+        PSYSCALL_INFO SysCall;
+        PVOID Target;
+        PVOID Original;
+    };
 #endif
-}
+
+    PHOOK_PORT_GLOBAL_INFO g_GlobalInfo;
+    SYSCALL_PATCH* g_Patches;
+    ULONG_PTR g_PatchCount;
+    ULONG_PTR g_PatchCapacity;
+
+    ForceInline PHOOK_PORT_GLOBAL_INFO HppGetGlobalInfo()
+    {
+        return g_GlobalInfo;
+    }
+
+    ForceInline PHOOK_PORT_GLOBAL_INFO HppSetGlobalInfo(PHOOK_PORT_GLOBAL_INFO Info)
+    {
+        g_GlobalInfo = Info;
+        return Info;
+    }
+
+    PVOID HpAlloc(ULONG_PTR Size, ULONG Flags = 0)
+    {
+        return AllocateMemory(Size, Flags);
+    }
+
+    BOOL HpFree(PVOID Memory)
+    {
+        return FreeMemory(Memory);
+    }
+
+    NTSTATUS HpAllocateVirtualMemory(PVOID* Address, ULONG_PTR Size)
+    {
+        *Address = nullptr;
+        return Mm::AllocVirtualMemory(Address, Size);
+    }
+
+    NTSTATUS HpFreeVirtualMemory(PVOID Address)
+    {
+        return Mm::FreeVirtualMemory(Address);
+    }
+
+    ForceInline ULONG HashNativeZwAPI(PCChar Name)
+    {
+        ULONG Hash = 0x0009C074;
+
+        Name += 2;
+
+        while (*(PByte)Name)
+        {
+            Hash = _rotl(Hash, 0x0D) ^ *(PByte)Name++;
+        }
+
+        return Hash;
+    }
+
+    BOOL ParseSystemCallStub(
+        PBYTE Function,
+        PULONG ServiceIndex,
+        PVOID* ReturnOpAddress,
+        PBOOLEAN HasInt2ESelector = nullptr
+    )
+    {
+#if ML_AMD64
+        const static BYTE SystemCallSelector[] =
+        {
+            0xF6, 0x04, 0x25, 0x08, 0x03, 0xFE, 0x7F, 0x01,
+            0x75, 0x03,
+        };
+        const static BYTE Int2EReturn[] = { 0xCD, 0x2E, 0xC3 };
+
+        if (HasInt2ESelector != nullptr)
+            *HasInt2ESelector = FALSE;
+
+        for (ULONG_PTR i = 0; i != 8; ++i)
+        {
+            if (Function[i + 0] == 0x4C &&
+                Function[i + 1] == 0x8B &&
+                Function[i + 2] == 0xD1 &&
+                Function[i + 3] == 0xB8)
+            {
+                for (ULONG_PTR j = i + 8; j + 2 < X64_SYSCALL_STUB_SIZE; ++j)
+                {
+                    if (Function[j + 0] == 0x0F &&
+                        Function[j + 1] == 0x05 &&
+                        Function[j + 2] == 0xC3)
+                    {
+                        *ServiceIndex = *(PULONG)&Function[i + 4];
+                        *ReturnOpAddress = &Function[j + 2];
+
+                        if (
+                             HasInt2ESelector != nullptr &&
+                             j >= countof(SystemCallSelector) &&
+                             j + 5 < X64_SYSCALL_STUB_SIZE &&
+                             RtlEqualMemory(&Function[j - countof(SystemCallSelector)], SystemCallSelector, sizeof(SystemCallSelector)) &&
+                             RtlEqualMemory(&Function[j + 3], Int2EReturn, sizeof(Int2EReturn))
+                           )
+                        {
+                            *HasInt2ESelector = TRUE;
+                        }
+
+                        return TRUE;
+                    }
+                }
+            }
+        }
+
+        return FALSE;
+#else
+        if (HasInt2ESelector != nullptr)
+            *HasInt2ESelector = FALSE;
+
+        if (Function[0] != 0xB8)
+            return FALSE;
+
+        *ServiceIndex = *(PULONG)&Function[1];
+        *ReturnOpAddress = nullptr;
+        return TRUE;
+#endif
+    }
+
+    NTSTATUS HppInitializeSystemCallByRoutine(PSYSCALL_INFO SysCall, PVOID Routine, ULONG RoutineHash)
+    {
+        ULONG ServiceIndex;
+        PVOID ReturnOpAddress;
+        BOOLEAN HasInt2ESelector;
+
+        ZeroMemory(SysCall, sizeof(*SysCall));
+
+        if (!ParseSystemCallStub((PBYTE)Routine, &ServiceIndex, &ReturnOpAddress, &HasInt2ESelector))
+            return STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM;
+
+        SysCall->NameHash = RoutineHash;
+        SysCall->ServiceData = ServiceIndex;
+        SysCall->FunctionAddress = Routine;
+        if (HasInt2ESelector)
+            SET_FLAG(SysCall->Flags, SystemCallHasInt2ESelector);
+
+        return STATUS_SUCCESS;
+    }
+
+    VOID HppDestroyHashTable(PSYSTEM_CALL_HASH_TABLE Table)
+    {
+        if (Table->Entry != nullptr)
+            HpFreeVirtualMemory(Table->Entry);
+    }
+
+    VOID HppSortHashTable(PSYSTEM_CALL_HASH_TABLE HashTable)
+    {
+        PSYSTEM_CALL_HASH Entry = HashTable->Entry;
+
+        for (ULONG i = (ULONG)HashTable->Count; i; --i)
+        {
+            for (ULONG j = 0; j != i - 1; ++j)
+            {
+                if (Entry[j].Hash > Entry[j + 1].Hash)
+                    Swap(Entry[j], Entry[j + 1]);
+            }
+        }
+    }
+
+    PSYSTEM_CALL_HASH HpFindHashTableEntry(SYSTEM_CALL_HASH_TABLE* HashTable, ULONG Hash)
+    {
+        ULONG Lepft, Right, Middle;
+        PSYSTEM_CALL_HASH Entry;
+
+        if (HashTable->Count == 0)
+            return nullptr;
+
+        Lepft = 0;
+        Right = (ULONG)HashTable->Count - 1;
+
+        if (Hash < HashTable->Entry[Lepft].Hash || Hash > HashTable->Entry[Right].Hash)
+            return nullptr;
+
+        if (Hash == HashTable->Entry[Right].Hash)
+            return &HashTable->Entry[Right];
+
+        while (Lepft < Right)
+        {
+            Middle = (Right - Lepft) / 2 + Lepft;
+            Entry = &HashTable->Entry[Middle];
+
+            if (Entry->Hash == Hash)
+                return Entry;
+
+            if (Entry->Hash < Hash)
+                Lepft = Middle + 1;
+            else
+                Right = Middle - 1;
+        }
+
+        Entry = &HashTable->Entry[Lepft];
+        return Entry->Hash == Hash ? Entry : nullptr;
+    }
+
+    PSYSCALL_INFO HppLookupSystemCall(PHOOK_PORT_GLOBAL_INFO Info, ULONG_PTR SystemCallHash)
+    {
+        PSYSTEM_CALL_HASH Entry;
+
+        if (Info == nullptr)
+            return nullptr;
+
+        Entry = HpFindHashTableEntry(&Info->HashTable, (ULONG)SystemCallHash);
+        if (Entry == nullptr)
+            return nullptr;
+
+        return Entry->Entry;
+    }
+
+    PSYSTEM_CALL_FILTER HpAllocateCallbackArray()
+    {
+        return (PSYSTEM_CALL_FILTER)HpAlloc(MAX_FILTER_NUMBER * sizeof(SYSTEM_CALL_FILTER), HEAP_ZERO_MEMORY);
+    }
+
+    BOOL HpFreeCallbackArray(PSYSTEM_CALL_FILTER CallbackFilters)
+    {
+        return HpFree(CallbackFilters);
+    }
 
 #if ML_AMD64
-
-#else // 32
-
-PHOOK_PORT_GLOBAL_INFO g_GlobalInfo;
-
-
-PVOID HpAlloc(ULONG_PTR Size, ULONG Flags = 0)
-{
-    return AllocateMemory(Size, Flags);
-}
-
-
-BOOL HpFree(PVOID Memory)
-{
-    return FreeMemory(Memory);
-}
-
-NTSTATUS HpAllocateVirtualMemory(PVOID *Address, ULONG_PTR Size)
-{
-
-    *Address = NULL;
-    return Mm::AllocVirtualMemory(Address, Size);
-
-}
-
-NTSTATUS HpFreeVirtualMemory(PVOID Address)
-{
-
-    return Mm::FreeVirtualMemory(Address);
-
-}
-
-
-VOID
-HppDestroyHashTable(
-    PSYSTEM_CALL_HASH_TABLE Table
-);
-
-NTSTATUS
-UnInstallHookPortInternal(
-    PHOOK_PORT_GLOBAL_INFO GlobalInfo
-);
-
-VOID HookSysEnter_x86();
-VOID HookSysEnter_Wow64();
-
-ULONG_PTR
-FASTCALL
-HpServiceDispatcherInternal(
-    PHOOK_PORT_GLOBAL_INFO      Info,
-    PHOOK_PORT_DISPATCHER_INFO  Dispatcher,
-    PULONG_PTR                  Arguments,
-    PSYSCALL_FILTER_INFO        UserModeFltInfo = NULL
-);
-
-BOOL
-FASTCALL
-HpIsCurrentCallSkip(
-    PSYSCALL_INFO SysCallInfo
-);
-
-NAKED
-VOID
-StubSysEnter()
-{
-    ASM_DUMMY_AUTO();
-}
-
-ForceInline PHOOK_PORT_GLOBAL_INFO HppGetGlobalInfo()
-{
-    return g_GlobalInfo;
-}
-
-ForceInline PHOOK_PORT_GLOBAL_INFO HppSetGlobalInfo(PHOOK_PORT_GLOBAL_INFO Info)
-{
-    g_GlobalInfo = Info;
-    return Info;
-}
-
-/************************************************************************
-  x86
-************************************************************************/
-
-
-NAKED VOID HookSysEnter_x86()
-{
-    INLINE_ASM
+    PVOID AllocateSyscallStub(PSYSCALL_INFO SysCall)
     {
-        lea edx, [edx + 08h];
-        jmp HookSysEnter_Wow64;
-    }
-}
-
-NTSTATUS PatchNtdllSysCallStub(PHOOK_PORT_GLOBAL_INFO Info)
-{
-    PBYTE           Function;
-    PSYSCALL_INFO   SysCall;
-
-    FOR_EACH(SysCall, Info->SystemCallInfo[HP_NTKRNL_SERVICE_INDEX], Info->SystemCallCount[HP_NTKRNL_SERVICE_INDEX])
-    {
-        Function = (PBYTE)SysCall->FunctionAddress;
-
-        LOOP_FOREVER
+        const static BYTE DirectTail[] =
         {
-            if (Function[0] == 0xC2 || Function[0] == 0xC3)
-                break;
+            0x0F, 0x05, 0xC3,
+        };
+        const static BYTE SelectorTail[] =
+        {
+            0xF6, 0x04, 0x25, 0x08, 0x03, 0xFE, 0x7F, 0x01,
+            0x75, 0x03,
+            0x0F, 0x05, 0xC3,
+            0xCD, 0x2E, 0xC3,
+        };
+        PBYTE Stub = nullptr;
+        NTSTATUS Status;
 
-            if (Function[0] != CALL)
+        Status = AllocVirtualMemory((PVOID*)&Stub, X64_SYSCALL_STUB_SIZE, PAGE_EXECUTE_READWRITE);
+        if (NT_FAILED(Status))
+            return nullptr;
+
+        Stub[0] = 0x4C;
+        Stub[1] = 0x8B;
+        Stub[2] = 0xD1;
+        Stub[3] = 0xB8;
+        *(PULONG)&Stub[4] = SysCall->ServiceData;
+        if (FLAG_ON(SysCall->Flags, SystemCallHasInt2ESelector))
+            CopyMemory(&Stub[8], SelectorTail, sizeof(SelectorTail));
+        else
+            CopyMemory(&Stub[8], DirectTail, sizeof(DirectTail));
+        NtFlushInstructionCache(CurrentProcess, Stub, X64_SYSCALL_STUB_SIZE);
+
+        return Stub;
+    }
+
+    BOOL GetRelativeJumpOffset(PVOID Address, PVOID Target, PLONG RelativeOffset)
+    {
+        LONGLONG Offset;
+
+        Offset = (LONGLONG)(ULONG_PTR)Target -
+                 (LONGLONG)((ULONG_PTR)Address + X64_SYSCALL_RELATIVE_JUMP_SIZE);
+        if (Offset < -0x80000000LL || Offset > 0x7FFFFFFFLL)
+            return FALSE;
+
+        *RelativeOffset = (LONG)Offset;
+        return TRUE;
+    }
+
+    VOID WriteAbsoluteJumpCode(PBYTE Code, PVOID Target)
+    {
+        Code[0] = 0x48;
+        Code[1] = 0xB8;
+        *(PVOID*)&Code[2] = Target;
+        *(PUSHORT)&Code[10] = 0xE0FF;
+    }
+
+    ULONG_PTR AlignDownTo(ULONG_PTR Value, ULONG_PTR Alignment)
+    {
+        return Value & ~(Alignment - 1);
+    }
+
+    ULONG_PTR AlignUpTo(ULONG_PTR Value, ULONG_PTR Alignment)
+    {
+        return AlignDownTo(Value + Alignment - 1, Alignment);
+    }
+
+    BOOL MatchX64Nop(PBYTE Address, PBYTE End, PULONG_PTR Length)
+    {
+        static const BYTE Nop2[] = { 0x66, 0x90 };
+        static const BYTE Nop3[] = { 0x0F, 0x1F, 0x00 };
+        static const BYTE Nop4[] = { 0x0F, 0x1F, 0x40, 0x00 };
+        static const BYTE Nop5[] = { 0x0F, 0x1F, 0x44, 0x00, 0x00 };
+        static const BYTE Nop6[] = { 0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00 };
+        static const BYTE Nop7[] = { 0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00 };
+        static const BYTE Nop8[] = { 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00 };
+        static const BYTE Nop9[] = { 0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00 };
+
+        struct NOP_PATTERN
+        {
+            const BYTE* Bytes;
+            ULONG_PTR Length;
+        };
+
+        static const NOP_PATTERN Patterns[] =
+        {
+            { Nop9, sizeof(Nop9) },
+            { Nop8, sizeof(Nop8) },
+            { Nop7, sizeof(Nop7) },
+            { Nop6, sizeof(Nop6) },
+            { Nop5, sizeof(Nop5) },
+            { Nop4, sizeof(Nop4) },
+            { Nop3, sizeof(Nop3) },
+            { Nop2, sizeof(Nop2) },
+        };
+
+        for (ULONG_PTR i = 0; i != countof(Patterns); ++i)
+        {
+            if (Address + Patterns[i].Length <= End &&
+                RtlEqualMemory(Address, Patterns[i].Bytes, Patterns[i].Length))
             {
-                Function += GetOpCodeSize(Function);
+                *Length = Patterns[i].Length;
+                return TRUE;
+            }
+        }
+
+        return FALSE;
+    }
+
+    BOOL IsX64PaddingRange(PBYTE Begin, PBYTE End)
+    {
+        while (Begin < End)
+        {
+            ULONG_PTR NopLength;
+
+            if (Begin[0] == 0x90 || Begin[0] == 0xCC)
+            {
+                ++Begin;
                 continue;
             }
 
-            Mp::PATCH_MEMORY_DATA p[] =
+            if (MatchX64Nop(Begin, End, &NopLength))
             {
-                Mp::FunctionCallVa(Function, Info->User.KiFastSystemCall),
-            };
-
-            Mp::PatchMemory(p, countof(p));
-            break;
-        }
-    }
-
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS HookSysCall_x86(HOOK_PORT_GLOBAL_INFO *GlobalInfo)
-{
-    NTSTATUS    Status;
-    BYTE        OpCodeBuffer[0x10];
-    ULONG       OldProtect, StubSysEnterProtect, SysEnterSize;
-    PBYTE       KiFastSystemCall, BaseKiFastSystemCall;
-    __m128      Backup;
-
-    KiFastSystemCall = (PBYTE)GlobalInfo->User.KiFastSystemCall;
-    BaseKiFastSystemCall = KiFastSystemCall;
-
-    if (
-        (
-         *(PULONG)&KiFastSystemCall[0] != 0x340FD48B ||  // mov edx, esp
-                                                         // sysenter
-         *(PULONG)&KiFastSystemCall[4] != 0x24A48DC3 ||  // ret
-         *(PULONG)&KiFastSystemCall[8] != 0              // lea esp, dword ptr [esp]     7 bytes
-        ) &&
-
-        (
-         *(PULONG)&KiFastSystemCall[0] != 0x340FD48B ||  // mov edx, esp
-                                                         // sysenter
-         *(PULONG)&KiFastSystemCall[4] != 0xEB24248D ||  // lea esp, dword ptr [esp]    3 bytes
-         *(PULONG)&KiFastSystemCall[8] != 0xCCCCCC03     // jmp short KiFastSystemCallRet
-        ) &&
-
-        (
-         *(PULONG)&KiFastSystemCall[0] != 0x340FD48B ||     // mov edx, esp
-                                                            // sysenter
-         *(PULONG)&KiFastSystemCall[4] != 0x0024A48D ||     // lea esp, dword ptr [esp]    7 bytes
-         *(PULONG)&KiFastSystemCall[8] != 0xEB000000 ||     // jmp short KiFastSystemCallRet
-         *(PULONG)&KiFastSystemCall[12] != 0xCCCCCC03       // CC CC CC
-        ) &&
-
-        (
-         *(PULONG)&KiFastSystemCall[0]   != 0x000000BA  ||  // mov edx, 000000C3h
-         *(PUSHORT)&KiFastSystemCall[4]  != 0xBAC3      ||  // mov edx, const
-         *(PUSHORT)&KiFastSystemCall[10] != 0xE2FF          // jmp edx
-        ) &&
-
-        (
-         *(PULONG)&KiFastSystemCall[0]   != 0x01EBD48B  ||  // mov edx, esp jmp @f+3
-         *(PUSHORT)&KiFastSystemCall[4]  != 0x68C3      ||  // ret  push HookSysEnter_x86
-         *(PUSHORT)&KiFastSystemCall[10] != 0x90C3          // lea esp, dword ptr [esp]     ; 7 bytes
-        )
-       )
-    {
-        return STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM;
-    }
-
-    SysEnterSize = 0x10;
-    Status = ProtectVirtualMemory(
-                BaseKiFastSystemCall,
-                SysEnterSize,
-                PAGE_EXECUTE_READWRITE,
-                &OldProtect
-             );
-    FAIL_RETURN(Status);
-
-    Status = ProtectVirtualMemory(
-                StubSysEnter,
-                SysEnterSize,
-                PAGE_EXECUTE_READWRITE,
-                &StubSysEnterProtect
-             );
-    if (NT_FAILED(Status))
-    {
-        if (OldProtect != PAGE_EXECUTE_READWRITE)
-            ProtectVirtualMemory(BaseKiFastSystemCall, 12, OldProtect, &OldProtect);
-
-        return Status;
-    }
-
-    GlobalInfo->User.SysEnterSize = SysEnterSize;
-
-    Backup = _mm_loadu_ps((float *)BaseKiFastSystemCall);
-    _mm_storeu_ps((float *)StubSysEnter, Backup);
-    _mm_storeu_ps((float *)OpCodeBuffer, Backup);
-
-    //
-    // mov  edx, 'C3' 000000
-    // mov  edx, HookSysEnter_x86
-    // jmp  edx
-    //
-    // jmp @f + 3
-    // sysenter
-    // ret
-    // push HookSysEnter_x86
-    // ret
-    // nop
-    //
-    *(PUSHORT)&OpCodeBuffer[2]      = 0x01EB;
-    OpCodeBuffer[5]                 = 0x68;
-    *(PULONG_PTR)&OpCodeBuffer[6]   = (ULONG_PTR)HookSysEnter_x86;
-    *(PUSHORT)&OpCodeBuffer[10]     = 0x90C3;
-
-    _mm_storeu_ps((float *)BaseKiFastSystemCall, _mm_loadu_ps((float *)OpCodeBuffer));
-
-    if (StubSysEnterProtect != PAGE_EXECUTE_READWRITE)
-    {
-        ProtectVirtualMemory(StubSysEnter, SysEnterSize, StubSysEnterProtect, &StubSysEnterProtect);
-    }
-
-    if (OldProtect != PAGE_EXECUTE_READWRITE)
-    {
-        ProtectVirtualMemory(BaseKiFastSystemCall, 12, OldProtect, &OldProtect);
-    }
-
-    RTL_OSVERSIONINFOW VersionInfo;
-
-    Nt_QueryOsVersion(&VersionInfo);
-
-    switch (VersionInfo.dwMajorVersion)
-    {
-        case 6:
-            switch (VersionInfo.dwMinorVersion)
-            {
-                case 2: // win 8
-                case 3: // win 8.1
-                case 4: // win 10
-                    PatchNtdllSysCallStub(GlobalInfo);
-                    break;
+                Begin += NopLength;
+                continue;
             }
-            break;
 
-        case 10: // win 10
-            PatchNtdllSysCallStub(GlobalInfo);
-            break;
-    }
-
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS UnHookSysCall_x86(HOOK_PORT_GLOBAL_INFO *GlobalInfo)
-{
-    PVOID       BaseAddress, KiFastSystemCall;
-    ULONG       OldProtect;
-    NTSTATUS    Status;
-
-    KiFastSystemCall = GlobalInfo->User.KiFastSystemCall;
-    BaseAddress = KiFastSystemCall;
-    Status = ProtectVirtualMemory(
-                KiFastSystemCall,
-                12,
-                PAGE_EXECUTE_READWRITE,
-                &OldProtect
-             );
-
-    if (!NT_SUCCESS(Status))
-        return Status;
-
-    _mm_storeu_ps((float *)KiFastSystemCall, _mm_loadu_ps((float *)StubSysEnter));
-
-    if (OldProtect != PAGE_EXECUTE_READWRITE)
-    {
-        ProtectVirtualMemory(KiFastSystemCall, 12, OldProtect, &OldProtect);
-    }
-
-    return STATUS_SUCCESS;
-}
-
-
-/************************************************************************
-  wow64
-************************************************************************/
-
-
-ULONG_PTR
-NTAPI
-HpUserModeDispatcher(
-    IN      ULONG                   ServiceIndex,
-    IN OUT  PULONG_PTR              Arguments,
-    IN OUT  PPUSHAD_REGISTER        RegContext,
-    IN OUT  PVOID*                  AddressOfReturnAddress,
-    OUT     PSYSCALL_FILTER_INFO    FltInfo
-)
-{
-    BOOL                        HasGlobalFilter, ValidSystemCall;
-    ULONG                       TableIndex;
-    ULONG_PTR                   ReturnValue;
-    HOOK_PORT_DISPATCHER_INFO   Dispatcher;
-    PHOOK_PORT_GLOBAL_INFO      Info = HppGetGlobalInfo();
-
-    if (Info == NULL)
-        return 0;
-
-    HasGlobalFilter = Info->GlobalFilter.Routine != NULL;
-    ValidSystemCall = TRUE;
-
-    TableIndex = HP_TABLE_INDEX(ServiceIndex);
-    ServiceIndex = HP_SERVICE_INDEX(ServiceIndex);
-
-    if (TableIndex >= HP_MAX_SERVICE_TABLE_COUNT || Info->SystemCallInfo[TableIndex] == NULL)
-    {
-        if (!HasGlobalFilter)
-            return 0;
-
-        ValidSystemCall = FALSE;
-    }
-
-    if (ServiceIndex >= Info->MaxSystemCallCount[TableIndex])
-    {
-        if (!HasGlobalFilter)
-            return 0;
-
-        ValidSystemCall = FALSE;
-    }
-
-    Dispatcher.SystemCallInfo = ValidSystemCall ? &Info->SystemCallInfo[TableIndex][ServiceIndex] : NULL;
-
-    if (ValidSystemCall && HpIsCurrentCallSkip(Dispatcher.SystemCallInfo))
-        return 0;
-
-    Dispatcher.AddressOfReturnAddress   = AddressOfReturnAddress;
-    Dispatcher.ServiceData              = 0;
-    Dispatcher.ServiceIndex             = ServiceIndex;
-    Dispatcher.TableIndex               = TableIndex;
-    Dispatcher.OriginalRoutine          = ValidSystemCall ? Dispatcher.SystemCallInfo->FunctionAddress : NULL;
-
-    if (Info->GlobalFilter.Routine != NULL)
-    {
-        SYSCALL_FILTER_INFO FltInfo;
-
-        FltInfo.FilterContext = Info->GlobalFilter.Context;
-        FltInfo.SsdtRoutine = ValidSystemCall ? Dispatcher.SystemCallInfo->FunctionAddress : NULL;
-        ReturnValue = Info->GlobalFilter.Routine(
-                    Dispatcher.SystemCallInfo,
-                    &FltInfo,
-                    Dispatcher.ServiceData,
-                    &FltInfo.SsdtRoutine,
-                    Arguments,
-                    Dispatcher.AddressOfReturnAddress
-                 );
-
-        if (FltInfo.Action == GlobalFilterHandled || !ValidSystemCall)
-            return ReturnValue;
-    }
-    else if (HasGlobalFilter && !ValidSystemCall)   // changed async
-    {
-        return 0;
-    }
-
-    if (
-         Dispatcher.SystemCallInfo->FilterCallbacks == NULL ||
-         FLAG_OFF(Dispatcher.SystemCallInfo->Flags, SystemCallFilterEnable)
-       )
-    {
-        return 0;
-    }
-
-    SEH_TRY
-    {
-        ReturnValue = HpServiceDispatcherInternal(Info, &Dispatcher, Arguments, FltInfo);
-    }
-    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
-    {
-        ReturnValue = GetExceptionCode();
-    }
-
-    switch (FltInfo->Action)
-    {
-        case BlockSystemCall:
-            *AddressOfReturnAddress = Dispatcher.SystemCallInfo->ReturnOpAddress;
-            break;
-    }
-
-    return ReturnValue;
-}
-
-NAKED VOID HookSysEnter_Wow64_Win8Plus()
-{
-    INLINE_ASM
-    {
-        lea edx, [esp + 08h];
-        jmp HookSysEnter_Wow64;
-    }
-}
-
-NAKED VOID HookSysEnter_Wow64()
-{
-    INLINE_ASM
-    {
-        push offset StubSysEnter;
-        pushfd;
-
-//        cmp     ax, HP_MAX_SERVICE_INDEX
-//        jae     _EXCEED_MAX_SERVICE;
-
-        pushad;
-
-        lea     ecx, [esp + 28h];
-        lea     esp, [esp - 10h];
-
-        and     eax, 0FFFFh;
-        and     dword ptr[esp], 0;
-
-        push    esp;                    // FltInfo
-        push    ecx;                    // addr of ret addr
-        lea     ecx, [ecx - 28h];
-        push    ecx;                    // reg context
-        push    edx;                    // arguments
-        push    eax;                    // service index
-        call    HpUserModeDispatcher;
-
-        mov     ecx, [esp]SYSCALL_FILTER_INFO.Action;
-        lea     esp, [esp + 10h];
-
-        jecxz   _SYSTEM_CALL_PERMIT;    // SYSTEM_CALL_CONTINUE
-        dec     ecx;
-        jnz     _SYSTEM_CALL_PERMIT;
-
-        mov     esp, [esp]PUSHAD_REGISTER.Rsp;
-        popfd;
-
-        lea     esp, [esp + 0x04];      // pushed StubSysEnter
-        ret;
-
-_SYSTEM_CALL_PERMIT:
-
-        popad;
-
-// _EXCEED_MAX_SERVICE:
-
-        popfd;
-        ret;
-    }
-}
-
-
-PVOID GetWow64SyscallJumpStub()
-{
-    PVOID NtCancelTimer;
-
-    NtCancelTimer = LookupExportTable(GetNtdllHandle(), NTDLL_NtCancelTimer);
-
-    return WalkOpCodeT(NtCancelTimer, 0x20,
-                WalkOpCodeM(Buffer, OpLength, Ret)
-                {
-                    switch (Buffer[0])
-                    {
-                        case 0x64:
-                            if (*(PUSHORT)&Buffer[1] == 0x15FF) // call    dword ptr fs:[0C0h]
-                            {
-                                Ret = (PVOID)ReadFsPtr(*(PULONG)&Buffer[3]);
-                                return STATUS_SUCCESS;
-                            }
-                            break;
-
-                        case 0xBA:  // mov edx, const
-                            Ret = *(PVOID *)&Buffer[1];
-                            break;
-
-                        case 0xFF:
-                            switch (Buffer[1])
-                            {
-                                case 0xD2:  // call edx
-                                    return STATUS_SUCCESS;
-
-                                case 0x12:  // call [edx]
-                                    Ret = *(PVOID *)Ret;
-                                    return STATUS_SUCCESS;
-                            }
-
-                        case 0xC2:
-                        case 0xC3:
-                            Ret = nullptr;
-                            return STATUS_SUCCESS;
-                    }
-
-                    return STATUS_UNSUCCESSFUL;
-                }
-            );
-}
-
-NTSTATUS HookSysCall_Wow64(HOOK_PORT_GLOBAL_INFO *GlobalInfo)
-{
-    BOOL        HpInstalled;
-    __m128      Temp;
-    PBYTE       Buffer;
-    ULONG       Protect, StubSysEnterProtect;
-    ULONG_PTR   SrcLength, DestLength;
-    PVOID       Wow64SyscallJumpStub, HookRoutine;
-    NTSTATUS    Status;
-    RTL_OSVERSIONINFOW VersionInfo;
-
-    const static ULONG_PTR Wow64FsC0Size = 7;
-
-    Wow64SyscallJumpStub = GetWow64SyscallJumpStub();
-    GlobalInfo->User.Wow64SyscallJumpStub = Wow64SyscallJumpStub;
-
-    HpInstalled = *(PBYTE)Wow64SyscallJumpStub == PUSH;
-
-    Status = ProtectVirtualMemory(
-                Wow64SyscallJumpStub,
-                Wow64FsC0Size,
-                PAGE_EXECUTE_READWRITE,
-                &Protect
-             );
-    FAIL_RETURN(Status);
-
-    Status = ProtectVirtualMemory(
-                StubSysEnter,
-                Wow64FsC0Size,
-                PAGE_EXECUTE_READWRITE,
-                &StubSysEnterProtect
-             );
-    FAIL_RETURN(Status);
-
-    GlobalInfo->User.SysEnterSize = ULONG_PTR_MAX;
-
-    Temp = _mm_loadu_ps((float *)Wow64SyscallJumpStub);
-    _mm_storeu_ps((float *)GlobalInfo->User.Wow64FsC0Backup, Temp);
-
-    CopyOneOpCode(StubSysEnter, Wow64SyscallJumpStub, &DestLength, &SrcLength, 0, 0x10);
-    if (HpInstalled)
-    {
-        CopyOneOpCode(PtrAdd(StubSysEnter, DestLength), PtrAdd(Wow64SyscallJumpStub, SrcLength), NULL, NULL, 0, 0x10 - DestLength);
-    }
-    else
-    {
-        *(PBYTE)PtrAdd(StubSysEnter, DestLength) = PUSH;
-        *(PVOID *)PtrAdd(StubSysEnter, DestLength + 1) = PtrAdd(Wow64SyscallJumpStub, SrcLength);
-        *(PBYTE)PtrAdd(StubSysEnter, DestLength + 1 + sizeof(PVOID)) = 0xC3;
-    }
-
-    if (SrcLength < 6)
-        DebugBreakPoint();
-
-    Buffer = (PBYTE)&Temp;
-
-    Nt_QueryOsVersion(&VersionInfo);
-
-    if (
-         VersionInfo.dwMajorVersion > 6 ||
-         (VersionInfo.dwMajorVersion == 6 && VersionInfo.dwMinorVersion >= 2)
-       )
-    {
-        HookRoutine = HookSysEnter_Wow64_Win8Plus;
-    }
-    else
-    {
-        HookRoutine = HookSysEnter_Wow64;
-    }
-
-    Buffer[0] = PUSH;
-    *(PVOID *)&Buffer[1] = HookRoutine;
-    Buffer[5] = 0xC3;
-
-    _mm_storeu_ps((float *)Wow64SyscallJumpStub, Temp);
-
-    if (StubSysEnterProtect != PAGE_EXECUTE_READWRITE)
-        ProtectVirtualMemory(StubSysEnter, Wow64FsC0Size, StubSysEnterProtect, &StubSysEnterProtect);
-
-    if (Protect != PAGE_EXECUTE_READWRITE)
-        ProtectVirtualMemory(Wow64SyscallJumpStub, Wow64FsC0Size, Protect, &Protect);
-
-    return Status;
-}
-
-NTSTATUS UnHookSysCall_Wow64(HOOK_PORT_GLOBAL_INFO *GlobalInfo)
-{
-    ULONG       Protect;
-    PVOID       Wow64SyscallJumpStub;
-    NTSTATUS    Status;
-
-    Wow64SyscallJumpStub = GlobalInfo->User.Wow64SyscallJumpStub;
-
-    Status = ProtectVirtualMemory(
-                Wow64SyscallJumpStub,
-                0x10,
-                PAGE_EXECUTE_READWRITE,
-                &Protect
-             );
-    if (!NT_SUCCESS(Status))
-        return Status;
-
-    _mm_storeu_ps((float *)Wow64SyscallJumpStub, _mm_loadu_ps((float *)GlobalInfo->User.Wow64FsC0Backup));
-
-    if (Protect != PAGE_EXECUTE_READWRITE)
-        ProtectVirtualMemory(Wow64SyscallJumpStub, 0x10, Protect, &Protect);
-
-    return Status;
-}
-
-
-/************************************************************************
-  common
-************************************************************************/
-
-BOOL
-FASTCALL
-HpIsCurrentCallSkip(
-    PSYSCALL_INFO SysCallInfo
-)
-{
-
-
-    SYSCALL_FILTER_SKIP_INFO *SkipInfo;
-
-    SkipInfo = (SYSCALL_FILTER_SKIP_INFO *)FindThreadFrame(SYSCALL_SKIP_MAGIC);
-    return SkipInfo != NULL &&
-           (
-            SkipInfo->ServiceIndex == ALL_SERVICE_INDEX ||
-            SysCallInfo->ServiceData == SkipInfo->ServiceIndex
-           );
-
-}
-
-ULONG_PTR
-FASTCALL
-HpServiceDispatcherInternal(
-    PHOOK_PORT_GLOBAL_INFO      Info,
-    PHOOK_PORT_DISPATCHER_INFO  Dispatcher,
-    PULONG_PTR                  Arguments,
-    PSYSCALL_FILTER_INFO        UserModeFltInfo
-)
-{
-    PVOID                   LocalArguments;
-    ULONG_PTR               ReturnValue, FilterBitmap, ArgumentSize;
-    NTSTATUS                Status;
-    HpFilterStub            FilterStub;
-    PSYSCALL_INFO           SystemCallInfo;
-    SYSCALL_FILTER_INFO     FltInfo;
-    PSYSTEM_CALL_FILTER     Filters;
-
-    ReturnValue = 0;
-
-    SystemCallInfo = Dispatcher->SystemCallInfo;
-
-    if (SystemCallInfo == NULL)
-    {
-        SystemCallInfo = &Info->SystemCallInfo[Dispatcher->TableIndex][Dispatcher->ServiceIndex];
-        Dispatcher->SystemCallInfo = SystemCallInfo;
-    }
-
-    ArgumentSize = SystemCallInfo->ArgumentSize;
-    FltInfo.SsdtRoutine = Dispatcher->OriginalRoutine;
-
-    Filters = SystemCallInfo->FilterCallbacks;
-    if (Filters == NULL)
-    {
-        return ReturnValue;
-    }
-
-    FilterBitmap = SystemCallInfo->FilterBitmap;
-
-
-    *UserModeFltInfo = FltInfo;
-    UserModeFltInfo->Action = ContinueSystemCall;
-
-
-    for (FltInfo.Action = ContinueSystemCall; FltInfo.Action == ContinueSystemCall; ++Filters)
-    {
-        ULONG Index;
-
-        if (MlBitScanForwardPtr(&Index, FilterBitmap) == FALSE)
-            break;
-
-        FilterBitmap >>= Index + 1;
-        Filters += Index;
-
-        FilterStub = (HpFilterStub)Filters->Callback;
-        if (FilterStub == NULL)
-            continue;
-
-        LocalArguments = _alloca(ArgumentSize);
-        CopyMemory(LocalArguments, Arguments, ArgumentSize);
-
-        UserModeFltInfo->FilterContext = Filters->Context;
-        ReturnValue = FilterStub(SystemCallInfo, UserModeFltInfo);
-        FltInfo.Action = UserModeFltInfo->Action;
-    }
-
-    switch (FltInfo.Action)
-    {
-        case ContinueSystemCall:
-        case PermitSystemCall:
-
-            break;
-    }
-
-    return ReturnValue;
-}
-
-VOID
-HppSortHashTable(
-    PSYSTEM_CALL_HASH_TABLE HashTable
-)
-{
-    ULONG HashTableCount;
-    PSYSTEM_CALL_HASH Entry;
-
-    Entry = HashTable->Entry;
-
-    for (ULONG i = HashTable->Count; i; --i)
-    {
-        for (ULONG j = 0; j != i - 1; ++j)
-            if (Entry[j].Hash > Entry[j + 1].Hash)
-                Swap(Entry[j], Entry[j + 1]);
-    }
-}
-
-PSYSTEM_CALL_HASH
-HpFindHashTableEntry(
-    SYSTEM_CALL_HASH_TABLE *HashTable,
-    ULONG                   Hash
-)
-{
-    ULONG Lepft, Right, Middle;
-    PSYSTEM_CALL_HASH Entry;
-
-    Lepft    = 0;
-    Right   = HashTable->Count - 1;
-
-    if (Hash < HashTable->Entry[Lepft].Hash ||
-        Hash > HashTable->Entry[Right].Hash)
-    {
-        return NULL;
-    }
-
-    if (Hash == HashTable->Entry[Right].Hash)
-        return &HashTable->Entry[Right];
-
-    while (Lepft < Right)
-    {
-        Middle  = (Right - Lepft) / 2 + Lepft;
-        Entry   = &HashTable->Entry[Middle];
-
-        if (Entry->Hash == Hash)
-            return Entry;
-
-        if (Entry->Hash < Hash)
-        {
-            Lepft = Middle + 1;
+            return FALSE;
         }
-        else
-        {
-            Right = Middle - 1;
-        }
+
+        return TRUE;
     }
 
-    Entry = &HashTable->Entry[Lepft];
-
-    return Entry->Hash == Hash ? Entry : NULL;
-}
-
-PSYSTEM_CALL_FILTER HpAllocateCallbackArray()
-{
-    return (PSYSTEM_CALL_FILTER)HpAlloc(
-                MAX_FILTER_NUMBER * sizeof(SYSTEM_CALL_FILTER),
-                HEAP_ZERO_MEMORY
-           );
-}
-
-BOOL HpFreeCallbackArray(PSYSTEM_CALL_FILTER CallbackFilters)
-{
-    return HpFree(CallbackFilters);
-}
-
-NTSTATUS
-HppInitializeSystemCallByEntry(
-    PHOOK_PORT_GLOBAL_INFO      GlobalInfo,
-    PSYSCALL_INFO               SysCall,
-    PHP_SYSTEM_SERVICE_ENTRY    Entry
-)
-{
-    ZeroMemory(SysCall, sizeof(*SysCall));
-
-    SysCall->FunctionAddress    = NULL;
-    SysCall->ArgumentSize       = Entry->ArgumentSize;
-    SysCall->ReturnOpAddress    = NULL;
-    SysCall->NameHash           = Entry->Hash;
-    SysCall->ServiceIndex       = Entry->ServiceIndex;
-    SysCall->ServiceTableIndex  = Entry->ServiceTableIndex;
-
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-HppInitializeSystemCallByRoutine(
-    PHOOK_PORT_GLOBAL_INFO  GlobalInfo,
-    PSYSCALL_INFO           SysCall,
-    PVOID                   Routine,
-    ULONG                   RoutineHash
-)
-{
-    PBYTE Function = (PBYTE)Routine;
-    ULONG ServiceIndex;
-
-    ZeroMemory(SysCall, sizeof(*SysCall));
-
-    if (Function[0] != 0xB8)  // mov eax, const
-        return STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM;
-
-    ServiceIndex            = *(PULONG)&Function[1];
-    SysCall->NameHash       = RoutineHash;
-    SysCall->ServiceData    = ServiceIndex;
-
-
-    SysCall->FunctionAddress = Function;
-
-    do
+    BOOL CanUseAbsoluteJumpPatch(PBYTE Address)
     {
-        Function += GetOpCodeSize(Function);
+        ULONG ServiceIndex;
+        PVOID ReturnOpAddress;
+        PBYTE AfterReturn;
 
-        //
-        // 64 FF15 C0000000: call    dword ptr fs:[0xC0]
-        //
-        if (GlobalInfo->User.IsWow64 &&
-            Function[0] == 0x64 &&
-            *(PUSHORT)&Function[1] == 0x15FF &&
-            *(PULONG)&Function[3]  != 0xC0
-           )
+        if (!ParseSystemCallStub(Address, &ServiceIndex, &ReturnOpAddress))
+            return FALSE;
+
+        if ((ULONG_PTR)ReturnOpAddress >= (ULONG_PTR)Address + SYSCALL_PATCH_SIZE - 1)
+            return TRUE;
+
+        AfterReturn = (PBYTE)PtrAdd(ReturnOpAddress, 1);
+        return IsX64PaddingRange(AfterReturn, PtrAdd(Address, SYSCALL_PATCH_SIZE));
+    }
+
+    NTSTATUS TryAllocateRelayStub(PVOID EntryAddress, PVOID CandidateBase, PVOID Target, PVOID* Relay)
+    {
+        PVOID Base;
+        SIZE_T Size;
+        NTSTATUS Status;
+        LONG RelativeOffset;
+
+        Base = CandidateBase;
+        Size = X64_SYSCALL_STUB_SIZE;
+        Status = NtAllocateVirtualMemory(CurrentProcess, &Base, 0, &Size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+        if (NT_FAILED(Status))
+            return Status;
+
+        if (!GetRelativeJumpOffset(EntryAddress, Base, &RelativeOffset))
         {
+            Mm::FreeVirtualMemory(Base);
             return STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM;
         }
 
-    } while (Function[0] != 0xC2 && Function[0] != 0xC3);
+        WriteAbsoluteJumpCode((PBYTE)Base, Target);
+        NtFlushInstructionCache(CurrentProcess, Base, SYSCALL_PATCH_SIZE);
+        *Relay = Base;
 
-    SysCall->ReturnOpAddress = (PVOID)Function;
-    if (Function[0] == 0xC2)
-        SysCall->ArgumentSize = ROUND_UP(*(PUSHORT)&Function[1], 4);
+        return STATUS_SUCCESS;
+    }
 
-
-    return STATUS_SUCCESS;
-}
-
-PSYSCALL_INFO
-HppLookupSystemCall(
-    PHOOK_PORT_GLOBAL_INFO  Info,
-    ULONG_PTR               SystemCallHash
-)
-{
-    PSYSTEM_CALL_HASH Entry;
-
-    if (Info == NULL)
-        return NULL;
-
-    Entry = HpFindHashTableEntry(&Info->HashTable, SystemCallHash);
-    if (Entry == NULL)
-        return NULL;
-
-    return Entry->Entry;
-}
-
-NTSTATUS
-HppAddSystemCall(
-    PHOOK_PORT_GLOBAL_INFO  Info,
-    PSYSCALL_INFO           SystemCall,
-    ULONG_PTR               SystemCallCount
-)
-{
-    ULONG               EntryCount, TableIndex;
-    NTSTATUS            Status;
-    PSYSCALL_INFO       SysCall, SysCallEntry;
-    PSYSTEM_CALL_HASH   TableEntry;
-    SYSTEM_CALL_HASH_TABLE NewTable, OldTable;
-
-    EntryCount = Info->HashTable.Count;
-    Status = HpAllocateVirtualMemory((PVOID *)&NewTable.Entry, (EntryCount + SystemCallCount) * sizeof(*NewTable.Entry));
-    FAIL_RETURN(Status);
-
-    TableEntry = &NewTable.Entry[EntryCount];
-    FOR_EACH(SysCallEntry, SystemCall, SystemCallCount)
+    NTSTATUS AllocateRelayStub(PVOID Address, PVOID Target, PVOID* Relay)
     {
-        if (HppLookupSystemCall(Info, SysCallEntry->NameHash) != NULL)
-        {
-            --SystemCallCount;
-            continue;
-        }
+        ULONG_PTR Near, Low, High, Query, Next;
+        MEMORY_BASIC_INFORMATION MemoryInfo;
+        NTSTATUS Status;
 
-        TableIndex = SysCallEntry->ServiceTableIndex;
+        static const ULONG_PTR AllocationGranularity = 0x10000;
+        static const ULONG_PTR MinUserAddress = 0x10000;
+        static const ULONG_PTR MaxRange = 0x7FFFFFFF;
 
-        if (TableIndex == HP_WIN32K_SERVICE_INDEX && Info->SystemCallInfo[TableIndex] == NULL)
+        Near = (ULONG_PTR)Address;
+        Low = Near > MaxRange ? Near - MaxRange : MinUserAddress;
+        if (Low < MinUserAddress)
+            Low = MinUserAddress;
+
+        High = Near + MaxRange;
+        if (High < Near)
+            High = MAXULONG_PTR;
+
+        Query = AlignDownTo(Near, AllocationGranularity);
+        while (Query > Low)
         {
-            Status = HpAllocateVirtualMemory(
-                        (PVOID *)&Info->SystemCallInfo[TableIndex],
-                        HP_MAX_WIN32K_SERVICE_INDEX * sizeof(*SysCallEntry)
-                    );
+            Status = NtQueryVirtualMemory(CurrentProcess, (PVOID)Query, MemoryBasicInformation, &MemoryInfo, sizeof(MemoryInfo), nullptr);
             if (NT_FAILED(Status))
             {
-                HppDestroyHashTable(&NewTable);
-                return Status;
+                Query -= Query >= AllocationGranularity ? AllocationGranularity : Query;
+                continue;
             }
+
+            if (MemoryInfo.State == MEM_FREE)
+            {
+                Status = TryAllocateRelayStub(Address, (PVOID)Query, Target, Relay);
+                if (NT_SUCCESS(Status))
+                    return Status;
+            }
+
+            if ((ULONG_PTR)MemoryInfo.BaseAddress <= Low)
+                break;
+
+            Query = AlignDownTo((ULONG_PTR)MemoryInfo.BaseAddress - 1, AllocationGranularity);
         }
 
-        SysCall = &Info->SystemCallInfo[TableIndex][SysCallEntry->ServiceIndex];
+        Query = AlignUpTo(Near, AllocationGranularity);
+        while (Query < High)
+        {
+            Status = NtQueryVirtualMemory(CurrentProcess, (PVOID)Query, MemoryBasicInformation, &MemoryInfo, sizeof(MemoryInfo), nullptr);
+            if (NT_FAILED(Status))
+            {
+                Query += AllocationGranularity;
+                continue;
+            }
 
-        *SysCall = *SysCallEntry;
+            if (MemoryInfo.State == MEM_FREE)
+            {
+                Status = TryAllocateRelayStub(Address, (PVOID)Query, Target, Relay);
+                if (NT_SUCCESS(Status))
+                    return Status;
+            }
 
-        TableEntry->Entry = SysCall;
-        TableEntry->Hash = SysCallEntry->NameHash;
-        ++TableEntry;
+            Next = (ULONG_PTR)MemoryInfo.BaseAddress + MemoryInfo.RegionSize;
+            if (Next <= Query)
+                Query += AllocationGranularity;
+            else
+                Query = AlignUpTo(Next, AllocationGranularity);
+        }
 
-        ++Info->SystemCallCount[TableIndex];
+        return STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM;
     }
 
-    CopyMemory(NewTable.Entry, Info->HashTable.Entry, EntryCount * sizeof(*NewTable.Entry));
-    NewTable.Count = EntryCount + SystemCallCount;
+    NTSTATUS WriteAbsoluteJump(PVOID Address, PVOID Target)
+    {
+        BYTE Code[SYSCALL_PATCH_SIZE];
+        ULONG Protect;
+        NTSTATUS Status;
 
-    HppSortHashTable(&NewTable);
+        WriteAbsoluteJumpCode(Code, Target);
 
-    OldTable = Info->HashTable;
+        Status = ProtectVirtualMemory(Address, SYSCALL_PATCH_SIZE, PAGE_EXECUTE_READWRITE, &Protect);
+        FAIL_RETURN(Status);
 
-#if ML_X86
+        CopyMemory(Address, Code, sizeof(Code));
+        NtFlushInstructionCache(CurrentProcess, Address, SYSCALL_PATCH_SIZE);
 
-    InterlockedExchangeDoublePointer(&Info->HashTable, &NewTable);
+        if (Protect != PAGE_EXECUTE_READWRITE)
+            ProtectVirtualMemory(Address, SYSCALL_PATCH_SIZE, Protect, &Protect);
 
-#else
+        return STATUS_SUCCESS;
+    }
 
-    #error
+    NTSTATUS WriteRelativeJump(PVOID Address, PVOID Target, SYSCALL_PATCH* Patch)
+    {
+        BYTE Code[X64_SYSCALL_RELATIVE_JUMP_SIZE];
+        PVOID JumpTarget;
+        LONG RelativeOffset;
+        ULONG Protect;
+        NTSTATUS Status;
 
+        JumpTarget = Target;
+        if (!GetRelativeJumpOffset(Address, JumpTarget, &RelativeOffset))
+        {
+            Status = AllocateRelayStub(Address, Target, &Patch->Relay);
+            FAIL_RETURN(Status);
+
+            JumpTarget = Patch->Relay;
+            if (!GetRelativeJumpOffset(Address, JumpTarget, &RelativeOffset))
+                return STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM;
+        }
+
+        Code[0] = 0xE9;
+        *(PLONG)&Code[1] = RelativeOffset;
+
+        Status = ProtectVirtualMemory(Address, X64_SYSCALL_RELATIVE_JUMP_SIZE, PAGE_EXECUTE_READWRITE, &Protect);
+        FAIL_RETURN(Status);
+
+        CopyMemory(Address, Code, sizeof(Code));
+        NtFlushInstructionCache(CurrentProcess, Address, X64_SYSCALL_RELATIVE_JUMP_SIZE);
+
+        if (Protect != PAGE_EXECUTE_READWRITE)
+            ProtectVirtualMemory(Address, X64_SYSCALL_RELATIVE_JUMP_SIZE, Protect, &Protect);
+
+        return STATUS_SUCCESS;
+    }
+
+    NTSTATUS WriteSystemCallJump(PVOID Address, PVOID Target, SYSCALL_PATCH* Patch)
+    {
+        NTSTATUS Status;
+
+        CopyMemory(Patch->Backup, Address, SYSCALL_PATCH_SIZE);
+
+        Status = WriteRelativeJump(Address, Target, Patch);
+        if (NT_SUCCESS(Status))
+            return Status;
+
+        if (CanUseAbsoluteJumpPatch((PBYTE)Address))
+            return WriteAbsoluteJump(Address, Target);
+
+        return Status;
+    }
 #endif
 
-    HppDestroyHashTable(&OldTable);
+    NTSTATUS RestorePatch(SYSCALL_PATCH* Patch)
+    {
+#if ML_AMD64
+        ULONG Protect;
+        NTSTATUS Status;
 
-    return STATUS_SUCCESS;
+        if (Patch == nullptr || Patch->SysCall == nullptr)
+            return STATUS_SUCCESS;
+
+        Status = ProtectVirtualMemory(Patch->Target, SYSCALL_PATCH_SIZE, PAGE_EXECUTE_READWRITE, &Protect);
+        FAIL_RETURN(Status);
+
+        CopyMemory(Patch->Target, Patch->Backup, SYSCALL_PATCH_SIZE);
+        NtFlushInstructionCache(CurrentProcess, Patch->Target, SYSCALL_PATCH_SIZE);
+
+        if (Protect != PAGE_EXECUTE_READWRITE)
+            ProtectVirtualMemory(Patch->Target, SYSCALL_PATCH_SIZE, Protect, &Protect);
+
+        if (Patch->Original != nullptr)
+            Mm::FreeVirtualMemory(Patch->Original);
+
+        if (Patch->Relay != nullptr)
+            Mm::FreeVirtualMemory(Patch->Relay);
+
+        ZeroMemory(Patch, sizeof(*Patch));
+        return STATUS_SUCCESS;
+#else
+        if (Patch == nullptr || Patch->SysCall == nullptr)
+            return STATUS_SUCCESS;
+
+        NTSTATUS Status = Mp::RestoreMemory(Patch->Original);
+        if (NT_SUCCESS(Status))
+            ZeroMemory(Patch, sizeof(*Patch));
+
+        return Status;
+#endif
+    }
+
+    SYSCALL_PATCH* FindPatch(PSYSCALL_INFO SysCall)
+    {
+        for (ULONG_PTR i = 0; i != g_PatchCount; ++i)
+        {
+            if (g_Patches[i].SysCall == SysCall)
+                return &g_Patches[i];
+        }
+
+        return nullptr;
+    }
+
+    NTSTATUS AddPatch(PSYSCALL_INFO SysCall, PVOID Target, PVOID Original)
+    {
+        SYSCALL_PATCH* NewPatches;
+
+        if (g_PatchCount == g_PatchCapacity)
+        {
+            ULONG_PTR NewCapacity = g_PatchCapacity == 0 ? 0x20 : g_PatchCapacity * 2;
+
+            NewPatches = (SYSCALL_PATCH*)HpAlloc(NewCapacity * sizeof(*NewPatches), HEAP_ZERO_MEMORY);
+            if (NewPatches == nullptr)
+                return STATUS_NO_MEMORY;
+
+            if (g_Patches != nullptr)
+            {
+                CopyMemory(NewPatches, g_Patches, g_PatchCount * sizeof(*g_Patches));
+                HpFree(g_Patches);
+            }
+
+            g_Patches = NewPatches;
+            g_PatchCapacity = NewCapacity;
+        }
+
+        g_Patches[g_PatchCount].SysCall = SysCall;
+        g_Patches[g_PatchCount].Target = Target;
+        g_Patches[g_PatchCount].Original = Original;
+        ++g_PatchCount;
+
+        return STATUS_SUCCESS;
+    }
+
+    template<class Function, class Invoker>
+    auto DispatchTypedFilter(PSYSCALL_INFO SysCallInfo, Function Original, Invoker InvokeFilter) -> decltype(Original())
+    {
+        typedef decltype(Original()) RETURN_TYPE;
+        ULONG_PTR FilterBitmap;
+        RETURN_TYPE ReturnValue;
+        SYSCALL_FILTER_INFO FltInfo;
+        PSYSTEM_CALL_FILTER Filters;
+
+        if (SysCallInfo == nullptr)
+            return Original();
+
+        Filters = SysCallInfo->FilterCallbacks;
+        if (Filters == nullptr || FLAG_OFF(SysCallInfo->Flags, SystemCallFilterEnable))
+            return Original();
+
+        FltInfo.Action = ContinueSystemCall;
+        FltInfo.FilterContext = nullptr;
+        ReturnValue = 0;
+
+        FilterBitmap = SysCallInfo->FilterBitmap;
+        for (; FltInfo.Action == ContinueSystemCall; ++Filters)
+        {
+            ULONG Index;
+
+            if (MlBitScanForwardPtr(&Index, FilterBitmap) == FALSE)
+                break;
+
+            FilterBitmap >>= Index + 1;
+            Filters += Index;
+
+            if (Filters->Callback == nullptr)
+                continue;
+
+            FltInfo.FilterContext = Filters->Context;
+            ReturnValue = InvokeFilter(Filters->Callback, SysCallInfo, &FltInfo);
+        }
+
+        if (FltInfo.Action == BlockSystemCall)
+            return ReturnValue;
+
+        return Original();
+    }
+
+    PVOID LookupSyscallOriginal(ULONG RoutineHash)
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), RoutineHash);
+        SYSCALL_PATCH* Patch = FindPatch(SysCall);
+
+        return Patch != nullptr ? Patch->Original : nullptr;
+    }
+
+    NTSTATUS NTAPI HpNtCreateUserProcess(
+        PHANDLE                         ProcessHandle,
+        PHANDLE                         ThreadHandle,
+        ACCESS_MASK                     ProcessDesiredAccess,
+        ACCESS_MASK                     ThreadDesiredAccess,
+        POBJECT_ATTRIBUTES              ProcessObjectAttributes,
+        POBJECT_ATTRIBUTES              ThreadObjectAttributes,
+        ULONG                           ProcessFlags,
+        ULONG                           ThreadFlags,
+        PRTL_USER_PROCESS_PARAMETERS    ProcessParameters,
+        PPS_CREATE_INFO                 CreateInfo,
+        PPS_ATTRIBUTE_LIST              AttributeList
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtCreateUserProcess);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtCreateUserProcess);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(
+                NtCreateUserProcess,
+                Original,
+                ProcessHandle,
+                ThreadHandle,
+                ProcessDesiredAccess,
+                ThreadDesiredAccess,
+                ProcessObjectAttributes,
+                ThreadObjectAttributes,
+                ProcessFlags,
+                ThreadFlags,
+                ProcessParameters,
+                CreateInfo,
+                AttributeList
+            );
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(
+                    HPARGS
+                    PHANDLE,
+                    PHANDLE,
+                    ACCESS_MASK,
+                    ACCESS_MASK,
+                    POBJECT_ATTRIBUTES,
+                    POBJECT_ATTRIBUTES,
+                    ULONG,
+                    ULONG,
+                    PRTL_USER_PROCESS_PARAMETERS,
+                    PPS_CREATE_INFO,
+                    PPS_ATTRIBUTE_LIST
+                );
+
+                return ((FILTER)Callback)(
+                    Info,
+                    FltInfo,
+                    ProcessHandle,
+                    ThreadHandle,
+                    ProcessDesiredAccess,
+                    ThreadDesiredAccess,
+                    ProcessObjectAttributes,
+                    ThreadObjectAttributes,
+                    ProcessFlags,
+                    ThreadFlags,
+                    ProcessParameters,
+                    CreateInfo,
+                    AttributeList
+                );
+            });
+    }
+
+    NTSTATUS NTAPI HpNtQuerySystemInformation(
+        SYSTEM_INFORMATION_CLASS SystemInformationClass,
+        PVOID                    SystemInformation,
+        ULONG_PTR                SystemInformationLength,
+        PULONG                   ReturnLength
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQuerySystemInformation);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtQuerySystemInformation);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtQuerySystemInformation, Original, SystemInformationClass, SystemInformation, SystemInformationLength, ReturnLength);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS SYSTEM_INFORMATION_CLASS, PVOID, ULONG_PTR, PULONG);
+                return ((FILTER)Callback)(Info, FltInfo, SystemInformationClass, SystemInformation, SystemInformationLength, ReturnLength);
+            });
+    }
+
+    NTSTATUS NTAPI HpNtQueryValueKey(
+        HANDLE                      KeyHandle,
+        PUNICODE_STRING             ValueName,
+        KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
+        PVOID                       KeyValueInformation,
+        ULONG                       Length,
+        PULONG                      ResultLength
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryValueKey);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryValueKey);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtQueryValueKey, Original, KeyHandle, ValueName, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS HANDLE, PUNICODE_STRING, KEY_VALUE_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+                return ((FILTER)Callback)(Info, FltInfo, KeyHandle, ValueName, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+            });
+    }
+
+    NTSTATUS NTAPI HpNtInitializeNlsFiles(
+        PVOID*          BaseAddress,
+        PLCID           DefaultLocaleId,
+        PLARGE_INTEGER  DefaultCasingTableSize
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtInitializeNlsFiles);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtInitializeNlsFiles);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtInitializeNlsFiles, Original, BaseAddress, DefaultLocaleId, DefaultCasingTableSize);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS PVOID*, PLCID, PLARGE_INTEGER);
+                return ((FILTER)Callback)(Info, FltInfo, BaseAddress, DefaultLocaleId, DefaultCasingTableSize);
+            });
+    }
+
+    NTSTATUS NTAPI HpNtQueryDefaultLocale(BOOLEAN UserProfile, PLCID DefaultLocaleId)
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryDefaultLocale);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryDefaultLocale);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtQueryDefaultLocale, Original, UserProfile, DefaultLocaleId);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS BOOLEAN, PLCID);
+                return ((FILTER)Callback)(Info, FltInfo, UserProfile, DefaultLocaleId);
+            });
+    }
+
+    NTSTATUS NTAPI HpNtQueryDefaultUILanguage(LANGID* DefaultUILanguageId)
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryDefaultUILanguage);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryDefaultUILanguage);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtQueryDefaultUILanguage, Original, DefaultUILanguageId);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS LANGID*);
+                return ((FILTER)Callback)(Info, FltInfo, DefaultUILanguageId);
+            });
+    }
+
+    NTSTATUS NTAPI HpNtQueryInstallUILanguage(LANGID* InstallUILanguageId)
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryInstallUILanguage);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryInstallUILanguage);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtQueryInstallUILanguage, Original, InstallUILanguageId);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS LANGID*);
+                return ((FILTER)Callback)(Info, FltInfo, InstallUILanguageId);
+            });
+    }
+
+    NTSTATUS NTAPI HpNtContinue(PCONTEXT Context, BOOLEAN TestAlert)
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtContinue);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtContinue);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtContinue, Original, Context, TestAlert);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS PCONTEXT, BOOLEAN);
+                return ((FILTER)Callback)(Info, FltInfo, Context, TestAlert);
+            });
+    }
+
+    LRESULT NTAPI HpNtUserMessageCall(
+        HWND         Window,
+        UINT         Message,
+        WPARAM       wParam,
+        LPARAM       lParam,
+        ULONG_PTR    xParam,
+        ULONG        xpfnProc,
+        ULONG        Flags
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserMessageCall);
+        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserMessageCall);
+
+        auto CallOriginal = [&]() -> LRESULT
+        {
+            return CallFuncPtr(NtUserMessageCall, Original, Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> LRESULT
+            {
+                typedef LRESULT (HPCALL *FILTER)(HPARGS HWND, UINT, WPARAM, LPARAM, ULONG_PTR, ULONG, ULONG);
+                return ((FILTER)Callback)(Info, FltInfo, Window, Message, wParam, lParam, xParam, xpfnProc, Flags);
+            });
+    }
+
+    BOOL NTAPI HpNtUserDefSetText(HWND hWnd, PLARGE_UNICODE_STRING Text)
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserDefSetText);
+        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserDefSetText);
+
+        auto CallOriginal = [&]() -> BOOL
+        {
+            return CallFuncPtr(NtUserDefSetText, Original, hWnd, Text);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> BOOL
+            {
+                typedef BOOL (HPCALL *FILTER)(HPARGS HWND, PLARGE_UNICODE_STRING);
+                return ((FILTER)Callback)(Info, FltInfo, hWnd, Text);
+            });
+    }
+
+    HDC NTAPI HpNtUserGetDC(HWND hWnd)
+    {
+        typedef HDC (NTAPI *PFN)(HWND);
+
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserGetDC);
+        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserGetDC);
+
+        auto CallOriginal = [&]() -> HDC
+        {
+            return ((PFN)Original)(hWnd);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> HDC
+            {
+                typedef HDC (HPCALL *FILTER)(HPARGS HWND);
+                return ((FILTER)Callback)(Info, FltInfo, hWnd);
+            });
+    }
+
+    HDC NTAPI HpNtUserGetDCEx(HWND hWnd, HRGN hrgnClip, DWORD flags)
+    {
+        typedef HDC (NTAPI *PFN)(HWND, HRGN, DWORD);
+
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserGetDCEx);
+        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserGetDCEx);
+
+        auto CallOriginal = [&]() -> HDC
+        {
+            return ((PFN)Original)(hWnd, hrgnClip, flags);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> HDC
+            {
+                typedef HDC (HPCALL *FILTER)(HPARGS HWND, HRGN, DWORD);
+                return ((FILTER)Callback)(Info, FltInfo, hWnd, hrgnClip, flags);
+            });
+    }
+
+    HDC NTAPI HpNtUserGetWindowDC(HWND hWnd)
+    {
+        typedef HDC (NTAPI *PFN)(HWND);
+
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserGetWindowDC);
+        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserGetWindowDC);
+
+        auto CallOriginal = [&]() -> HDC
+        {
+            return ((PFN)Original)(hWnd);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> HDC
+            {
+                typedef HDC (HPCALL *FILTER)(HPARGS HWND);
+                return ((FILTER)Callback)(Info, FltInfo, hWnd);
+            });
+    }
+
+    HDC NTAPI HpNtUserBeginPaint(HWND hWnd, LPPAINTSTRUCT lpPaint)
+    {
+        typedef HDC (NTAPI *PFN)(HWND, LPPAINTSTRUCT);
+
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserBeginPaint);
+        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserBeginPaint);
+
+        auto CallOriginal = [&]() -> HDC
+        {
+            return ((PFN)Original)(hWnd, lpPaint);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> HDC
+            {
+                typedef HDC (HPCALL *FILTER)(HPARGS HWND, LPPAINTSTRUCT);
+                return ((FILTER)Callback)(Info, FltInfo, hWnd, lpPaint);
+            });
+    }
+
+    HWND DispatchHpNtUserCreateWindowEx(
+        ULONG                   ArgumentCount,
+        ULONG                   ExStyle,
+        PLARGE_UNICODE_STRING   ClassName,
+        PLARGE_UNICODE_STRING   ClassVersion,
+        PLARGE_UNICODE_STRING   WindowName,
+        ULONG                   Style,
+        LONG                    X,
+        LONG                    Y,
+        LONG                    Width,
+        LONG                    Height,
+        HWND                    ParentWnd,
+        HMENU                   Menu,
+        PVOID                   Instance,
+        LPVOID                  Param,
+        ULONG                   ShowMode,
+        ULONG_PTR               Unknown1,
+        ULONG_PTR               Unknown2,
+        ULONG_PTR               Unknown3
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserCreateWindowEx);
+        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserCreateWindowEx);
+
+        auto CallOriginal = [&]() -> HWND
+        {
+            if (ArgumentCount == 15)
+            {
+                typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG_PTR);
+                return ((PFN)Original)(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown1);
+            }
+
+            if (ArgumentCount == 16)
+            {
+                typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG, ULONG_PTR);
+                return ((PFN)Original)(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown1, Unknown2);
+            }
+
+            typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG, ULONG, ULONG_PTR);
+            return ((PFN)Original)(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown1, Unknown2, Unknown3);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> HWND
+            {
+                typedef HWND (HPCALL *FILTER)(
+                    HPARGS
+                    ULONG,
+                    PLARGE_UNICODE_STRING,
+                    PLARGE_UNICODE_STRING,
+                    PLARGE_UNICODE_STRING,
+                    ULONG,
+                    LONG,
+                    LONG,
+                    LONG,
+                    LONG,
+                    HWND,
+                    HMENU,
+                    PVOID,
+                    LPVOID,
+                    ULONG,
+                    ULONG_PTR,
+                    ULONG_PTR,
+                    ULONG_PTR
+                );
+
+                return ((FILTER)Callback)(Info, FltInfo, ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown1, Unknown2, Unknown3);
+            });
+    }
+
+    HWND NTAPI HpNtUserCreateWindowEx_Win7(
+        ULONG                   ExStyle,
+        PLARGE_UNICODE_STRING   ClassName,
+        PLARGE_UNICODE_STRING   ClassVersion,
+        PLARGE_UNICODE_STRING   WindowName,
+        ULONG                   Style,
+        LONG                    X,
+        LONG                    Y,
+        LONG                    Width,
+        LONG                    Height,
+        HWND                    ParentWnd,
+        HMENU                   Menu,
+        PVOID                   Instance,
+        LPVOID                  Param,
+        ULONG                   ShowMode,
+        ULONG_PTR               Unknown1
+    )
+    {
+        return DispatchHpNtUserCreateWindowEx(15, ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown1, 0, 0);
+    }
+
+    HWND NTAPI HpNtUserCreateWindowEx_Win8(
+        ULONG                   ExStyle,
+        PLARGE_UNICODE_STRING   ClassName,
+        PLARGE_UNICODE_STRING   ClassVersion,
+        PLARGE_UNICODE_STRING   WindowName,
+        ULONG                   Style,
+        LONG                    X,
+        LONG                    Y,
+        LONG                    Width,
+        LONG                    Height,
+        HWND                    ParentWnd,
+        HMENU                   Menu,
+        PVOID                   Instance,
+        LPVOID                  Param,
+        ULONG                   ShowMode,
+        ULONG                   Unknown1,
+        ULONG_PTR               Unknown2
+    )
+    {
+        return DispatchHpNtUserCreateWindowEx(16, ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown1, Unknown2, 0);
+    }
+
+    HWND NTAPI HpNtUserCreateWindowEx_Win10(
+        ULONG                   ExStyle,
+        PLARGE_UNICODE_STRING   ClassName,
+        PLARGE_UNICODE_STRING   ClassVersion,
+        PLARGE_UNICODE_STRING   WindowName,
+        ULONG                   Style,
+        LONG                    X,
+        LONG                    Y,
+        LONG                    Width,
+        LONG                    Height,
+        HWND                    ParentWnd,
+        HMENU                   Menu,
+        PVOID                   Instance,
+        LPVOID                  Param,
+        ULONG                   ShowMode,
+        ULONG                   Unknown1,
+        ULONG                   Unknown2,
+        ULONG_PTR               Unknown3
+    )
+    {
+        return DispatchHpNtUserCreateWindowEx(17, ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown1, Unknown2, Unknown3);
+    }
+
+    HFONT NTAPI HpNtGdiHfontCreate(
+        PENUMLOGFONTEXDVW   EnumLogFont,
+        ULONG               SizeOfEnumLogFont,
+        LONG                LogFontType,
+        LONG                Unknown,
+        PVOID               FreeListLocalFont
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtGdiHfontCreate);
+        PVOID Original = LookupSyscallOriginal(WIN32K_NtGdiHfontCreate);
+
+        auto CallOriginal = [&]() -> HFONT
+        {
+            return CallFuncPtr(NtGdiHfontCreate, Original, EnumLogFont, SizeOfEnumLogFont, LogFontType, Unknown, FreeListLocalFont);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> HFONT
+            {
+                typedef HFONT (HPCALL *FILTER)(HPARGS PENUMLOGFONTEXDVW, ULONG, LONG, LONG, PVOID);
+                return ((FILTER)Callback)(Info, FltInfo, EnumLogFont, SizeOfEnumLogFont, LogFontType, Unknown, FreeListLocalFont);
+            });
+    }
+
+    PVOID FindWrapperByHash(ULONG RoutineHash)
+    {
+        RTL_OSVERSIONINFOW VersionInfo;
+
+        switch (RoutineHash)
+        {
+            case NTDLL_NtCreateUserProcess:       return HpNtCreateUserProcess;
+            case NTDLL_NtQuerySystemInformation:  return HpNtQuerySystemInformation;
+            case NTDLL_NtQueryValueKey:           return HpNtQueryValueKey;
+            case NTDLL_NtInitializeNlsFiles:      return HpNtInitializeNlsFiles;
+            case NTDLL_NtQueryDefaultLocale:      return HpNtQueryDefaultLocale;
+            case NTDLL_NtQueryDefaultUILanguage:  return HpNtQueryDefaultUILanguage;
+            case NTDLL_NtQueryInstallUILanguage:  return HpNtQueryInstallUILanguage;
+            case NTDLL_NtContinue:                return HpNtContinue;
+            case WIN32K_NtUserCreateWindowEx:
+                if (!NT_SUCCESS(Nt_QueryOsVersion(&VersionInfo)))
+                    return nullptr;
+                if (VersionInfo.dwMajorVersion == 6 && VersionInfo.dwMinorVersion < 2)
+                    return HpNtUserCreateWindowEx_Win7;
+                if (VersionInfo.dwMajorVersion == 6)
+                    return HpNtUserCreateWindowEx_Win8;
+                return HpNtUserCreateWindowEx_Win10;
+            case WIN32K_NtUserMessageCall:        return HpNtUserMessageCall;
+            case WIN32K_NtUserDefSetText:         return HpNtUserDefSetText;
+            case WIN32K_NtUserGetDC:              return HpNtUserGetDC;
+            case WIN32K_NtUserGetDCEx:            return HpNtUserGetDCEx;
+            case WIN32K_NtUserGetWindowDC:        return HpNtUserGetWindowDC;
+            case WIN32K_NtUserBeginPaint:         return HpNtUserBeginPaint;
+            case WIN32K_NtGdiHfontCreate:         return HpNtGdiHfontCreate;
+        }
+
+        return nullptr;
+    }
+
+    NTSTATUS PatchSystemCall(PSYSCALL_INFO SysCall)
+    {
+        PVOID Original, Target, Wrapper;
+        NTSTATUS Status;
+
+        if (FindPatch(SysCall) != nullptr)
+            return STATUS_SUCCESS;
+
+        Wrapper = FindWrapperByHash(SysCall->NameHash);
+        if (Wrapper == nullptr)
+            return STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM;
+
+        Target = SysCall->FunctionAddress;
+
+#if ML_AMD64
+        Original = AllocateSyscallStub(SysCall);
+        if (Original == nullptr)
+            return STATUS_NO_MEMORY;
+
+        Status = AddPatch(SysCall, Target, Original);
+        if (NT_FAILED(Status))
+        {
+            Mm::FreeVirtualMemory(Original);
+            return Status;
+        }
+
+        SysCall->FunctionAddress = Original;
+        Status = WriteSystemCallJump(Target, Wrapper, &g_Patches[g_PatchCount - 1]);
+        if (NT_FAILED(Status))
+        {
+            SysCall->FunctionAddress = Target;
+            RestorePatch(&g_Patches[g_PatchCount - 1]);
+            --g_PatchCount;
+            return Status;
+        }
+#else
+        Status = AddPatch(SysCall, Target, nullptr);
+        if (NT_FAILED(Status))
+            return Status;
+
+        Mp::PATCH_MEMORY_DATA Patch = Mp::FunctionJumpVa(
+            Target,
+            Wrapper,
+            &g_Patches[g_PatchCount - 1].Original,
+            LEP_FUNCTION_JUMP_OP
+        );
+
+        Status = Mp::PatchMemory(&Patch, 1);
+        if (NT_FAILED(Status))
+        {
+            if (*(PBYTE)Target == 0xE9)
+                Mp::RestoreMemory(g_Patches[g_PatchCount - 1].Original);
+            ZeroMemory(&g_Patches[g_PatchCount - 1], sizeof(*g_Patches));
+            --g_PatchCount;
+            return Status;
+        }
+
+        Original = g_Patches[g_PatchCount - 1].Original;
+        SysCall->FunctionAddress = Original;
+#endif
+
+        return STATUS_SUCCESS;
+    }
 }
 
-NTSTATUS
-HppAddSystemCallByRoutineRange(
-    PHOOK_PORT_GLOBAL_INFO  Info,
-    PVOID*                  Routine,
-    PULONG                  RoutineHash,
-    ULONG_PTR               Count
-)
+NTSTATUS InstallHookPort(PLDR_MODULE SysCallModule, ULONG Flags)
 {
-    NTSTATUS        Status;
-    SYSCALL_INFO    LocalBuffer[0x20];
-    PSYSCALL_INFO   SysCall, SysCallBase;
+    NTSTATUS                    Status;
+    PVOID                       NtdllModule;
+    PBYTE                       Function;
+    PSTR                        FunctionName;
+    ULONG_PTR                   HashTableCount;
+    PULONG                      AddressOfNames, AddressOfFunctions;
+    PUSHORT                     AddressOfNameOrdinals;
+    PIMAGE_DOS_HEADER           DosHeader;
+    PIMAGE_NT_HEADERS           NtHeader;
+    PIMAGE_EXPORT_DIRECTORY     ExportDirectory;
+    PSYSCALL_INFO               FilterEntry;
+    PSYSTEM_CALL_HASH           SysCallHash;
+    PHOOK_PORT_GLOBAL_INFO      GlobalInfo;
 
-    if (Count == 0)
-        return STATUS_INVALID_PARAMETER;
+    UNREFERENCED_PARAMETER(SysCallModule);
+    UNREFERENCED_PARAMETER(Flags);
 
-    if (Count < countof(LocalBuffer))
+    FAIL_RETURN(ml::MlInitialize());
+
+    GlobalInfo = HppGetGlobalInfo();
+    if (GlobalInfo != nullptr)
     {
-        SysCallBase = LocalBuffer;
-    }
-    else
-    {
-        SysCallBase = (PSYSCALL_INFO)HpAlloc(Count * sizeof(*SysCall));
-        if (SysCallBase == NULL)
-            return STATUS_NO_MEMORY;
-    }
-
-    Status = STATUS_SUCCESS;
-
-    SysCall = SysCallBase;
-    FOR_EACH(Routine, Routine, Count)
-    {
-        Status = HppInitializeSystemCallByRoutine(Info, SysCall, *Routine, *RoutineHash);
-        FAIL_BREAK(Status);
-
-        ++SysCall;
-        ++RoutineHash;
+        _InterlockedIncrementPtr(&GlobalInfo->RefCount);
+        return STATUS_SUCCESS;
     }
 
-    if (NT_SUCCESS(Status))
-        Status = HppAddSystemCall(Info, SysCallBase, Count);
+    GlobalInfo = (HOOK_PORT_GLOBAL_INFO*)HpAlloc(sizeof(*GlobalInfo), HEAP_ZERO_MEMORY);
+    if (GlobalInfo == nullptr)
+        return STATUS_NO_MEMORY;
 
-    if (SysCallBase != LocalBuffer)
-        HpFree(SysCallBase);
+    GlobalInfo->MaxSystemCallCount[HP_NTKRNL_SERVICE_INDEX] = HP_MAX_SERVICE_INDEX;
+    GlobalInfo->MaxSystemCallCount[HP_WIN32K_SERVICE_INDEX] = HP_MAX_WIN32K_SERVICE_INDEX;
+
+    Status = HpAllocateVirtualMemory((PVOID*)&GlobalInfo->SystemCallInfo[HP_NTKRNL_SERVICE_INDEX], HP_MAX_SERVICE_INDEX * sizeof(*GlobalInfo->SystemCallInfo[HP_NTKRNL_SERVICE_INDEX]));
+    if (NT_FAILED(Status))
+        goto InstallHookPort_Failure;
+
+    Status = HpAllocateVirtualMemory((PVOID*)&GlobalInfo->HashTable.Entry, HP_MAX_SERVICE_INDEX * sizeof(*GlobalInfo->HashTable.Entry));
+    if (NT_FAILED(Status))
+        goto InstallHookPort_Failure;
+
+    NtdllModule = GetNtdllHandle();
+    DosHeader = (PIMAGE_DOS_HEADER)NtdllModule;
+    NtHeader = (PIMAGE_NT_HEADERS)((ULONG_PTR)DosHeader + DosHeader->e_lfanew);
+    ExportDirectory = (PIMAGE_EXPORT_DIRECTORY)(NtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress + (ULONG_PTR)NtdllModule);
+    AddressOfNames = (PULONG)(ExportDirectory->AddressOfNames + (ULONG_PTR)NtdllModule);
+    AddressOfFunctions = (PULONG)(ExportDirectory->AddressOfFunctions + (ULONG_PTR)NtdllModule);
+    AddressOfNameOrdinals = (PUSHORT)(ExportDirectory->AddressOfNameOrdinals + (ULONG_PTR)NtdllModule);
+
+    SysCallHash = GlobalInfo->HashTable.Entry;
+    for (ULONG_PTR Count = ExportDirectory->NumberOfNames; Count; ++AddressOfNames, ++AddressOfNameOrdinals, --Count)
+    {
+        ULONG ServiceIndex, Hash;
+        PVOID ReturnOpAddress;
+
+        FunctionName = (PSTR)(*AddressOfNames + (ULONG_PTR)NtdllModule);
+        if (FunctionName[0] != 'Z' || FunctionName[1] != 'w')
+            continue;
+
+        Function = (PBYTE)(AddressOfFunctions[*AddressOfNameOrdinals] + (ULONG_PTR)NtdllModule);
+        if (!ParseSystemCallStub(Function, &ServiceIndex, &ReturnOpAddress))
+            continue;
+
+        if ((ServiceIndex & 0xFFFF) >= HP_MAX_SERVICE_INDEX)
+            continue;
+
+        FilterEntry = &GlobalInfo->SystemCallInfo[HP_NTKRNL_SERVICE_INDEX][ServiceIndex & 0xFFFF];
+        Hash = HashNativeZwAPI(FunctionName);
+
+        Status = HppInitializeSystemCallByRoutine(FilterEntry, Function, Hash);
+        if (NT_FAILED(Status))
+            goto InstallHookPort_Failure;
+
+        SysCallHash->Entry = FilterEntry;
+        SysCallHash->Hash = Hash;
+        ++SysCallHash;
+    }
+
+    HashTableCount = SysCallHash - GlobalInfo->HashTable.Entry;
+    GlobalInfo->HashTable.Count = HashTableCount;
+    HppSortHashTable(&GlobalInfo->HashTable);
+
+    HppSetGlobalInfo(GlobalInfo);
+    _InterlockedIncrementPtr(&GlobalInfo->RefCount);
+
+    return STATUS_SUCCESS;
+
+InstallHookPort_Failure:
+    HppSetGlobalInfo(nullptr);
+    if (GlobalInfo != nullptr)
+    {
+        if (GlobalInfo->SystemCallInfo[HP_NTKRNL_SERVICE_INDEX] != nullptr)
+            HpFreeVirtualMemory(GlobalInfo->SystemCallInfo[HP_NTKRNL_SERVICE_INDEX]);
+
+        HppDestroyHashTable(&GlobalInfo->HashTable);
+        HpFree(GlobalInfo);
+    }
 
     return Status;
 }
 
-NTSTATUS
-HppAddSystemCallByRoutine(
-    PHOOK_PORT_GLOBAL_INFO  Info,
-    PVOID                   Routine,
-    ULONG                   RoutineHash
-)
+NTSTATUS UnInstallHookPort(VOID)
 {
-    NTSTATUS        Status;
-    SYSCALL_INFO    SysCall;
+    ULONG RefCount;
+    PHOOK_PORT_GLOBAL_INFO Info;
 
-    return HppAddSystemCallByRoutineRange(Info, &Routine, &RoutineHash, 1);
+    Info = HppGetGlobalInfo();
+    if (Info == nullptr)
+        return STATUS_HOOK_PORT_NOT_INITIALIZED;
+
+    RefCount = _InterlockedDecrementPtr(&Info->RefCount);
+    if (RefCount != 0)
+        return RefCount;
+
+    HppSetGlobalInfo(nullptr);
+
+    for (ULONG_PTR i = g_PatchCount; i != 0; --i)
+        RestorePatch(&g_Patches[i - 1]);
+
+    HpFree(g_Patches);
+    g_Patches = nullptr;
+    g_PatchCount = 0;
+    g_PatchCapacity = 0;
+
+    for (ULONG TableIndex = 0; TableIndex != HP_MAX_SERVICE_TABLE_COUNT; ++TableIndex)
+    {
+        PSYSCALL_INFO SysCall = Info->SystemCallInfo[TableIndex];
+        if (SysCall == nullptr)
+            continue;
+
+        for (ULONG Count = (ULONG)Info->MaxSystemCallCount[TableIndex]; Count; --Count, ++SysCall)
+        {
+            if (SysCall->FilterCallbacks != nullptr)
+                HpFreeCallbackArray(SysCall->FilterCallbacks);
+        }
+
+        HpFreeVirtualMemory(Info->SystemCallInfo[TableIndex]);
+    }
+
+    HppDestroyHashTable(&Info->HashTable);
+    HpFree(Info);
+
+    return STATUS_SUCCESS;
 }
 
-NTSTATUS
-HppAddSystemCallFilter(
-    PHOOK_PORT_GLOBAL_INFO  Info,
-    ULONG                   RoutineHash,
-    PVOID                   Routine,
-    PVOID                   Context
-)
+NTSTATUS HpAddSystemCallFilter(ULONG RoutineHash, PVOID Routine, PVOID Context)
 {
     ULONG                   EmptyPos, Bitmap;
     PSYSTEM_CALL_FILTER     FilterCallbacks;
     PSYSCALL_INFO           Filter;
+    NTSTATUS                Status;
 
-    if (Info == NULL)
+    if (HppGetGlobalInfo() == nullptr)
         return STATUS_HOOK_PORT_NOT_INITIALIZED;
 
-    if (Routine == NULL)
+    if (Routine == nullptr)
         return STATUS_INVALID_PARAMETER;
 
-    Filter = HppLookupSystemCall(Info, RoutineHash);
-    if (Filter == NULL)
+    Filter = HppLookupSystemCall(HppGetGlobalInfo(), RoutineHash);
+    if (Filter == nullptr)
         return STATUS_HOOK_PORT_ENTRY_NOT_FOUND;
 
     FilterCallbacks = Filter->FilterCallbacks;
-    if (FilterCallbacks == NULL)
+    if (FilterCallbacks == nullptr)
     {
         Filter->FilterBitmap = 0;
         FilterCallbacks = HpAllocateCallbackArray();
-        if (FilterCallbacks == NULL)
+        if (FilterCallbacks == nullptr)
             return STATUS_NO_MEMORY;
 
         Filter->FilterCallbacks = FilterCallbacks;
@@ -1064,35 +1466,36 @@ HppAddSystemCallFilter(
     EmptyPos = _BitScanForward(&EmptyPos, ~Bitmap) ? EmptyPos : 0;
 
     FilterCallbacks += EmptyPos;
-    FilterCallbacks->Callback   = Routine;
-    FilterCallbacks->Context   = Context;
+    FilterCallbacks->Callback = Routine;
+    FilterCallbacks->Context = Context;
 
     SET_FLAG(Filter->Flags, SystemCallFilterEnable);
     SET_FLAG(Filter->FilterBitmap, 1 << EmptyPos);
 
+    Status = PatchSystemCall(Filter);
+    if (NT_FAILED(Status))
+    {
+        CLEAR_FLAG(Filter->FilterBitmap, 1 << EmptyPos);
+        FilterCallbacks->Callback = nullptr;
+        FilterCallbacks->Context = nullptr;
+        return Status;
+    }
+
     return STATUS_SUCCESS;
 }
 
-NTSTATUS
-HppRemoveSystemCallFilter(
-    PHOOK_PORT_GLOBAL_INFO  Info,
-    ULONG                   RoutineHash,
-    PVOID                   Routine
-)
+NTSTATUS HpRemoveSystemCallFilter(ULONG RoutineHash, PVOID Routine)
 {
     ULONG                   Bitmap, Index;
     PSYSTEM_CALL_FILTER     FilterCallbacks;
     PSYSCALL_INFO           Filter;
 
-    if (Info == NULL)
-        return STATUS_HOOK_PORT_NOT_INITIALIZED;
-
-    Filter = HppLookupSystemCall(Info, RoutineHash);
-    if (Filter == NULL)
+    Filter = HppLookupSystemCall(HppGetGlobalInfo(), RoutineHash);
+    if (Filter == nullptr)
         return STATUS_HOOK_PORT_ENTRY_NOT_FOUND;
 
     FilterCallbacks = Filter->FilterCallbacks;
-    if (FilterCallbacks == NULL)
+    if (FilterCallbacks == nullptr)
         return STATUS_HOOK_PORT_FILTER_NOT_FOUND;
 
     Bitmap = Filter->FilterBitmap;
@@ -1110,8 +1513,7 @@ HppRemoveSystemCallFilter(
             continue;
         }
 
-        FilterCallbacks->Callback = NULL;
-
+        FilterCallbacks->Callback = nullptr;
         CLEAR_FLAG(Filter->FilterBitmap, 1 << (FilterCallbacks - Filter->FilterCallbacks));
 
         if (Filter->FilterBitmap == 0)
@@ -1123,387 +1525,146 @@ HppRemoveSystemCallFilter(
     return STATUS_HOOK_PORT_FILTER_NOT_FOUND;
 }
 
-PSYSCALL_INFO
-HpLookupSystemCall(
-    ULONG_PTR SystemCallHash
-)
+PSYSCALL_INFO HpLookupSystemCall(ULONG_PTR SystemCallHash)
 {
     return HppLookupSystemCall(HppGetGlobalInfo(), SystemCallHash);
 }
 
-NTSTATUS
-HpAddSystemCallByRoutineRange(
-    PVOID*      Routine,
-    PULONG      RoutineHash,
-    ULONG_PTR   Count
-)
+PVOID HpGetSystemCallOriginal(ULONG RoutineHash)
 {
-    return HppAddSystemCallByRoutineRange(HppGetGlobalInfo(), Routine, RoutineHash, Count);
+    return LookupSyscallOriginal(RoutineHash);
 }
 
-NTSTATUS
-HpAddSystemCallByRoutine(
-    PVOID Routine,
-    ULONG RoutineHash
-)
+NTSTATUS HpAddSystemCallByRoutine(PVOID Routine, ULONG RoutineHash)
 {
-    return HppAddSystemCallByRoutine(HppGetGlobalInfo(), Routine, RoutineHash);
+    return HpAddSystemCallByRoutineRange(&Routine, &RoutineHash, 1);
 }
 
-NTSTATUS
-HpAddSystemCall(
-    PSYSCALL_INFO   SystemCall,
-    ULONG_PTR       Count
-)
+NTSTATUS HpAddSystemCallByRoutineRange(PVOID* Routine, PULONG RoutineHash, ULONG_PTR Count)
 {
-    return HppAddSystemCall(HppGetGlobalInfo(), SystemCall, Count);
-}
+    SYSCALL_INFO LocalBuffer[0x20];
+    PSYSCALL_INFO SysCallBase, SysCall;
+    NTSTATUS Status;
 
-NTSTATUS HppAddSystemServiceTable(PHOOK_PORT_GLOBAL_INFO Info, PHP_SYSTEM_SERVICE_TABLE ServiceTable)
-{
-    NTSTATUS                    Status;
-    PSYSCALL_INFO               SysCallBase, SysCall;
-    PHP_SYSTEM_SERVICE_ENTRY    Entry;
-
-    SysCallBase = (PSYSCALL_INFO)HpAlloc(ServiceTable->Number * sizeof(*SysCallBase));
-    if (SysCallBase == NULL)
-        return STATUS_NO_MEMORY;
-
-    SysCall = SysCallBase;
-    FOR_EACH(Entry, ServiceTable->Entries, ServiceTable->Number)
-    {
-        HppInitializeSystemCallByEntry(Info, SysCall, Entry);
-        ++SysCall;
-    }
-
-    Status = HppAddSystemCall(Info, SysCallBase, SysCall - SysCallBase);
-
-    HpFree(SysCallBase);
-
-    return Status;
-}
-
-NTSTATUS HppInitializeWin32kPort(PHOOK_PORT_GLOBAL_INFO Info)
-{
-
-
-    return STATUS_NOT_IMPLEMENTED;
-
-
-}
-
-NTSTATUS HpAddSystemServiceTable(PHP_SYSTEM_SERVICE_TABLE ServiceTable)
-{
-    return HppAddSystemServiceTable(HppGetGlobalInfo(), ServiceTable);
-}
-
-NTSTATUS HpInitializeWin32kPort()
-{
-    return HppInitializeWin32kPort(HppGetGlobalInfo());
-}
-
-NTSTATUS
-HpAddSystemCallFilter(
-    ULONG RoutineHash,
-    PVOID Routine,
-    PVOID Context  /* = NULL */
-)
-{
-    return HppAddSystemCallFilter(HppGetGlobalInfo(), RoutineHash, Routine, Context);
-}
-
-NTSTATUS
-HpRemoveSystemCallFilter(
-    ULONG RoutineHash,
-    PVOID Routine
-)
-{
-    return HppRemoveSystemCallFilter(HppGetGlobalInfo(), RoutineHash, Routine);
-}
-
-NTSTATUS HpSetGlobalFilter(PHP_GLOBAL_FILTER NewFilter, PHP_GLOBAL_FILTER OldFilter)
-{
-    PHOOK_PORT_GLOBAL_INFO Info;
-
-    Info = HppGetGlobalInfo();
-    if (Info == NULL)
+    if (HppGetGlobalInfo() == nullptr)
         return STATUS_HOOK_PORT_NOT_INITIALIZED;
 
-    if (OldFilter != NULL)
-        *OldFilter = Info->GlobalFilter;
+    if (Routine == nullptr || RoutineHash == nullptr || Count == 0)
+        return STATUS_INVALID_PARAMETER;
 
-    InterlockedExchangeDoublePointer(&Info->GlobalFilter, NewFilter);
-
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-HpQueryValue(
-    HpValueType Type,
-    PVOID*      Value
-)
-{
-    PHOOK_PORT_GLOBAL_INFO Info = HppGetGlobalInfo();
-
-    *Value = NULL;
-
-    if (Info == NULL)
-        return STATUS_HOOK_PORT_NOT_INITIALIZED;
-
-
-    return STATUS_NOT_SUPPORTED;
-
-
-}
-
-ForceInline ULONG HashNativeZwAPI(PCChar Name)
-{
-    ULONG Hash = 0;
-
-//    Hash = _rotl(Hash, 0x0D) ^ 'N';
-//    Hash = _rotl(Hash, 0x0D) ^ 't';
-    Hash = 0x0009C074;
-
-    Name += 2;
-
-    while (*(PByte)Name)
+    if (Count <= countof(LocalBuffer))
     {
-        Hash = _rotl(Hash, 0x0D) ^ *(PByte)Name++;
-    }
-
-    return Hash;
-}
-
-
-VOID HppDestroyHashTable(PSYSTEM_CALL_HASH_TABLE Table)
-{
-    if (Table->Entry != NULL)
-        HpFreeVirtualMemory(Table->Entry);
-}
-
-NTSTATUS
-InstallHookPort(
-    PLDR_MODULE SysCallModule,  // = NULL
-    ULONG       Flags           // = 0
-)
-{
-    BOOL                        IsWow64;
-    NTSTATUS                    Status;
-    PVOID                       NtdllModule;
-    PBYTE                       Function;
-    PSTR                        FunctionName;
-    ULONG_PTR                   HashTableCount, BaseAddress, Offset;
-    PULONG_PTR                  AddressOfNames, AddressOfFunctions;
-    PUSHORT                     AddressOfNameOrdinals;
-    PIMAGE_DOS_HEADER           DosHeader;
-    PIMAGE_NT_HEADERS           NtHeader;
-    PIMAGE_EXPORT_DIRECTORY     ExportDirectory;
-    PSYSCALL_INFO               SysCallInfo, FilterEntry;
-    PSYSTEM_CALL_HASH           SysCallHash;
-    PLDR_MODULE                 LdrModule;
-    PHOOK_PORT_GLOBAL_INFO      GlobalInfo;
-
-    FAIL_RETURN(ml::MlInitialize());
-
-
-    GlobalInfo = HppGetGlobalInfo();
-    if (GlobalInfo != NULL)
-    {
-        _InterlockedIncrementPtr(&GlobalInfo->RefCount);
-        return STATUS_SUCCESS;
-    }
-
-    GlobalInfo = (HOOK_PORT_GLOBAL_INFO *)HpAlloc(sizeof(*GlobalInfo));
-    if (GlobalInfo == NULL)
-        return STATUS_NO_MEMORY;
-
-    ZeroMemory(GlobalInfo, sizeof(*GlobalInfo));
-
-    GlobalInfo->MaxSystemCallCount[HP_NTKRNL_SERVICE_INDEX] = HP_MAX_SERVICE_INDEX;
-    GlobalInfo->MaxSystemCallCount[HP_WIN32K_SERVICE_INDEX] = HP_MAX_WIN32K_SERVICE_INDEX;
-
-    BaseAddress = NULL;
-
-
-    Status = HpAllocateVirtualMemory((PVOID *)&GlobalInfo->SystemCallInfo[HP_NTKRNL_SERVICE_INDEX], HP_MAX_SERVICE_INDEX * sizeof(*GlobalInfo->SystemCallInfo[HP_NTKRNL_SERVICE_INDEX]));
-
-    if (!NT_SUCCESS(Status))
-        goto InstallHookPort_Failure;
-
-    Status = HpAllocateVirtualMemory((PVOID *)&GlobalInfo->HashTable.Entry, HP_MAX_SERVICE_INDEX * sizeof(*GlobalInfo->HashTable.Entry));
-
-    if (!NT_SUCCESS(Status))
-        goto InstallHookPort_Failure;
-
-
-
-    LdrModule = GetNtdllLdrModule();
-    NtdllModule = LdrModule->DllBase;
-    Status = LoadPeImage(LdrModule->FullDllName.Buffer, (PVOID *)&BaseAddress, NtdllModule, LOAD_PE_IGNORE_IAT);
-    if (!NT_SUCCESS(Status))
-        goto InstallHookPort_Failure;
-
-    GlobalInfo->User.KiFastSystemCall = EATLookupRoutineByHashPNoFix((PVOID)BaseAddress, NTDLL_KiFastSystemCall);
-    GlobalInfo->User.KiFastSystemCall = PtrAdd(GlobalInfo->User.KiFastSystemCall, PtrOffset(LdrModule->DllBase, BaseAddress));
-
-    IsWow64 = Ps::IsWow64Process();
-    GlobalInfo->User.IsWow64 = IsWow64;
-
-
-    Offset                  = PtrOffset(NtdllModule, BaseAddress);
-    DosHeader               = (PIMAGE_DOS_HEADER)BaseAddress;
-    NtHeader                = (PIMAGE_NT_HEADERS)((ULONG_PTR)DosHeader + DosHeader->e_lfanew);
-    ExportDirectory         = (PIMAGE_EXPORT_DIRECTORY)(NtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress + BaseAddress);
-    AddressOfNames          = (PULONG_PTR)(ExportDirectory->AddressOfNames + BaseAddress);
-    AddressOfFunctions      = (PULONG_PTR)(ExportDirectory->AddressOfFunctions + BaseAddress);
-    AddressOfNameOrdinals   = (PUSHORT)(ExportDirectory->AddressOfNameOrdinals + BaseAddress);
-
-    SysCallInfo = GlobalInfo->SystemCallInfo[HP_NTKRNL_SERVICE_INDEX];
-    SysCallHash = GlobalInfo->HashTable.Entry;
-    for (ULONG_PTR Count = ExportDirectory->NumberOfNames; Count; ++AddressOfNames, ++AddressOfNameOrdinals, --Count)
-    {
-        ULONG_PTR ServiceIndex;
-
-        FunctionName = (LPSTR)(*AddressOfNames + BaseAddress);
-        if (FunctionName[0] != 'Z' || FunctionName[1] != 'w')
-            continue;
-
-        // ignore "Zw*CHPE" functions. "CHPE" is introduced in Windows 10 Redstone 3 update, which translates ARM64 codes to amd64.
-        PCSTR FunctionNameEnd = FunctionName;
-        while (*FunctionNameEnd != 0)
-            ++FunctionNameEnd;
-
-        if (FunctionNameEnd - FunctionName >= 6 &&
-            FunctionNameEnd[-4] == 'C' &&
-            FunctionNameEnd[-3] == 'H' &&
-            FunctionNameEnd[-2] == 'P' &&
-            FunctionNameEnd[-1] == 'E')
-        {
-            continue;
-        }
-
-        Function = (PBYTE)(AddressOfFunctions[*AddressOfNameOrdinals] + BaseAddress);
-
-        if (Function[0] != 0xB8)  // mov eax, const
-        {
-            Status = STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM;
-            goto InstallHookPort_Failure;
-        }
-
-        ServiceIndex    = *(PULONG)&Function[1];
-        FilterEntry     = &SysCallInfo[ServiceIndex & 0xFFFF];
-
-        SysCallHash->Entry  = FilterEntry;
-        SysCallHash->Hash   = HashNativeZwAPI(FunctionName);
-
-        Status = HppInitializeSystemCallByRoutine(GlobalInfo, FilterEntry, Function, SysCallHash->Hash);
-        if (NT_FAILED(Status))
-            goto InstallHookPort_Failure;
-
-        FilterEntry->FunctionAddress    = PtrAdd(FilterEntry->FunctionAddress, Offset);
-        FilterEntry->ReturnOpAddress    = PtrAdd(FilterEntry->ReturnOpAddress, Offset);
-        FilterEntry->FunctionName       = PtrAdd(FunctionName, Offset);
-
-        ++SysCallHash;
-    }
-
-    UnloadPeImage((PVOID)BaseAddress);
-
-    //HppInitializeWin32kPort(GlobalInfo);
-
-    HashTableCount = SysCallHash - GlobalInfo->HashTable.Entry;
-    GlobalInfo->HashTable.Count = HashTableCount;
-    GlobalInfo->SystemCallCount[HP_NTKRNL_SERVICE_INDEX] = HashTableCount;
-
-    HppSortHashTable(&GlobalInfo->HashTable);
-
-
-    if (IsWow64)
-    {
-        Status = HookSysCall_Wow64(GlobalInfo);
+        SysCallBase = LocalBuffer;
     }
     else
     {
-        Status = HookSysCall_x86(GlobalInfo);
+        SysCallBase = (PSYSCALL_INFO)HpAlloc(Count * sizeof(*SysCallBase), HEAP_ZERO_MEMORY);
+        if (SysCallBase == nullptr)
+            return STATUS_NO_MEMORY;
     }
 
+    SysCall = SysCallBase;
+    for (ULONG_PTR i = 0; i != Count; ++i)
+    {
+        Status = HppInitializeSystemCallByRoutine(SysCall, Routine[i], RoutineHash[i]);
+        if (NT_FAILED(Status))
+            goto Exit;
 
-    if (!NT_SUCCESS(Status))
-        goto InstallHookPort_Failure;
+        ++SysCall;
+    }
 
-    HppSetGlobalInfo(GlobalInfo);
-    _InterlockedIncrementPtr(&GlobalInfo->RefCount);
+    Status = HpAddSystemCall(SysCallBase, Count);
 
-    return STATUS_SUCCESS;
+Exit:
+    if (SysCallBase != LocalBuffer)
+        HpFree(SysCallBase);
 
-InstallHookPort_Failure:
-
-    if (BaseAddress != NULL)
-        UnloadPeImage((PVOID)BaseAddress);
-
-    UnInstallHookPortInternal(GlobalInfo);
     return Status;
 }
 
-NTSTATUS UnInstallHookPort()
+NTSTATUS HpAddSystemCall(PSYSCALL_INFO SystemCall, ULONG_PTR Count)
 {
-    ULONG                   RefCount;
-    HOOK_PORT_GLOBAL_INFO  *GlobalInfo;
+    PHOOK_PORT_GLOBAL_INFO Info;
+    SYSTEM_CALL_HASH_TABLE NewTable, OldTable;
+    PSYSTEM_CALL_HASH TableEntry;
+    ULONG_PTR EntryCount, AddedCount;
+    NTSTATUS Status;
 
-    GlobalInfo = HppGetGlobalInfo();
-    if (GlobalInfo == NULL)
+    Info = HppGetGlobalInfo();
+    if (Info == nullptr)
         return STATUS_HOOK_PORT_NOT_INITIALIZED;
 
-    RefCount = _InterlockedDecrementPtr(&GlobalInfo->RefCount);
-    if (RefCount != 0)
-        return RefCount;
+    if (SystemCall == nullptr || Count == 0)
+        return STATUS_INVALID_PARAMETER;
 
-    HppSetGlobalInfo(NULL);
+    EntryCount = Info->HashTable.Count;
+    Status = HpAllocateVirtualMemory((PVOID*)&NewTable.Entry, (EntryCount + Count) * sizeof(*NewTable.Entry));
+    FAIL_RETURN(Status);
 
-    return UnInstallHookPortInternal(GlobalInfo);
-}
+    CopyMemory(NewTable.Entry, Info->HashTable.Entry, EntryCount * sizeof(*NewTable.Entry));
+    TableEntry = &NewTable.Entry[EntryCount];
+    AddedCount = 0;
 
-NTSTATUS UnInstallHookPortInternal(PHOOK_PORT_GLOBAL_INFO Info)
-{
-
-    if (Info->User.SysEnterSize == -1)
+    for (ULONG_PTR i = 0; i != Count; ++i)
     {
-        UnHookSysCall_Wow64(Info);
-    }
-    else if (Info->User.SysEnterSize != 0)
-    {
-        UnHookSysCall_x86(Info);
-    }
+        PSYSCALL_INFO Source, Target;
+        ULONG TableIndex, ServiceIndex;
 
+        Source = &SystemCall[i];
 
-    PSYSCALL_INFO* SysCallInfo;
-    PULONG_PTR SystemCallCount = Info->MaxSystemCallCount - 1;
-
-    FOR_EACH(SysCallInfo, Info->SystemCallInfo, countof(Info->SystemCallInfo))
-    {
-        ++SystemCallCount;
-
-        PSYSCALL_INFO SysCall = *SysCallInfo;
-
-        if (SysCall == NULL)
+        if (HppLookupSystemCall(Info, Source->NameHash) != nullptr)
             continue;
 
-        for (ULONG Count = *SystemCallCount; Count; --Count)
-        {
-            if (SysCall->FilterCallbacks != NULL)
-                HpFreeCallbackArray(SysCall->FilterCallbacks);
+        TableIndex = Source->ServiceTableIndex;
+        ServiceIndex = Source->ServiceIndex;
 
-            ++SysCall;
+        if (TableIndex >= HP_MAX_SERVICE_TABLE_COUNT)
+        {
+            Status = STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM;
+            goto Failure;
         }
 
-        HpFreeVirtualMemory(*SysCallInfo);
+        if (ServiceIndex >= Info->MaxSystemCallCount[TableIndex])
+        {
+            Status = STATUS_HOOK_PORT_UNSUPPORTED_SYSTEM;
+            goto Failure;
+        }
+
+        if (Info->SystemCallInfo[TableIndex] == nullptr)
+        {
+            Status = HpAllocateVirtualMemory(
+                        (PVOID*)&Info->SystemCallInfo[TableIndex],
+                        Info->MaxSystemCallCount[TableIndex] * sizeof(*Info->SystemCallInfo[TableIndex])
+                    );
+            if (NT_FAILED(Status))
+                goto Failure;
+        }
+
+        Target = &Info->SystemCallInfo[TableIndex][ServiceIndex];
+        *Target = *Source;
+
+        TableEntry->Entry = Target;
+        TableEntry->Hash = Source->NameHash;
+        ++TableEntry;
+        ++AddedCount;
     }
 
-    HppDestroyHashTable(&Info->HashTable);
+    if (AddedCount == 0)
+    {
+        HpFreeVirtualMemory(NewTable.Entry);
+        return STATUS_SUCCESS;
+    }
 
-    HpFree(Info);
+    NewTable.Count = EntryCount + AddedCount;
+    HppSortHashTable(&NewTable);
+
+    OldTable = Info->HashTable;
+    Info->HashTable = NewTable;
+    HppDestroyHashTable(&OldTable);
 
     return STATUS_SUCCESS;
-}
 
-#endif // amd64
+Failure:
+    HpFreeVirtualMemory(NewTable.Entry);
+    return Status;
+}
