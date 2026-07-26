@@ -2049,14 +2049,8 @@ HANDLE NTAPI LepGetClipboardData(UINT Format)
 
 static const ULONG_PTR LEP_JAPANESE_DEFAULT_INPUT_LANG = 0x04110411;
 
-BOOL NTAPI LepSystemParametersInfoA(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni)
+static BOOL LepFixDefaultInputLanguage(BOOL Result, UINT uiAction, PVOID pvParam)
 {
-    BOOL Result;
-    PLepGlobalData GlobalData;
-
-    GlobalData = LepGetGlobalData();
-    Result = GlobalData->SystemParametersInfoA(uiAction, uiParam, pvParam, fWinIni);
-
     if (Result &&
         uiAction == SPI_GETDEFAULTINPUTLANG &&
         pvParam != nullptr)
@@ -2065,6 +2059,30 @@ BOOL NTAPI LepSystemParametersInfoA(UINT uiAction, UINT uiParam, PVOID pvParam, 
     }
 
     return Result;
+}
+
+BOOL NTAPI LepSystemParametersInfoA(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni)
+{
+    PLepGlobalData GlobalData;
+
+    GlobalData = LepGetGlobalData();
+    return LepFixDefaultInputLanguage(
+                GlobalData->SystemParametersInfoA(uiAction, uiParam, pvParam, fWinIni),
+                uiAction,
+                pvParam
+            );
+}
+
+BOOL NTAPI LepSystemParametersInfoW(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni)
+{
+    PLepGlobalData GlobalData;
+
+    GlobalData = LepGetGlobalData();
+    return LepFixDefaultInputLanguage(
+                GlobalData->SystemParametersInfoW(uiAction, uiParam, pvParam, fWinIni),
+                uiAction,
+                pvParam
+            );
 }
 
 #define GetSystemFont(...) (HFONT)GetStockObject(SYSTEM_FONT)
@@ -3165,7 +3183,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
                 LEP_FUNCTION_NO_ABSOLUTE_JUMP_OP :
                 LEP_FUNCTION_JUMP_OP;
 
-        Mp::PATCH_MEMORY_DATA p[8];
+        Mp::PATCH_MEMORY_DATA p[9];
         ULONG_PTR Count = 0;
 
         p[Count++] = LepHookFromEATOp(User32, USER32, SetWindowLongA, SetWindowLongHookOp);
@@ -3178,7 +3196,10 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
         p[Count++] = LepHookFromEAT(User32, USER32, SetClipboardData);
 
         if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
+        {
             p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoA);
+            p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoW);
+        }
 
         Status = Mp::PatchMemory(p, Count);
 
@@ -3190,7 +3211,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     }
 #endif
 
-    Mp::PATCH_MEMORY_DATA p[13];
+    Mp::PATCH_MEMORY_DATA p[14];
     ULONG_PTR Count = 0;
 
     p[Count++] = LepFunctionJump(NtUserCreateWindowEx);
@@ -3205,7 +3226,10 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     p[Count++] = LepHookFromEAT(User32, USER32, SetClipboardData);
 
     if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
+    {
         p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoA);
+        p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoW);
+    }
 
 #if !ML_AMD64
     p[Count++] = LepHookFromEAT(User32, USER32, GetDC);
@@ -3251,6 +3275,7 @@ NTSTATUS LepGlobalData::UnHookUser32Routines()
     Mp::RestoreMemory(HookStub.StubGetClipboardData);
     Mp::RestoreMemory(HookStub.StubSetClipboardData);
     Mp::RestoreMemory(HookStub.StubSystemParametersInfoA);
+    Mp::RestoreMemory(HookStub.StubSystemParametersInfoW);
 
     Mp::RestoreMemory(HookStub.StubGetDC);
     Mp::RestoreMemory(HookStub.StubGetDCEx);

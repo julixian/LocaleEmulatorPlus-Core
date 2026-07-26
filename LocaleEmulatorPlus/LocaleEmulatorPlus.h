@@ -862,6 +862,7 @@ public:
         API_POINTER(GetClipboardData)           StubGetClipboardData;
         API_POINTER(SetClipboardData)           StubSetClipboardData;
         API_POINTER(SystemParametersInfoA)      StubSystemParametersInfoA;
+        API_POINTER(SystemParametersInfoW)      StubSystemParametersInfoW;
         API_POINTER(GetDC)                      StubGetDC;
         API_POINTER(GetDCEx)                    StubGetDCEx;
         API_POINTER(GetWindowDC)                StubGetWindowDC;
@@ -1098,6 +1099,11 @@ public:
     BOOL SystemParametersInfoA(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni)
     {
         return HookStub.StubSystemParametersInfoA(uiAction, uiParam, pvParam, fWinIni);
+    }
+
+    BOOL SystemParametersInfoW(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni)
+    {
+        return HookStub.StubSystemParametersInfoW(uiAction, uiParam, pvParam, fWinIni);
     }
 
     HDC GetDC(HWND hWnd)

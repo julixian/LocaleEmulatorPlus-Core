@@ -124,7 +124,7 @@ x64 syscall 入口 patch 策略：
 
 时机：`HookNtdllRoutines()` 始终安装 `NtCreateUserProcess` filter。真实 `NtCreateUserProcess` 成功后，`LepNtCreateUserProcess()` 调 `InjectSelfToChildProcess()`。
 
-x86/x64：`NtCreateUserProcess` 本身走 HookPort syscall filter。子进程 `LdrLoadDll` 入口 patch x86 用 `E9 rel32`，x64 用 `FF 25 [rip+0]` 加绝对目标地址。
+x86/x64：`NtCreateUserProcess` 本身走 HookPort filter。子进程 `LdrLoadDll` 入口 patch x86 用 `E9 rel32`，x64 用 `FF 25 [rip+0]` 加绝对目标地址。
 
 做法：把当前 LEP DLL 手工 shadow 到子进程，重定位到远程地址，然后把子进程 `ntdll!LdrLoadDll` 入口改成跳到 shadow 里的 `LoadFirstDll`。`LoadFirstDll()` 进入后恢复 `LdrLoadDll` 原字节，初始化 LEP，再调用真实 `LdrLoadDll`。
 
@@ -140,7 +140,7 @@ x86：`SearchLdrInitNtContinue()` 扫描 `LdrInitializeThunk` 前 `0x5B` 字节�
 
 x64：HookPort 对 `NtContinue` syscall 入口安装 filter，覆盖经过该 ntdll stub 的调用。`LepNtContinue()` 设置当前线程的 `TEB.CurrentLocale`，保持 `CONTEXT`、`TestAlert` 和默认 `ContinueSystemCall` Action，随后由 wrapper 调用 original。`SearchLdrInitNtContinue()` 的扫描结果用于兼容性检查和日志。
 
-作用：`TEB.CurrentLocale` 是线程级状态。这个 hook 以 loader 结束线程初始化并通过 `NtContinue` 恢复用户执行现场的时刻为锚点，确保新线程进入用户入口前看到 LEP 的目标 locale；它不改写即将恢复的 CPU context。
+作用：`TEB.CurrentLocale` 是线程级状态。这个 hook 以 loader 结束线程初始化并通过 `NtContinue` 恢复用户执行现场的时刻为锚点，确保新线程进入用户入口前看到 LEP 的目标 locale。
 
 ### 4. ntdll locale/sysinfo syscall filter
 
@@ -169,7 +169,7 @@ x86/x64：均走 HookPort filter。
 
 时机：`HookNtdllRoutines()`。
 
-做法：普通 inline hook `RtlCustomCPToUnicodeN` 为 `LepCustomCPToUnicodeN`。当调用者传入目标代码页和 UTF-8 之外的 CP table 时，先用目标 ANSI codepage table 重新初始化，再执行转换。
+做法：普通 inline hook `RtlCustomCPToUnicodeN` 为 `LepCustomCPToUnicodeN`。当调用者传入既不是目标代码页，也不是 UTF-8 的 CP table 时，先用目标 ANSI codepage table 重新初始化，再执行转换。
 
 作用：修正显式传入自定义 CP table、绕过默认 ACP 的转换路径。
 
@@ -238,17 +238,17 @@ x86/x64：统一 inline hook `kernel32!GetSystemDefaultUILanguage` 和 `kernel32
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
-x86 user32 布局：`FindNtUserCreateWindowEx(user32)` 查 `ntdll!RtlQueryInformationActiveActivationContext` 的 IAT slot，遍历 relocation 找 `FF 15 [slot]` 调用点，再向后最多 `0x150` 字节找 call 到 syscall stub。找到后用普通函数入口 inline hook。
+x86 user32 布局：`FindNtUserCreateWindowEx(user32)` 查 `ntdll!RtlQueryInformationActiveActivationContext` 的 IAT slot，遍历 relocation 找 `FF 15 [slot]` 调用点，再向后最多 `0x150` 字节找 syscall stub，随后注册 HookPort filter。
 
-x64 win32u 布局：从 `win32u.dll` 按名称取 `NtUserCreateWindowEx`，注册到 HookPort，再安装 syscall filter。
+x64 win32u 布局：从 `win32u.dll` 按名称取 `NtUserCreateWindowEx`，注册 HookPort filter。
 
 x64 user32 兼容布局：先从 `CreateWindowExW/A` 找 internal `CreateWindowEx`；在其中最多 `0x2C0` 字节内找包含立即数 `0xC0000000` 的指令；之后第一个 call 到 user32 内部函数视为 `VerNtUserCreateWindowEx`；再在其中最多 `0x300` 字节找第一个 call 到 x64 syscall stub，作为 `NtUserCreateWindowEx`。
 
-x64 参数版本差异：
+参数版本差异：
 
-- Win7：15 参数，末尾 activation context 句柄为 `ULONG_PTR`。
-- Win8/8.1：16 参数，末尾 activation context 句柄为 `ULONG_PTR`。
-- Win10+：17 参数，末尾 activation context 句柄为 `ULONG_PTR`。
+- Win7：15 参数，x64 末尾 activation context 句柄为 `ULONG_PTR`。
+- Win8/8.1：16 参数，x64 末尾 activation context 句柄为 `ULONG_PTR`。
+- Win10+：17 参数，x64 末尾 activation context 句柄为 `ULONG_PTR`。
 
 版本选择由 `Nt_QueryOsVersion()` 的结果决定。
 
@@ -258,9 +258,9 @@ x64 参数版本差异：
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
-x86 user32 布局：`FindNtUserMessageCall2(user32)` 查 `kernel32!GlobalLock`、`GlobalUnlock`、`GlobalFree` 的 IAT 项，遍历 user32 relocation table 找这三个导入指针连续出现的位置，再在前两个引用之间找 call 到 syscall stub。找到后普通 inline hook。
+x86 user32 布局：`FindNtUserMessageCall2(user32)` 查 `kernel32!GlobalLock`、`GlobalUnlock`、`GlobalFree` 的 IAT 项，遍历 user32 relocation table 找这三个导入指针连续出现的位置，再在前两个引用之间找 syscall stub，随后注册 HookPort filter。
 
-x64 win32u 布局：从 `win32u.dll` 按名称取 `NtUserMessageCall`，注册 HookPort syscall filter。
+x64 win32u 布局：从 `win32u.dll` 按名称取 `NtUserMessageCall`，注册 HookPort filter。
 
 x64 user32 兼容布局：从 `SendNotifyMessageW/A` 开始，各扫 `0x30` 字节，第一个 call 到 x64 syscall stub 的目标视为 `NtUserMessageCall`。
 
@@ -297,9 +297,9 @@ x64 user32 兼容布局：从 `SendNotifyMessageW/A` 开始，各扫 `0x30` 字�
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
-x86 user32 布局：`FindNtUserDefSetText(user32)` 查 `NotifyWinEvent` 导出，扫描 user32 text 中 `push EVENT_OBJECT_NAMECHANGE` 模式，确认附近 call `NotifyWinEvent`，再向前找 call 到 `DefSetText`，要求目标 prologue 为 `8B FF 55 8B`，最后在 `DefSetText` 中找第一个 call 到 syscall stub。找到后普通 inline hook。
+x86 user32 布局：`FindNtUserDefSetText(user32)` 查 `NotifyWinEvent` 导出，扫描 user32 text 中 `push EVENT_OBJECT_NAMECHANGE` 模式，确认附近 call `NotifyWinEvent`，再向前找 call 到 `DefSetText`，要求目标 prologue 为 `8B FF 55 8B`，最后在 `DefSetText` 中找 syscall stub，随后注册 HookPort filter。
 
-x64 win32u 布局：从 `win32u.dll` 按名称取 `NtUserDefSetText`，注册 HookPort syscall filter。
+x64 win32u 布局：从 `win32u.dll` 按名称取 `NtUserDefSetText`，注册 HookPort filter。
 
 x64 user32 兼容布局：先按 `NtUserCreateWindowEx` 路径找到 internal `CreateWindowEx`，扫描到 `0xC0000000` 前的上一个 user32 call 作为内部 `RtlInitLargeUnicodeString`；再扫描 `.text` 中所有 call 到它的位置。对每个候选向后 `0x20` 字节，若恰好有一个 call 到 x64 syscall stub 且后面很快返回，则该 syscall 视为 `NtUserDefSetText`。
 
@@ -323,7 +323,7 @@ x64 user32 兼容布局：从 user32 导出 `GetDC`、`GetDCEx`、`GetWindowDC`�
 
 x86：EAT inline hook `SetWindowLongA`、`GetWindowLongA`、`IsWindowUnicode`。
 
-x64：EAT inline hook `SetWindowLongA`、`GetWindowLongA`、`SetWindowLongPtrA`、`GetWindowLongPtrA`、`IsWindowUnicode`。PtrA 是独立 hook，不是 LongA 的别名。
+x64：EAT inline hook `SetWindowLongA`、`GetWindowLongA`、`SetWindowLongPtrA`、`GetWindowLongPtrA`、`IsWindowUnicode`。
 
 Win7 x64 特例：`SetWindowLongA` 和 `SetWindowLongPtrA` 使用 `LEP_FUNCTION_NO_ABSOLUTE_JUMP_OP`，允许短跳和 relay，但禁止最后退回入口 14 字节绝对跳覆盖。原因是 Win7 x64 下这两个入口最终对应的 syscall stub 只有 11 字节，后面紧跟其它函数指令；写 14 字节 `OpJumpIndirect` 会跨过 stub 边界并覆盖后续函数开头。
 
@@ -337,25 +337,25 @@ x86/x64：EAT inline hook `GetClipboardData`、`SetClipboardData`。
 
 作用：让 `CF_TEXT` 和字符串数据按目标 ACP 转换。
 
-### 20. `SystemParametersInfoA`
+### 20. `SystemParametersInfoA/W`
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`，仅当目标 ANSI codepage 为 `932` 时安装。
 
-x86/x64：EAT inline hook `SystemParametersInfoA`。`LepSystemParametersInfoA()` 先调用原函数；当调用成功、`uiAction == SPI_GETDEFAULTINPUTLANG` 且 `pvParam` 非空时，把输出的 `HKL` 改写为 `0x04110411`。
+x86/x64：EAT inline hook `SystemParametersInfoA/W`。hook 先调用对应的原函数；当调用成功、`uiAction == SPI_GETDEFAULTINPUTLANG` 且 `pvParam` 非空时，把输出的 `HKL` 改写为 `0x04110411`。
 
-作用：让查询默认输入语言的 A 路径看到日文默认输入法布局，补齐 CP932 转区下部分程序读取输入语言状态的 user32 路径。
+作用：让查询默认输入语言的 A/W 路径看到日文默认输入法布局，补齐 CP932 转区下程序读取输入语言状态的 user32 路径。
 
 ### 21. `NtGdiHfontCreate`
 
 时机：`GDI32.dll` 加载后，`HookGdi32Routines()`。
 
-x86 gdi32 布局：从 `gdi32!CreateFontIndirectExW` 开始最多扫 `0xA0` 字节，返回第一个 call 到 `IsSystemCall()` stub 的目标，随后用普通函数入口 inline hook。
+x86 gdi32 布局：从 `gdi32!CreateFontIndirectExW` 开始最多扫 `0xA0` 字节，取第一个 call 到 `IsSystemCall()` stub 的目标，随后注册 HookPort filter。
 
 x64 win32u 布局：从 `win32u.dll` 按名称取 `NtGdiHfontCreate`，验证为直接 x64 syscall stub，注册 HookPort filter。
 
 x64 gdi32 兼容布局：从 `gdi32!CreateFontIndirectExW` 开始最多扫 `0xA0` 字节，返回第一个 call 到直接 x64 syscall stub 的目标，注册 HookPort filter。
 
-线程级重入保护：`CreateFontIndirectBypassA/W()` 把 Context 为 `GDI_HOOK_BYPASS` 的 `TEB_ACTIVE_FRAME` 压入当前线程，再调用公开的 `CreateFontIndirectA/W()`。调用链到达 `LepNtGdiHfontCreateWorker()` 时，该标记使这次字体创建跳过 charset 二次改写；frame 的作用域覆盖这一次调用。
+线程级重入保护：字体枚举 callback 调用 `AdjustFontData()` 校正字体名称和度量时，会通过 `CreateFontIndirectBypassW()` 创建临时字体；它把 Context 为 `GDI_HOOK_BYPASS` 的 `TEB_ACTIVE_FRAME` 压入当前线程，再调用 `CreateFontIndirectW()`。调用链到达 `LepNtGdiHfontCreateWorker()` 时，该标记使这次字体创建跳过 charset 二次改写。`CreateFontIndirectBypassA()` 当前没有调用点。
 
 作用：控制/记录字体 charset 创建路径，让字体选择符合目标 locale。
 

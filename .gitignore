@@ -8,9 +8,7 @@
 *.mdmp
 
 # Reverse-engineering scratch files
-/win7/
-/win10/
-/win11/
+/win_reverse/
 
 # Visual Studio and editor state
 .vs/
