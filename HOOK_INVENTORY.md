@@ -169,9 +169,11 @@ x86/x64：均走 HookPort filter。
 
 时机：`HookNtdllRoutines()`。
 
-做法：普通 inline hook `RtlCustomCPToUnicodeN` 为 `LepCustomCPToUnicodeN`。当调用者传入既不是目标代码页，也不是 UTF-8 的 CP table 时，先用目标 ANSI codepage table 重新初始化，再执行转换。
+状态：实现由 `LEP_ENABLE_CUSTOM_CP_TO_UNICODE_HOOK` 控制，当前值为 `0`，`HookNtdllRoutines()` 不安装该 hook。
 
-作用：修正显式传入自定义 CP table、绕过默认 ACP 的转换路径。
+启用时：inline hook `RtlCustomCPToUnicodeN` 为 `LepCustomCPToUnicodeN`。当调用者传入既不是目标代码页，也不是 UTF-8 的 CP table 时，先用目标 ANSI codepage table 重新初始化，再执行转换。
+
+用途：强制显式传入的 custom CP table 使用目标 ACP。默认 ANSI/OEM 转换由基础 NLS 表同步负责。
 
 ### 7. 基础 NLS 表和 PEB/TEB codepage
 
@@ -216,7 +218,20 @@ x64：`LepGetWin32ClientInfo()` 使用 `TEB + 0x800`，把 `LEP_WIN32_CLIENT_INF
 
 作用：刷新 `RtlResetRtlTranslations()` 之外的 ntdll 内部 codepage table/cache。
 
-### 10. kernelbase named-locale cache 预热
+### 10. kernelbase ANSI/OEM code hash node refresh
+
+时机：`HackAnsiOemCodeHashNodes()`。
+
+状态：`FindSetupAnsiOemCodeHashNodes()` 和 `LepSetupAnsiOemCodeHashNodes()` 的实现保留，`HackAnsiOemCodeHashNodes()` 当前不在函数中调用。
+
+启用时：Windows 10 build 19042+ 从 kernelbase 入口依次定位 `BaseNlsDllInitialize`、`NlsProcessInitialize` 和私有 `SetupAnsiOemCodeHashNodes`，再调用该私有例程重建 ANSI/OEM code hash nodes。
+
+用途？：刷新 kernelbase 自己的 ANSI/OEM codepage cache。该私有例程布局随系统版本变化，当前由 PEB、ntdll 和 user32 的 codepage 同步覆盖正常转换路径。
+
+PS: 这个我看了很久逆向信息和当时的 [PR](https://github.com/xupefei/Locale-Emulator-Core/pull/3)，但是依然搞不明白为什么当初会把找到的这个玩意叫 `SetupAnsiOemCodeHashNodes` 并使用它，
+它在 ida 中的名字和实际功能都完全对不上原代码中似乎预期的作用。
+
+### 11. kernelbase named-locale cache 预热
 
 时机：`HookKernel32Routines()` 调 `HackUserDefaultLCID2()`。
 
@@ -226,7 +241,7 @@ x64：`LepGetWin32ClientInfo()` 使用 `TEB + 0x800`，把 `LEP_WIN32_CLIENT_INF
 
 作用：让 kernelbase named-locale cache 以目标 LCID/locale name 填充。
 
-### 11. `GetSystemDefaultUILanguage` / `GetUserDefaultUILanguage`
+### 12. `GetSystemDefaultUILanguage` / `GetUserDefaultUILanguage`
 
 时机：`HookKernel32Routines()` 处理 `KERNEL32.dll` 时，仅当 `HookUILanguageApi` 启用才安装。
 
@@ -234,7 +249,7 @@ x86/x64：统一 inline hook `kernel32!GetSystemDefaultUILanguage` 和 `kernel32
 
 作用：让查询系统/用户默认 UI language 的公开 kernel32 API 看到目标 LCID，同时不破坏 shell/common dialog 等系统组件对 install UI language 和 MUI 资源安装状态的假设。
 
-### 12. `NtUserCreateWindowEx`
+### 13. `NtUserCreateWindowEx`
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
@@ -254,7 +269,7 @@ x64 user32 兼容布局：先从 `CreateWindowExW/A` 找 internal `CreateWindowE
 
 作用：把 ANSI 窗口/类名数据按目标代码页转换，包装 A 窗口过程，并让窗口创建走 native 路径。
 
-### 13. `NtUserMessageCall`
+### 14. `NtUserMessageCall`
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
@@ -266,7 +281,7 @@ x64 user32 兼容布局：从 `SendNotifyMessageW/A` 开始，各扫 `0x30` 字�
 
 作用：拦截 user32 消息派发底层路径，转换相关 ANSI 字符串消息并通过 W 语义派发。
 
-### 14. ANSI 窗口过程包装及边界
+### 15. ANSI 窗口过程包装及边界
 
 时机：`NtUserCreateWindowEx`/CBT 包装 A 创建路径，或 `SetWindowLongA` / `SetWindowLongPtrA` 安装 A 窗口过程时生效。
 
@@ -276,7 +291,7 @@ x64 user32 兼容布局：从 `SendNotifyMessageW/A` 开始，各扫 `0x30` 字�
 
 作用：定义 LEP 自己制造的 A/W 窗口过程边界。EDIT 文本位置 thunk、标准对话框标题例外都依赖这个边界。
 
-### 15. EDIT A/W 文本位置消息 thunk
+### 16. EDIT A/W 文本位置消息 thunk
 
 时机：`USER32.dll` 加载并安装 user32 hook 后，在两条 LEP 自己制造的 A/W 边界上生效。
 
@@ -293,7 +308,7 @@ x64 user32 兼容布局：从 `SendNotifyMessageW/A` 开始，各扫 `0x30` 字�
 
 作用：补回 LEP 包装 ANSI 窗口过程时绕过的 user32 `SendMessageWorker`/EDIT 系统类 A/W 位置语义。原生 EDITA 在 DBCS codepage 下会维护自己的字符边界；但 `WindowProcW -> CallWindowProcA(PrevProcA)` 不是原生 `SendMessageA -> SendMessageWorker -> EDITA` 路径，所以必须在 LEP 的边界处显式转换 offset/length。该逻辑只覆盖 `Edit` 控件和已包装窗口，避免影响普通原生 ANSI EDIT 或自定义同号消息。
 
-### 16. `NtUserDefSetText`
+### 17. `NtUserDefSetText`
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
@@ -305,7 +320,7 @@ x64 user32 兼容布局：先按 `NtUserCreateWindowEx` 路径找到 internal `C
 
 作用：保证默认窗口标题/文本设置路径遵循目标 ACP。
 
-### 17. user32 DC / BeginPaint charset
+### 18. user32 DC / BeginPaint charset
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
@@ -317,7 +332,7 @@ x64 user32 兼容布局：从 user32 导出 `GetDC`、`GetDCEx`、`GetWindowDC`�
 
 作用：获取 DC 或 paint DC 后重置/检查 DC charset，避免绘制路径沿用本机区域字符集状态。
 
-### 18. `SetWindowLongA` / `GetWindowLongA` / PtrA 与 `IsWindowUnicode`
+### 19. `SetWindowLongA` / `GetWindowLongA` / PtrA 与 `IsWindowUnicode`
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
@@ -329,7 +344,7 @@ Win7 x64 特例：`SetWindowLongA` 和 `SetWindowLongPtrA` 使用 `LEP_FUNCTION_
 
 作用：包装/恢复 A 窗口过程；`IsWindowUnicode` 对 tracked wrapped A window 返回 `FALSE`，保持外部观察到的 A 窗口语义。
 
-### 19. 剪贴板 ANSI 数据
+### 20. 剪贴板 ANSI 数据
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
@@ -337,7 +352,7 @@ x86/x64：EAT inline hook `GetClipboardData`、`SetClipboardData`。
 
 作用：让 `CF_TEXT` 和字符串数据按目标 ACP 转换。
 
-### 20. `SystemParametersInfoA/W`
+### 21. `SystemParametersInfoA/W`
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`，仅当目标 ANSI codepage 为 `932` 时安装。
 
@@ -345,7 +360,7 @@ x86/x64：EAT inline hook `SystemParametersInfoA/W`。hook 先调用对应的原
 
 作用：让查询默认输入语言的 A/W 路径看到日文默认输入法布局，补齐 CP932 转区下程序读取输入语言状态的 user32 路径。
 
-### 21. `NtGdiHfontCreate`
+### 22. `NtGdiHfontCreate`
 
 时机：`GDI32.dll` 加载后，`HookGdi32Routines()`。
 
@@ -359,7 +374,7 @@ x64 gdi32 兼容布局：从 `gdi32!CreateFontIndirectExW` 开始最多扫 `0xA0
 
 作用：控制/记录字体 charset 创建路径，让字体选择符合目标 locale。
 
-### 22. `QueryFontAssocStatus`
+### 23. `QueryFontAssocStatus`
 
 时机：`GDI32.dll` 加载后，`HookGdi32Routines()`，仅当目标 ANSI codepage 为 `932` 时安装。
 
@@ -367,7 +382,7 @@ x86/x64：对 `QueryFontAssocStatus` 使用普通 inline hook。查找时优先�
 
 作用：模拟日文 Windows 上 GDI font association status 为 `0` 的状态，避免中文系统转日区时 GDI A 文本路径进入 `FontAssocHack`，把 `TextOutA`/度量路径中的单字节半角假名按 `1252` 而不是 `932` 解释。
 
-### 23. gdi32 字体枚举和 DC/对象辅助 hook
+### 24. gdi32 字体枚举和 DC/对象辅助 hook
 
 时机：`GDI32.dll` 加载后，`HookGdi32Routines()`。
 
@@ -377,7 +392,7 @@ x64：EAT inline hook `GetStockObject`、`DeleteObject`、`CreateCompatibleDC`�
 
 作用：调整字体枚举、stock font、兼容 DC 等路径中的 charset/font 行为。
 
-### 24. DLL load notification
+### 25. DLL load notification
 
 时机：`LepGlobalData::Initialize()` 注册 `LdrRegisterDllNotification()`。
 
@@ -389,7 +404,7 @@ x64：EAT inline hook `GetStockObject`、`DeleteObject`、`CreateCompatibleDC`�
 
 作用：对后加载模块补装 hook 和 locale cache 同步。
 
-### 25. `LoadMemoryDll()` shadow ntdll hook
+### 26. `LoadMemoryDll()` shadow ntdll hook
 
 时机：从内存加载 DLL 的辅助路径中。
 
@@ -397,7 +412,7 @@ x64：EAT inline hook `GetStockObject`、`DeleteObject`、`CreateCompatibleDC`�
 
 作用：为内存 DLL 加载辅助逻辑模拟和接管文件、section 相关操作。
 
-### 26. Heap corruption helper
+### 27. Heap corruption helper
 
 时机：调试辅助功能启用时。
 

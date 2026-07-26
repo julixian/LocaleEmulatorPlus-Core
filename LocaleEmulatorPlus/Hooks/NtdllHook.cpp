@@ -907,6 +907,8 @@ LONG NTAPI LepKnownExceptionFilter(PEXCEPTION_POINTERS ExceptionPointers)
     return Result;
 }
 
+#define LEP_ENABLE_CUSTOM_CP_TO_UNICODE_HOOK 0
+
 NTSTATUS NTAPI LepCustomCPToUnicodeN(IN PCPTABLEINFO CustomCP,
     OUT PWCHAR UnicodeString,
     IN ULONG UnicodeSize,
@@ -978,15 +980,19 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
     //ADD_FILTER_(NtQueryInformationThread,   LepNtQueryInformationThread, this);
     //ADD_FILTER_(NtTerminateThread,          LepNtTerminateThread,        this);
 
+#if !ML_AMD64 || LEP_ENABLE_CUSTOM_CP_TO_UNICODE_HOOK
     Mp::PATCH_MEMORY_DATA p[] =
     {
 #if !ML_AMD64
         Mp::FunctionCallVa(LdrInitNtContinue, LepLdrInitNtContinue, &HookStub.StubLdrInitNtContinue),
 #endif
+#if LEP_ENABLE_CUSTOM_CP_TO_UNICODE_HOOK
         Mp::FunctionJumpVa(::RtlCustomCPToUnicodeN, LepCustomCPToUnicodeN, &HookStub.StubRtlCustomCPToUnicodeN, LEP_FUNCTION_JUMP_OP),
+#endif
     };
 
     Mp::PatchMemory(p, countof(p));
+#endif
 
 #if ML_AMD64 && defined(LEP_X64_CRASH_PROBE)
     if (LEP_X64_CRASH_PROBE == 3)
@@ -1002,7 +1008,9 @@ NTSTATUS LepGlobalData::UnHookNtdllRoutines()
 {
     Mp::RestoreMemory(HookStub.StubLdrInitNtContinue);
     Mp::RestoreMemory(HookStub.StubRtlKnownExceptionFilter);
+#if LEP_ENABLE_CUSTOM_CP_TO_UNICODE_HOOK
     Mp::RestoreMemory(HookStub.StubRtlCustomCPToUnicodeN);
+#endif
 
     return 0;
 }
