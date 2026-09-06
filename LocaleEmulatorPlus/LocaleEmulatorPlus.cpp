@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 
 ML_OVERLOAD_NEW
 
@@ -238,8 +238,10 @@ NTSTATUS LepGlobalData::Initialize()
 
     LOOP_ONCE
     {
+        WriteLog(L"init stage OpenOrCreateLepPeb begin");
         LEP_DIAG_HERE_IF(DiagVerbose, L"before OpenOrCreateLepPeb");
         LEPPEB = OpenOrCreateLepPeb();
+        WriteLog(L"init stage OpenOrCreateLepPeb end mapped=%u", LEPPEB != nullptr);
         LEP_DIAG_HERE_IF(DiagVerbose, LEPPEB == nullptr ? L"OpenOrCreateLepPeb: null" : L"OpenOrCreateLepPeb: mapped");
         LepPebMapped = LEPPEB != nullptr;
         if (LEPPEB == nullptr)
@@ -309,14 +311,33 @@ NTSTATUS LepGlobalData::Initialize()
                 },
             };
 
+            WriteLog(L"init stage InitRegistryRedirection defaults begin");
             Status = this->InitRegistryRedirection(Entries, countof(Entries), nullptr);
+            WriteLog(L"init stage InitRegistryRedirection defaults end status=%08X", Status);
         }
         else
         {
+            WriteLog(L"init stage copy shared LEPB begin");
             *GetLepPeb() = *LEPPEB;
+            WriteLog(L"init stage copy shared LEPB end");
+            WriteLog(L"init stage InitRegistryRedirection shared begin count=%p", LEPPEB->LEPB.NumberOfRegistryRedirectionEntries);
+            if (LEPPEB->LEPB.NumberOfRegistryRedirectionEntries != 0)
+            {
+                PREGISTRY_REDIRECTION_ENTRY64 Entry64 = &LEPPEB->LEPB.RegistryReplacement[0];
+                WriteLog(L"init entry0 subkey=%p/%u value=%p/%u redir=%p/%u base=%p",
+                    Entry64->Original.SubKey.Buffer, Entry64->Original.SubKey.Length,
+                    Entry64->Original.ValueName.Buffer, Entry64->Original.ValueName.Length,
+                    Entry64->Redirected.SubKey.Buffer, Entry64->Redirected.SubKey.Length,
+                    &LEPPEB->LEPB);
+            }
             Status = this->InitRegistryRedirection(LEPPEB->LEPB.RegistryReplacement, LEPPEB->LEPB.NumberOfRegistryRedirectionEntries, &LEPPEB->LEPB);
+            WriteLog(L"init stage InitRegistryRedirection shared end status=%08X entries=%p", Status, this->RegistryRedirectionEntry.GetSize());
             if (this->RegistryRedirectionEntry.GetSize() == 0)
+            {
+                WriteLog(L"init stage InitDefaultRegistryRedirection begin");
                 Status = this->InitDefaultRegistryRedirection();
+                WriteLog(L"init stage InitDefaultRegistryRedirection end status=%08X", Status);
+            }
 #if ML_AMD64 && defined(LEP_X64_CRASH_PROBE)
             if (LEP_X64_CRASH_PROBE == 20 && this->RegistryRedirectionEntry.GetSize() == 0)
                 return STATUS_DLL_INIT_FAILED;
@@ -337,30 +358,36 @@ NTSTATUS LepGlobalData::Initialize()
             break;
         }
 
+        WriteLog(L"init stage TextMetricCache.Initialize begin");
         LEP_DIAG_FAIL_RETURN(L"TextMetricCache.Initialize", this->TextMetricCache.Initialize());
+        WriteLog(L"init stage TextMetricCache.Initialize end");
 
         PVOID           NlsBaseAddress;
         LCID            DefaultLocaleID;
         LARGE_INTEGER   DefaultCasingTableSize;
 
+        WriteLog(L"init stage NtInitializeNlsFiles begin");
         LEP_DIAG_FAIL_RETURN(L"NtInitializeNlsFiles", NtInitializeNlsFiles(&NlsBaseAddress, &DefaultLocaleID, &DefaultCasingTableSize));
+        WriteLog(L"init stage NtInitializeNlsFiles end locale=%u", DefaultLocaleID);
 
         this->GetLepPeb()->OriginalLocaleID = DefaultLocaleID;
 
         NtUnmapViewOfSection(CurrentProcess, NlsBaseAddress);
 
-        WriteLog(L"init LEPB %s", GetLepPeb()->LepDllFullPath);
+        WriteLog(L"init LEPB %ws", GetLepPeb()->LepDllFullPath);
         WriteLog(L"LEP image base: %p", &__ImageBase);
 
         SystemDirectory = Ntdll->FullDllName;
         SystemDirectory.Length -= Ntdll->BaseDllName.Length;
 
+        WriteLog(L"init stage RtlDuplicateUnicodeString begin");
         LEP_DIAG_FAIL_RETURN(L"RtlDuplicateUnicodeString(SystemDirectory)", RtlDuplicateUnicodeString(RTL_DUPSTR_ADD_NULL, &SystemDirectory, &this->SystemDirectory));
+        WriteLog(L"init stage RtlDuplicateUnicodeString end");
 
         ml::String Win32U_Path(SystemDirectory);
         Win32U_Path += L"\\win32u.dll";
         this->HasWin32U = Nt_GetFileAttributes(Win32U_Path.GetBuffer()) != INVALID_FILE_ATTRIBUTES;
-        WriteLog(L"win32u: %s, has:%d", Win32U_Path.GetBuffer(), this->HasWin32U);
+        WriteLog(L"win32u: %ws, has:%d", Win32U_Path.GetBuffer(), this->HasWin32U);
 
         RtlInitEmptyString(&NlsFileName, nullptr, 0);
         RtlInitEmptyString(&OemNlsFileName, nullptr, 0);
@@ -374,9 +401,13 @@ NTSTATUS LepGlobalData::Initialize()
         }
         SCOPE_EXIT_END;
 
+        WriteLog(L"init stage GetNlsFile ACP begin cp=%u", GetLepb()->AnsiCodePage);
         LEP_DIAG_FAIL_RETURN(L"GetNlsFile(ACP)", GetNlsFile(&NlsFileName, GetLepb()->AnsiCodePage, REGPATH_CODEPAGE));
+        WriteLog(L"init stage GetNlsFile ACP end path=%ws", NlsFileName.Buffer);
 
+        WriteLog(L"init stage GetNlsFile OEM begin cp=%u", GetLepb()->OemCodePage);
         LEP_DIAG_FAIL_RETURN(L"GetNlsFile(OEMCP)", GetNlsFile(&OemNlsFileName, GetLepb()->OemCodePage, REGPATH_CODEPAGE));
+        WriteLog(L"init stage GetNlsFile OEM end path=%ws", OemNlsFileName.Buffer);
 
         // Windows 10 1803 removed all keys under "HKLM\SYSTEM\CurrentControlSet\Control\Nls\Language".
         // Since the value of all keys are "l_intl.nls" since Windows XP, 
@@ -388,17 +419,25 @@ NTSTATUS LepGlobalData::Initialize()
 
         NtFileMemory AnsiFile, OemFile, LangFile;
 
+        WriteLog(L"init stage ReadFileInSystemDirectory ACP begin");
         LEP_DIAG_FAIL_RETURN(L"ReadFileInSystemDirectory(ACP)", ReadFileInSystemDirectory(AnsiFile, &NlsFileName));
+        WriteLog(L"init stage ReadFileInSystemDirectory ACP end size=%p", AnsiFile.GetSize32());
 
+        WriteLog(L"init stage ReadFileInSystemDirectory OEM begin");
         LEP_DIAG_FAIL_RETURN(L"ReadFileInSystemDirectory(OEMCP)", ReadFileInSystemDirectory(OemFile, &OemNlsFileName));
+        WriteLog(L"init stage ReadFileInSystemDirectory OEM end size=%p", OemFile.GetSize32());
 
+        WriteLog(L"init stage ReadFileInSystemDirectory Lang begin");
         LEP_DIAG_FAIL_RETURN(L"ReadFileInSystemDirectory(Lang)", ReadFileInSystemDirectory(LangFile, &LangFileName));
+        WriteLog(L"init stage ReadFileInSystemDirectory Lang end size=%p", LangFile.GetSize32());
 
         AnsiCodePageOffset      = 0;
         OemCodePageOffset       = ROUND_UP(AnsiFile.GetSize32(), 16);
         UnicodeCaseTableOffset  = OemCodePageOffset + ROUND_UP(OemFile.GetSize32(), 16);
 
+        WriteLog(L"init stage AllocVirtualMemory CodePageMapView begin size=%p", UnicodeCaseTableOffset + LangFile.GetSize32());
         LEP_DIAG_FAIL_RETURN(L"AllocVirtualMemory(CodePageMapView)", AllocVirtualMemory(&CodePageMapView, UnicodeCaseTableOffset + LangFile.GetSize32(), PAGE_READWRITE, MEM_COMMIT | MEM_TOP_DOWN));
+        WriteLog(L"init stage AllocVirtualMemory CodePageMapView end base=%p", CodePageMapView);
 
         CopyMemory(PtrAdd(CodePageMapView, AnsiCodePageOffset),     AnsiFile.GetBuffer(),   AnsiFile.GetSize32());
         CopyMemory(PtrAdd(CodePageMapView, OemCodePageOffset),      OemFile.GetBuffer(),    OemFile.GetSize32());
@@ -445,14 +484,16 @@ NTSTATUS LepGlobalData::Initialize()
         );
     }
 
+    WriteLog(L"init stage InstallHookPort begin");
     Status = InstallHookPort();
     WriteLog(L"inst hp: %08X", Status);
     LEP_DIAG_FAIL_RETURN(L"InstallHookPort", Status);
 
+    WriteLog(L"init stage HookNtdllRoutines begin");
     Status = HookNtdllRoutines(Ntdll->DllBase);
 #if ML_AMD64 && defined(LEP_X64_CRASH_PROBE)
-    if (LEP_X64_CRASH_PROBE == 13)
-        return STATUS_DLL_INIT_FAILED;
+        if (LEP_X64_CRASH_PROBE == 13)
+            return STATUS_DLL_INIT_FAILED;
 #endif
 
     WriteLog(L"hook ntdll: %08X", Status);
@@ -516,6 +557,28 @@ NTSTATUS LepGlobalData::InitRegistryRedirection(PREGISTRY_REDIRECTION_ENTRY64 En
         ULONG_PTR       LastIndex;
         HANDLE          OriginalKey, RedirectedKey;
         UNICODE_STRING  KeyFullPath;
+
+        auto ValidSerializedString = [] (UNICODE_STRING64& String) -> BOOL
+        {
+            ULONG_PTR Offset = (ULONG_PTR)String.Buffer;
+            ULONG_PTR Length = String.MaximumLength;
+
+            return (Offset == 0 && Length == 0) ||
+                   (Offset < 0x100000 && Length < 0x100000 && Offset + Length < 0x100000);
+        };
+
+        if (!ValidSerializedString(Entry64->Original.SubKey) ||
+            !ValidSerializedString(Entry64->Original.ValueName) ||
+            !ValidSerializedString(Entry64->Redirected.SubKey) ||
+            !ValidSerializedString(Entry64->Redirected.ValueName) ||
+            (ULONG_PTR)Entry64->Original.Data > 0x100000 ||
+            (ULONG_PTR)Entry64->Redirected.Data > 0x100000)
+        {
+            WriteLog(L"InitRegistryRedirection invalid serialized entry offset subkey=%p value=%p redir=%p/%p",
+                Entry64->Original.SubKey.Buffer, Entry64->Original.ValueName.Buffer,
+                Entry64->Redirected.SubKey.Buffer, Entry64->Redirected.ValueName.Buffer);
+            return STATUS_INVALID_PARAMETER;
+        }
 
         OriginalKey     = nullptr;
         RedirectedKey   = nullptr;
@@ -666,7 +729,7 @@ VOID LepGlobalData::HookModule(PVOID DllBase, PCUNICODE_STRING DllName, BOOL Dll
     NTSTATUS Status = DllLoad ? (this->*Entry->HookRoutine)(DllBase) : (this->*Entry->UnHookRoutine)();
 
     UNREFERENCED_PARAMETER(Status);
-    WriteLog(L"hook %s: %p", Entry->DllName.Buffer, Status);
+    WriteLog(L"hook %ws: %p", Entry->DllName.Buffer, Status);
 }
 
 VOID LepGlobalData::DllNotification(ULONG NotificationReason, PCLDR_DLL_NOTIFICATION_DATA NotificationData)
@@ -824,13 +887,30 @@ BOOL Initialize(PVOID BaseAddress)
     PLDR_MODULE         Kernel32;
     PLepGlobalData       GlobalData;
     BOOL                IsLoader;
+    BOOL                BrokerPreinitialized;
+    PLEPPEB              ExistingLepPeb;
 
     ml::MlInitialize();
 
     IsLoader = FindThreadFrame(LEP_LOADER_PROCESS) != nullptr;
+    BrokerPreinitialized = FALSE;
+    ExistingLepPeb = nullptr;
+    if (!IsLoader)
+    {
+        // The cross-architecture broker creates the per-process LEP section
+        // before loading this DLL. Its presence is the explicit marker that
+        // late initialization is intentional.
+        ExistingLepPeb = OpenOrCreateLepPeb();
+        if (ExistingLepPeb != nullptr)
+        {
+            BrokerPreinitialized = TRUE;
+            CloseLepPeb(ExistingLepPeb);
+        }
+    }
+    WriteLog(L"initialize entry loader=%u brokerPreinitialized=%u", IsLoader, BrokerPreinitialized);
     LEP_DIAG_HERE_IF(!IsLoader, L"Initialize entry");
 
-    if (!IsLoader)
+    if (!IsLoader && !BrokerPreinitialized)
     {
         Kernel32 = GetKernel32Ldr();
         if (Kernel32 != nullptr && FLAG_ON(Kernel32->Flags, LDRP_PROCESS_ATTACH_CALLED))
@@ -841,6 +921,10 @@ BOOL Initialize(PVOID BaseAddress)
             LEP_DIAG_HERE(L"kernel32 loaded before LEP");
             return FALSE;
         }
+    }
+    else if (BrokerPreinitialized)
+    {
+        WriteLog(L"late initialization accepted: broker LEP section present");
     }
 
     LdrDisableThreadCalloutsForDll(BaseAddress);
@@ -856,9 +940,12 @@ BOOL Initialize(PVOID BaseAddress)
 
 #if ENABLE_LOG
     InitLog(GlobalData->LogFile);
+    WriteLog(L"initialize entry loader=%u brokerPreinitialized=%u", IsLoader, BrokerPreinitialized);
 #endif
 
+    WriteLog(L"GlobalData.Initialize begin");
     Status = GlobalData->Initialize();
+    WriteLog(L"GlobalData.Initialize end status=%08X", Status);
     if (NT_FAILED(Status))
     {
 #if LEP_DIAG_INIT
@@ -866,6 +953,16 @@ BOOL Initialize(PVOID BaseAddress)
 #endif
         return FALSE;
     }
+
+    // Record the effective values that child processes must observe.  The
+    // first NtInitializeNlsFiles result is the host locale by design; these
+    // fields show the post-LEP values after NLS tables and TEB state are set.
+    WriteLog(L"effective locale=%u originalLocale=%p acp=%u oemcp=%u tebLocale=%u",
+             GlobalData->GetLepb()->LocaleID,
+             GlobalData->GetLepPeb()->OriginalLocaleID,
+             GlobalData->GetLepb()->AnsiCodePage,
+             GlobalData->GetLepb()->OemCodePage,
+             (ULONG)CurrentTeb()->CurrentLocale);
 
     WriteLog(L"init ret");
 

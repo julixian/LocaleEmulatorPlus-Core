@@ -237,6 +237,16 @@ typedef struct
 #define LDR_LOAD_DLL_BACKUP_SIZE 5
 #endif
 
+enum LEP_CHILD_INJECTION_FLAGS
+{
+    LEP_INJECT_WRITE_SHADOW       = 0x00000001,
+    LEP_INJECT_CREATE_SHARED_PEB  = 0x00000002,
+    LEP_INJECT_PATCH_LDR_LOAD_DLL = 0x00000004,
+    LEP_INJECT_FULL = LEP_INJECT_WRITE_SHADOW |
+                      LEP_INJECT_CREATE_SHARED_PEB |
+                      LEP_INJECT_PATCH_LDR_LOAD_DLL
+};
+
 #pragma warning(push)
 #pragma warning(disable:4324)
 
@@ -285,6 +295,7 @@ typedef struct
     HANDLE      Section;
     PVOID       LdrLoadDllAddress;
     ULONG_PTR   LdrLoadDllBackupSize;
+    ULONG       InjectionFlags;
     BYTE        LdrLoadDllBackup[16];
     WCHAR       LepDllFullPath[MAX_NTPATH];
     WCHAR       LepDllDirPath[MAX_NTPATH];
@@ -337,7 +348,7 @@ inline VOID InitDefaultLeb(PLEPB LEPB)
 
     ZeroMemory(LEPB, sizeof(*LEPB));
 
-#if 1
+#if 0
 
     static WCHAR FaceName[]     = L"MS Gothic";
 
@@ -688,7 +699,7 @@ OpenOrCreateLepPeb(
 }
 
 #ifndef ENABLE_LOG
-#define ENABLE_LOG 0
+#define ENABLE_LOG 1
 #endif
 
 #if ENABLE_LOG
@@ -1014,7 +1025,8 @@ public:
     NTSTATUS HackUserDefaultLCID(PVOID Kernel32);
     NTSTATUS HackUserDefaultLCID2(PVOID Kernel32);
     NTSTATUS HackAnsiOemCodeHashNodes();
-    NTSTATUS InjectSelfToChildProcess(HANDLE Process, PCLIENT_ID Cid);
+    NTSTATUS InjectSelfToChildProcess(HANDLE Process, PCLIENT_ID Cid, ULONG InjectionFlags = LEP_INJECT_FULL);
+    NTSTATUS InjectCrossArchitecture(ULONG_PTR ExtraSize, BOOL CurrentWow64, PCLIENT_ID Cid, BOOL TargetWow64, ULONG InjectionFlags);
 
     /************************************************************************
       helper func

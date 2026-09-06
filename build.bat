@@ -7,9 +7,10 @@ set "ROOT=%ROOT:~0,-1%"
 if not defined VS_ROOT set "VS_ROOT=D:\VisualStudio2026"
 if not defined MSVC_VER set "MSVC_VER=14.44.35207"
 if not defined SDK_VER set "SDK_VER=10.0.26100.0"
-
 set "TARGET=%~1"
 if "%TARGET%"=="" set "TARGET=all"
+
+if not defined EXTRA_CL set "EXTRA_CL=/DENABLE_LOG=1"
 
 if /I "%TARGET%"=="all" (
   call "%~f0" x86 || exit /b 1
@@ -17,7 +18,7 @@ if /I "%TARGET%"=="all" (
   exit /b 0
 )
 
-if /I not "%TARGET%"=="x86" if /I not "%TARGET%"=="x64" (
+if /I not "%TARGET%"=="x86" if /I not "%TARGET%"=="x64" if /I not "%TARGET%"=="all" (
   echo Usage: build.bat [x86^|x64^|all]
   exit /b 1
 )
@@ -127,6 +128,7 @@ set "LEP_OBJECTS=%LEP_OBJECTS% "%OBJ%\LEP_HookPort.obj""
 "%LINK_EXE%" /nologo /dll /out:"%OUT%\%LEP_DLL%" /implib:"%OUT%\LocaleEmulatorPlus_%SUFFIX%.lib" ^
   %LEP_OBJECTS% ^
   %LIBPATHS% /nodefaultlib /debug:none /opt:ref /ignore:4254 %SAFESEH% /manifest:no /dynamicbase:no /nxcompat /machine:%MACHINE% /entry:DllMain /subsystem:windows ^
+  /export:LoadFirstDll ^
   /delayload:KERNEL32.dll /delayload:USER32.dll /delayload:GDI32.dll /delayload:DBGHELP.dll ^
   %ALT_UNDOC% ^
   "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" "%LIBOUT%\ntdll_vsnprintf.lib" kernel32.lib user32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
@@ -140,7 +142,7 @@ popd
   "%OBJ%\LoaderDll.obj" ^
   %LIBPATHS% /nodefaultlib /debug:none /opt:ref /ignore:4254 %SAFESEH% /manifest:no /machine:%MACHINE% /subsystem:windows ^
   %ALT_UNDOC% ^
-  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" "%LIBOUT%\ntdll_vsnprintf.lib" kernel32.lib user32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
+  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" "%LIBOUT%\ntdll_vsnprintf.lib" kernel32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
 
 echo.
 echo [%TARGET%] Build succeeded.

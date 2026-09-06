@@ -10,6 +10,7 @@ extern "C" __declspec(noreturn) void __cdecl __std_terminate() {}
 
 
 #include "../LocaleEmulatorPlus/LocaleEmulatorPlus.h"
+#include "BrokerProtocol.h"
 #define LEP_API EXTC
 
 
@@ -51,5 +52,12 @@ LepCreateProcess2(
 	PVOID                   Environment = nullptr,
 	HANDLE                  Token = nullptr
 	);
+
+#if LEP_LOADER_DLL
+LEP_API
+void
+CALLBACK
+LepBrokerEntry(HWND Window, HINSTANCE Instance, LPSTR CommandLine, int ShowCommand);
+#endif
 
 #endif // _LOADERDLL_H_586bc656_348b_4b12_ba74_d39366b67f23_

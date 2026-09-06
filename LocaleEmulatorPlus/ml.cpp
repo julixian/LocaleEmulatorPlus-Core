@@ -858,17 +858,27 @@ Nt_GetProcessUserName(
     return RtlCreateUnicodeString(UserName, Name) ? STATUS_SUCCESS : STATUS_NO_MEMORY;
 }
 */
-#if ML_AMD64
-
-#if defined(LEP_ENABLE_INJECT_DIAG)
+#if ENABLE_LOG
 
 static VOID LepInjectDiagAppendRaw(PCWSTR Text)
 {
     HANDLE File;
     ULONG Written;
+    WCHAR Path[MAX_PATH];
+    ULONG Length;
+#if ML_AMD64
+    static const WCHAR DiagName[] = L"LocaleEmulatorPlus-inject-x64-%u.log";
+#else
+    static const WCHAR DiagName[] = L"LocaleEmulatorPlus-inject-x86-%u.log";
+#endif
+
+    Length = GetTempPathW(countof(Path), Path);
+    if (Length == 0 || Length >= countof(Path) - 64)
+        return;
+    Length += FormatStringW(Path + Length, DiagName, (ULONG)GetCurrentProcessId());
 
     File = CreateFileW(
-        L"LEP-x64-inject.log",
+        Path,
         FILE_APPEND_DATA,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         nullptr,
@@ -922,6 +932,7 @@ static VOID LepInjectDiagHex(PCWSTR Label, ULONG_PTR Value)
 
 #endif
 
+#if ML_AMD64
 static const BYTE InjectRemote_LoadDll_x64[] =
 {
     0x4C, 0x8B, 0xD4,                                                       // mov r10, rsp
@@ -1221,15 +1232,21 @@ InjectDllToRemoteProcess(
 
     ThreadContext.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
     Status = NtGetContextThread(ThreadHandle, &ThreadContext);
+    LEP_INJECT_DIAG(L"InjectDllToRemoteProcess32: entry");
+    LEP_INJECT_DIAG_HEX(L"  NtGetContextThread=", Status);
+    LEP_INJECT_DIAG_HEX(L"  OriginalEip=", ThreadContext.Eip);
+    LEP_INJECT_DIAG_HEX(L"  OriginalEsp=", ThreadContext.Esp);
     if (!NT_SUCCESS(Status))
         return Status;
 
     if (!FLAG_ON(Flags, INJECT_PREALLOC_BUFFER))
     {
         Status = Mm::AllocVirtualMemoryEx(ProcessHandle, &Buffer, MEMORY_PAGE_SIZE);
+        LEP_INJECT_DIAG_HEX(L"  AllocVirtualMemoryEx=", Status);
         if (!NT_SUCCESS(Status))
             return Status;
     }
+    LEP_INJECT_DIAG_HEX(L"  Buffer=", Buffer);
 
     if (FLAG_OFF(Flags, INJECT_ISSUE_BREAKIN_ONLY) && DllFullPath != nullptr)
     {
@@ -1281,12 +1298,15 @@ InjectDllToRemoteProcess(
         LoadDll.DllPath.Length          = (USHORT)DllPathLength;
         LoadDll.DllPath.MaximumLength   = (USHORT)DllPathLength;
         LoadDll.DllPath.Buffer          = (PWSTR)((ULONG_PTR)Buffer + sizeof(LoadDll));
+        LEP_INJECT_DIAG_HEX(L"  RemoteLdrLoadDll=", LoadDll.xLdrLoadDll);
+        LEP_INJECT_DIAG_HEX(L"  DllPathLength=", DllPathLength);
     }
 
     Status = STATUS_UNSUCCESSFUL;
     LOOP_ONCE
     {
         Status = WriteMemory(ProcessHandle, Buffer, InjectContext, InjectContextSize);
+        LEP_INJECT_DIAG_HEX(L"  WriteContext=", Status);
         if (!NT_SUCCESS(Status))
             break;
 
@@ -1298,17 +1318,20 @@ InjectDllToRemoteProcess(
                         DllFullPath->Buffer,
                         DllPathLength
                         );
+            LEP_INJECT_DIAG_HEX(L"  WriteDllPath=", Status);
             if (!NT_SUCCESS(Status))
                 break;
         }
 
         ThreadContext.Eip = ROUND_UP((ULONG_PTR)Buffer + InjectContextSize + DllPathLength, 16);
+        LEP_INJECT_DIAG_HEX(L"  NewEip=", ThreadContext.Eip);
         Status = WriteMemory(
                     ProcessHandle,
                     (PVOID)ThreadContext.Eip,
                     ShellCode,
                     ShellCodeSize
                  );
+        LEP_INJECT_DIAG_HEX(L"  WriteShellCode=", Status);
         if (!NT_SUCCESS(Status))
             break;
 
@@ -1317,6 +1340,7 @@ InjectDllToRemoteProcess(
         if (FLAG_OFF(Flags, INJECT_DONT_CHANGE_IP))
         {
             Status = NtSetContextThread(ThreadHandle, &ThreadContext);
+            LEP_INJECT_DIAG_HEX(L"  NtSetContextThread=", Status);
             if (!NT_SUCCESS(Status))
                 break;
 
@@ -1325,6 +1349,7 @@ InjectDllToRemoteProcess(
 
         if (FLAG_ON(Flags, INJECT_THREAD_SUSPENDED))
         {
+            LEP_INJECT_DIAG(L"InjectDllToRemoteProcess32: return suspended success");
             if (InjectBuffer != NULL)
             {
                 *InjectBuffer = FLAG_ON(Flags, INJECT_POINT_TO_SHELL_CODE) ? (PVOID)ThreadContext.Eip : Buffer;
@@ -1376,6 +1401,7 @@ InjectDllToRemoteProcess(
     if (FLAG_OFF(Flags, INJECT_PREALLOC_BUFFER))
         Mm::FreeVirtualMemory(Buffer, ProcessHandle);
 
+    LEP_INJECT_DIAG_HEX(L"InjectDllToRemoteProcess32: exit=", Status);
     return Status;
 }
 
@@ -10959,337 +10985,6 @@ CreateProcess(
     }
 
     return STATUS_SUCCESS;
-}
-
-NTSTATUS InjectDllBeforeKernel32Loaded(PML_PROCESS_INFORMATION ProcInfo, PCWSTR DllPath, ULONG CreationFlags)
-{
-    NTSTATUS                Status;
-    ULONG_PTR               DllLoadCount, Offset, UndefinedInstruction, LdrLoadDllFirstDword;
-    PLDR_MODULE             Ntdll;
-    PVOID                   InjectBuffer, ReloadedNtdll, LdrLoadDll;
-    HANDLE                  Debuggee;
-    DBGUI_WAIT_STATE_CHANGE DbgState;
-    PEXCEPTION_RECORD       ExceptionRecord;
-
-#if ML_AMD64
-    LEP_INJECT_DIAG(L"InjectDllBeforeKernel32Loaded: entry");
-    LEP_INJECT_DIAG_HEX(L"  Process=", ProcInfo->hProcess);
-    LEP_INJECT_DIAG_HEX(L"  Thread=", ProcInfo->hThread);
-    LEP_INJECT_DIAG_HEX(L"  CreationFlags=", CreationFlags);
-#endif
-
-    Ntdll = GetNtdllLdrModule();
-    Status = LoadPeImage(Ntdll->FullDllName.Buffer, &ReloadedNtdll, NULL, LOAD_PE_IGNORE_RELOC);
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  LoadPeImage(ntdll)=", Status);
-#endif
-    FAIL_RETURN(Status);
-
-    LdrLoadDll = PtrAdd(EATLookupRoutineByHashPNoFix(ReloadedNtdll, NTDLL_LdrLoadDll), PtrOffset(Ntdll->DllBase, ReloadedNtdll));
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  LdrLoadDll=", LdrLoadDll);
-#endif
-
-    UnloadPeImage(ReloadedNtdll);
-
-    Debuggee = ProcInfo->hProcess;
-
-    Status = ReadMemory(Debuggee, LdrLoadDll, &LdrLoadDllFirstDword, sizeof(LdrLoadDllFirstDword));
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  Read LdrLoadDll first=", Status);
-    LEP_INJECT_DIAG_HEX(L"  LdrLoadDllFirstDword=", LdrLoadDllFirstDword);
-#endif
-    FAIL_RETURN(Status);
-
-    UndefinedInstruction = 0x0B0F;   // ud2
-    Status = WriteProtectMemory(Debuggee, LdrLoadDll, &UndefinedInstruction, 2);
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  Patch LdrLoadDll UD2=", Status);
-#endif
-    FAIL_RETURN(Status);
-
-    if (FLAG_ON(CreationFlags, CREATE_SUSPENDED))
-        NtResumeProcess(Debuggee);
-
-    Status = DbgUiWaitStateChange(&DbgState, NULL);
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  First DbgUiWaitStateChange=", Status);
-    LEP_INJECT_DIAG_HEX(L"  First DbgState=", DbgState.NewState);
-#endif
-    FAIL_RETURN(Status);
-
-    DllLoadCount = 0;
-
-    auto DbgX = [&] () -> NTSTATUS
-    {
-        NTSTATUS Status;
-
-        Status = DbgUiContinue(&DbgState.AppClientId, DBG_CONTINUE);
-        FAIL_RETURN(Status);
-
-        Status = DbgUiWaitStateChange(&DbgState, NULL);
-        return Status;
-    };
-
-    for (; ; Status = DbgX())
-    {
-        FAIL_RETURN(Status);
-
-#if ML_AMD64
-        LEP_INJECT_DIAG_HEX(L"  DbgState=", DbgState.NewState);
-        if (DbgState.NewState == DbgExceptionStateChange)
-        {
-            LEP_INJECT_DIAG_HEX(L"  ExceptionCode=", DbgState.StateInfo.Exception.ExceptionRecord.ExceptionCode);
-            LEP_INJECT_DIAG_HEX(L"  ExceptionAddress=", DbgState.StateInfo.Exception.ExceptionRecord.ExceptionAddress);
-        }
-#endif
-
-        switch (DbgState.NewState)
-        {
-            case DbgExceptionStateChange:
-                break;
-
-            case DbgCreateThreadStateChange:
-                if (DbgState.StateInfo.CreateThread.HandleToThread != NULL)
-                    NtClose(DbgState.StateInfo.CreateThread.HandleToThread);
-
-                continue;
-
-            case DbgCreateProcessStateChange:
-                if (DbgState.StateInfo.CreateProcessInfo.HandleToProcess != NULL)
-                    NtClose(DbgState.StateInfo.CreateProcessInfo.HandleToProcess);
-
-                if (DbgState.StateInfo.CreateProcessInfo.HandleToThread != NULL)
-                    NtClose(DbgState.StateInfo.CreateProcessInfo.HandleToThread);
-
-                if (DbgState.StateInfo.CreateProcessInfo.NewProcess.FileHandle != NULL)
-                    NtClose(DbgState.StateInfo.CreateProcessInfo.NewProcess.FileHandle);
-
-                continue;
-
-            case DbgLoadDllStateChange:
-            LOOP_ONCE
-            {
-                if (DbgState.StateInfo.LoadDll.FileHandle != NULL)
-                    NtClose(DbgState.StateInfo.LoadDll.FileHandle);
-
-                if (DllLoadCount != 0)
-                    break;
-
-                ++DllLoadCount;
-
-                BOOLEAN                 BeingDebugged;
-                PPEB_BASE               Peb;
-
-#if ML_X86
-                PVOID                   FsBase;
-                CONTEXT                 Context;
-                HANDLE                  Thread;
-                DESCRIPTOR_TABLE_ENTRY  Descriptor;
-
-                Thread = TidToHandle(DbgState.AppClientId.UniqueThread);
-                if (Thread == NULL)
-                    break;
-
-                Context.ContextFlags = CONTEXT_SEGMENTS;
-                Status = NtGetContextThread(Thread, &Context);
-                if (NT_FAILED(Status))
-                {
-                    NtClose(Thread);
-                    break;
-                }
-
-                Descriptor.Selector = Context.SegFs;
-                Status = NtQueryInformationThread(Thread, ThreadDescriptorTableEntry, &Descriptor, sizeof(Descriptor), NULL);
-                NtClose(Thread);
-                FAIL_BREAK(Status);
-
-                FsBase = (PVOID)((Descriptor.Descriptor.HighWord.Bits.BaseHi << 24)  |
-                                (Descriptor.Descriptor.HighWord.Bits.BaseMid << 16) |
-                                (Descriptor.Descriptor.BaseLow));
-
-                if (FsBase == NULL)
-                    break;
-
-                Peb = (PPEB_BASE)PtrAdd(FsBase, PEB_OFFSET);
-
-                Status = ReadMemory(Debuggee, Peb, &Peb, sizeof(Peb));
-                FAIL_BREAK(Status);
-
-                // ReadMemory(Debuggee, &Peb->BeingDebugged, &BeingDebugged, sizeof(BeingDebugged));
-
-                BeingDebugged = FALSE;
-                WriteMemory(Debuggee, &Peb->BeingDebugged, &BeingDebugged, sizeof(BeingDebugged));
-#elif ML_AMD64
-                PROCESS_BASIC_INFORMATION Basic;
-
-                Status = NtQueryInformationProcess(Debuggee, ProcessBasicInformation, &Basic, sizeof(Basic), nullptr);
-                FAIL_BREAK(Status);
-
-                Peb = (PPEB_BASE)Basic.PebBaseAddress;
-                BeingDebugged = FALSE;
-                WriteMemory(Debuggee, &Peb->BeingDebugged, &BeingDebugged, sizeof(BeingDebugged));
-#endif
-            }
-            continue;
-
-            default:
-                continue;
-        }
-
-        ExceptionRecord = &DbgState.StateInfo.Exception.ExceptionRecord;
-        if (ExceptionRecord->ExceptionCode != STATUS_ILLEGAL_INSTRUCTION)
-            continue;
-
-        if (ExceptionRecord->ExceptionAddress != LdrLoadDll)
-            continue;
-
-        break;
-    }
-
-    Status = WriteProtectMemory(Debuggee, LdrLoadDll, &LdrLoadDllFirstDword, sizeof(LdrLoadDllFirstDword));
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  Restore LdrLoadDll=", Status);
-#endif
-    FAIL_RETURN(Status);
-
-    PVOID           CallIp, CallNextIp;
-    CONTEXT         Context;
-    UNICODE_STRING  Dll;
-    BYTE            CallOp;
-
-    Context.ContextFlags = CONTEXT_CONTROL;
-    Status = NtGetContextThread(ProcInfo->hThread, &Context);
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  NtGetContextThread(after break)=", Status);
-    LEP_INJECT_DIAG_HEX(L"  BreakRip=", Context.Rip);
-    LEP_INJECT_DIAG_HEX(L"  BreakRsp=", Context.Rsp);
-#endif
-    FAIL_RETURN(Status);
-
-
-#if ML_X86
-
-    Status = ReadMemory(Debuggee, (PVOID)Context.Esp, &CallNextIp, sizeof(ProcInfo->FirstCallLdrLoadDll));
-
-#elif ML_AMD64
-
-    Status = ReadMemory(Debuggee, (PVOID)Context.Rsp, &CallNextIp, sizeof(ProcInfo->FirstCallLdrLoadDll));
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  Read CallNextIp=", Status);
-    LEP_INJECT_DIAG_HEX(L"  CallNextIp=", CallNextIp);
-#endif
-
-#endif
-
-    FAIL_RETURN(Status);
-
-    CallIp = PtrSub(CallNextIp, 5);
-    Status = ReadMemory(Debuggee, CallIp, &CallOp, sizeof(CallOp));
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  CallIp=", CallIp);
-    LEP_INJECT_DIAG_HEX(L"  Read CallOp=", Status);
-    LEP_INJECT_DIAG_HEX(L"  CallOp=", CallOp);
-#endif
-    FAIL_RETURN(Status);
-
-    if (CallOp != 0xE8)
-        return STATUS_NOT_SUPPORTED;
-
-    ProcInfo->FirstCallLdrLoadDll = CallIp;
-
-    RtlInitUnicodeString(&Dll, DllPath);
-
-    Status = InjectDllToRemoteProcess(
-                Debuggee,
-                ProcInfo->hThread,
-                &Dll,
-                INJECT_THREAD_SUSPENDED,
-                &InjectBuffer
-             );
-
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  InjectDllToRemoteProcess=", Status);
-    LEP_INJECT_DIAG_HEX(L"  InjectBuffer=", InjectBuffer);
-#endif
-
-    FAIL_RETURN(Status);
-
-    Status = DbgUiContinue(&DbgState.AppClientId, DBG_CONTINUE);
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  DbgUiContinue(final)=", Status);
-#endif
-    FAIL_RETURN(Status);
-
-    if (FLAG_ON(CreationFlags, CREATE_SUSPENDED))
-        NtSuspendProcess(Debuggee);
-
-    Status = DbgUiStopDebugging(Debuggee);
-#if ML_AMD64
-    LEP_INJECT_DIAG_HEX(L"  DbgUiStopDebugging=", Status);
-#endif
-
-    return Status;
-}
-
-NTSTATUS
-CreateProcessWithDll(
-    ULONG_PTR               Flags,
-    PCWSTR                  DllPath,
-    PCWSTR                  ApplicationName,
-    PWSTR                   CommandLine,
-    PCWSTR                  CurrentDirectory,
-    ULONG                   CreationFlags,
-    LPSTARTUPINFOW          StartupInfo,
-    PML_PROCESS_INFORMATION ProcessInformation,
-    LPSECURITY_ATTRIBUTES   ProcessAttributes,
-    LPSECURITY_ATTRIBUTES   ThreadAttributes,
-    PVOID                   Environment,
-    HANDLE                  Token,
-    PCPWD_PREPARE_CALLBACK  PrepareCallback,
-    PVOID                   PrepareContext
-)
-{
-    if (Flags == CPWD_NORMAL)
-        return CreateProcess(ApplicationName, CommandLine, CurrentDirectory, CreationFlags, StartupInfo, ProcessInformation, ProcessAttributes, ThreadAttributes, Environment, Token);
-
-    NTSTATUS                Status;
-    ML_PROCESS_INFORMATION  ProcInfo;
-
-    Status = STATUS_SUCCESS;
-
-    switch (Flags)
-    {
-        case CPWD_BEFORE_KERNEL32:
-            Status = CreateProcess(ApplicationName, CommandLine, CurrentDirectory, CreationFlags | DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS, StartupInfo, &ProcInfo, ProcessAttributes, ThreadAttributes, Environment, Token);
-            FAIL_RETURN(Status);
-
-            Status = InjectDllBeforeKernel32Loaded(&ProcInfo, DllPath, CreationFlags);
-            if (NT_SUCCESS(Status) && PrepareCallback != nullptr)
-                Status = PrepareCallback(&ProcInfo, PrepareContext);
-            break;
-
-        default:
-            return STATUS_INVALID_PARAMETER;
-    }
-
-    if (NT_FAILED(Status))
-    {
-        NtTerminateProcess(ProcInfo.hProcess, Status);
-        NtClose(ProcInfo.hProcess);
-        NtClose(ProcInfo.hThread);
-    }
-    else if (ProcessInformation == NULL)
-    {
-        NtClose(ProcInfo.hProcess);
-        NtClose(ProcInfo.hThread);
-    }
-    else
-    {
-        *ProcessInformation = ProcInfo;
-    }
-
-    return Status;
 }
 
 NTSTATUS

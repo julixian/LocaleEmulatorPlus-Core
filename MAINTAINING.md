@@ -27,12 +27,12 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 
 主要流程：
 
-1. `LEPProc_*` 把 GUI 配置转换成 `LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK`，调用 `LoaderDll_*!LepCreateProcess`。
-2. `LoaderDll` 用非公开的 `CreateProcessInternalW` 创建目标进程。
+1. `LEPProc_*` 把 GUI 配置转换成 `LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK`，调用 `LoaderDll_*!LepCreateProcess2`。
+2. `LepCreateProcess2` 通过 `ml.cpp` 中的 `CreateProcess` wrapper 调用非公开的 `CreateProcessInternalW`，创建挂起的目标进程。
 3. `LoaderDll` 生成或打开按 PID 命名的共享 section：`Local\LOCALE_EMULATOR_PLUS_PROCESS_ENVIRONMENT_BLOCK_SECTION_<pid>`。
 4. 共享 section 内放 `LEPPEB`，包含目标 ACP/OEMCP/LCID、时区、注册表重定向项、LEP DLL 路径、`LdrLoadDll` 地址/备份字节等。
-5. `LoaderDll` 通过 `CreateProcessWithDll(CPWD_BEFORE_KERNEL32)` 创建调试态目标进程，临时把目标进程的 `ntdll!LdrLoadDll` 入口改成 2 字节 `UD2`，等待第一次 loader 侧 `LdrLoadDll` 调用。
-6. 命中 `UD2` 后恢复 `LdrLoadDll` 原字节，记录第一次 call site，并把 `LocaleEmulatorPlus_*` 注入到目标进程，让它在 kernel32 初始化前取得执行权。
+5. `LoaderDll` 创建挂起目标进程，将重定位后的 `LocaleEmulatorPlus_*` 镜像写入目标地址空间，并把 `ntdll!LdrLoadDll` 入口改写为 `LoadFirstDll` hook。
+6. 首次 loader 侧 `LdrLoadDll` 调用命中 hook 后恢复原字节、读取共享 `LEPPEB` 并完成初始化，让 LEP 在 kernel32 初始化前取得执行权。
 7. `LocaleEmulatorPlus` 初始化后读取 `LEPPEB`，安装 ntdll/kernelbase/user32/gdi32 等 hook。
 8. 之后目标进程调用 NLS、locale、窗口文字、字体、剪贴板、注册表、时区等相关 API 时，会被 LEP 的 hook 改写结果。
 
@@ -42,7 +42,7 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 
 ## LoaderDll 和 LocaleEmulatorPlus 的依赖约束
 
-`LoaderDll` 可以依赖 kernel32，因为它运行在启动器进程里，负责创建和注入目标进程，不需要作为目标进程中的第一个用户 DLL。
+`LoaderDll` 可以依赖 kernel32，因为它运行在启动器/broker 进程里，负责创建和注入目标进程，不需要作为目标进程中的第一个用户 DLL。
 
 `LocaleEmulatorPlus` 不应普通静态导入 kernel32/ucrt/vcruntime。原因：
 
@@ -52,8 +52,7 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 当前构建中：
 
 - `LocaleEmulatorPlus_x86.dll` 普通 import 只应有 `ntdll.dll`；`KERNEL32.dll`/`USER32.dll`/`GDI32.dll`/`DBGHELP.dll` 是 delay-load。
-- `LocaleEmulatorPlus_x64.dll` 普通 import 只应有 `ntdll.dll`；`USER32.dll`/`GDI32.dll`/`DBGHELP.dll` 是 delay-load。当前 x64 代码路径没有产生 kernel32 delay import。
-- `LoaderDll_*` 对 kernel32 的约束没有 `LocaleEmulatorPlus_*` 那么严格。
+- `LocaleEmulatorPlus_x64.dll` 普通 import 只应有 `ntdll.dll`；`USER32.dll`/`GDI32.dll`/`DBGHELP.dll` 是 delay-load。
 
 ## 构建
 
@@ -79,7 +78,7 @@ set SDK_VER=10.0.26100.0
 build.bat x86
 ```
 
-临时开启诊断开关时，推荐通过 `EXTRA_CL` 传给构建脚本：
+构建脚本默认通过 `EXTRA_CL` 开启 `ENABLE_LOG=1`。也可以手动指定该变量覆盖默认编译宏：
 
 ```bat
 set EXTRA_CL=/DENABLE_LOG=1
@@ -87,8 +86,14 @@ build.bat
 set EXTRA_CL=
 ```
 
-`ENABLE_LOG=1` 会启用 `WriteLog`，日志文件通常位于 LEP DLL 同目录，文件名形如 `<目标进程模块名>.<pid>.log.txt`。
-注意开启 log 会改变早期执行路径，定位完问题后应恢复默认关闭。
+`ENABLE_LOG=1` 会启用 `WriteLog`，并同时启用远程注入阶段的详细诊断日志。普通运行日志文件通常位于 LEP DLL 同目录，文件名形如 `<目标进程模块名>.<pid>.log.txt`；注入阶段日志位于系统临时目录，文件名形如 `LocaleEmulatorPlus-inject-<arch>-<pid>.log`。
+日志会改变早期执行路径和时序，定位完问题后可以通过自定义 `EXTRA_CL` 关闭：
+
+```bat
+set EXTRA_CL=/DENABLE_LOG=0
+build.bat
+set EXTRA_CL=
+```
 
 如果目标进程在 log 能建立之前就失败，可以改用弹框阶段诊断：
 
@@ -99,14 +104,6 @@ set EXTRA_CL=
 ```
 
 `LEP_DIAG_INIT=1` 会在 `LocaleEmulatorPlus` 初始化关键阶段弹出 `LEP modern init diag` 消息框，适合确认崩溃卡在哪一步；它会严重打断目标进程启动，只用于本机调试。
-
-两个开关可以同时开：
-
-```bat
-set EXTRA_CL=/DENABLE_LOG=1 /DLEP_DIAG_INIT=1
-build.bat x64
-set EXTRA_CL=
-```
 
 构建脚本使用：
 

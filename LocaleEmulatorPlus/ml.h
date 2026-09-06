@@ -29966,36 +29966,11 @@ CreateProcess(
 );
 
 
-#define CPWD_NORMAL                 0
-#define CPWD_BEFORE_KERNEL32        (1 << 0)
-#define CPWD_BEFORE_ENTRY_POINT     (1 << 1)
-#define CPWD_BEFORE_TLS_CALLBACK    (1 << 2)
-
 typedef struct ML_PROCESS_INFORMATION : public PROCESS_INFORMATION
 {
     PVOID FirstCallLdrLoadDll;
 
 } ML_PROCESS_INFORMATION, *PML_PROCESS_INFORMATION;
-
-typedef NTSTATUS (*PCPWD_PREPARE_CALLBACK)(PML_PROCESS_INFORMATION ProcessInformation, PVOID Context);
-
-NTSTATUS
-CreateProcessWithDll(
-    ULONG_PTR               Flags,
-    PCWSTR                  DllPath,
-    PCWSTR                  ApplicationName,
-    PWSTR                   CommandLine         = NULL,
-    PCWSTR                  CurrentDirectory    = NULL,
-    ULONG                   CreationFlags       = 0,
-    LPSTARTUPINFOW          StartupInfo         = NULL,
-    PML_PROCESS_INFORMATION ProcessInformation  = NULL,
-    LPSECURITY_ATTRIBUTES   ProcessAttributes   = NULL,
-    LPSECURITY_ATTRIBUTES   ThreadAttributes    = NULL,
-    PVOID                   Environment         = NULL,
-    HANDLE                  Token               = NULL,
-    PCPWD_PREPARE_CALLBACK  PrepareCallback     = NULL,
-    PVOID                   PrepareContext      = NULL
-);
 
 NTSTATUS
 CreateThread(

@@ -112,21 +112,29 @@ x64 syscall 入口 patch 策略：
 
 ## 工作项
 
-### 1. 初次进程注入：`LdrLoadDll` 调试断点
+### 1. 初次进程注入：`LdrLoadDll` hook
 
-时机：`LoaderDll` 调用 `CreateProcessWithDll(CPWD_BEFORE_KERNEL32)` 创建目标进程时。
+时机：`LoaderDll` 创建挂起的目标进程时。
 
-做法：`InjectDllBeforeKernel32Loaded()` 加载一份干净 ntdll 镜像，通过导出表找 `LdrLoadDll`，映射回目标进程地址，把远程入口临时写成 2 字节 `UD2`。调试器等到第一次 loader 侧 `LdrLoadDll` 调用触发非法指令后，恢复原字节，记录第一次 call site，再把 `LocaleEmulatorPlus_*` 注入到目标进程。
+做法：加载 `LocaleEmulatorPlus_*` 的本地镜像并重定位后写入目标进程，将目标 `ntdll!LdrLoadDll` 入口改写为跳转到镜像内的 `LoadFirstDll`。首次 loader 调用命中 hook 后恢复原字节、读取共享 `LEPPEB` 内存块并完成初始化，然后继续原始 `LdrLoadDll`。
 
 作用：让 LEP 在 kernel32/kernelbase 初始化前取得执行权，并拿到目标进程真实 loader 调用现场。
 
-### 2. 子进程传播：`NtCreateUserProcess` 与 shadow `LoadFirstDll`
+### 2. 子进程传播：`NtCreateUserProcess`
 
 时机：`HookNtdllRoutines()` 始终安装 `NtCreateUserProcess` filter。真实 `NtCreateUserProcess` 成功后，`LepNtCreateUserProcess()` 调 `InjectSelfToChildProcess()`。
 
-x86/x64：`NtCreateUserProcess` 本身走 HookPort filter。子进程 `LdrLoadDll` 入口 patch x86 用 `E9 rel32`，x64 用 `FF 25 [rip+0]` 加绝对目标地址。
+共同的创建时序：wrapper 先从调用者传入的 `ThreadFlags` 记下“原本是否要求挂起”，然后无论同架构还是跨架构，都把实际传给 `NtCreateUserProcess` 的标志强制改为挂起。系统调用成功后，父进程趁子线程尚未运行完成注入；随后按照刚才记下的原始标志决定是否调用 `NtResumeThread`。
 
-做法：把当前 LEP DLL 手工 shadow 到子进程，重定位到远程地址，然后把子进程 `ntdll!LdrLoadDll` 入口改成跳到 shadow 里的 `LoadFirstDll`。`LoadFirstDll()` 进入后恢复 `LdrLoadDll` 原字节，初始化 LEP，再调用真实 `LdrLoadDll`。
+同架构传播：父子进程使用相同位数时，父进程可以直接按本架构格式操作目标进程。
+
+`OpenOrCreateLepPeb(childPid, TRUE, ...)` 用 `NtCreateSection` 创建按 PID 命名的 section，再用 `NtMapViewOfSection` 将它映射到当前进程并复制句柄到子进程；这块映射就是子进程后续读取的 `LEPPEB`，其中包含 `LEPB` 环境、DLL 路径、`LdrLoadDll` 地址/备份字节以及注册表重定向数据。随后把当前 LEP 的本架构镜像重定位后写入子进程，保存子进程 `ntdll!LdrLoadDll` 的原始入口并 patch 到 shadow 中的 `LoadFirstDll`（x86 使用 `E9 rel32`，x64 使用 `FF 25 [rip+0]` 绝对跳）。第一次 loader 调用恢复原入口、读取 `LEPPEB` 并完成初始化；初始化后的子进程继续拥有 `NtCreateUserProcess` filter，因此它创建后代时会重复这套传播流程。
+
+跨架构传播：父进程不能把本架构的指针、`LEPPEB` 布局或 DLL 镜像直接交给另一位数进程。父进程先用 `CreateFileMappingW(INVALID_HANDLE_VALUE, ...)` 创建一个按名称访问的、由系统分页文件提供后备存储的临时 section，再用 `MapViewOfFile` 写入 broker 配置。这个 `Local\LEP_BROKER_<childPid>_<parentPid>` 映射只是父进程和 broker 之间的传输邮包，不是目标进程最终使用的 `LEPPEB` section。
+
+邮包中的 `DllPath`、`LEPB` 和注册表重定向表被写成架构无关的格式：指针不跨进程传递，字符串统一为 `WCHAR`，表内的字符串和数据改用相对于 `Environment` 起点的偏移（`UNICODE_STRING64`/固定宽度整数）。因此 x86 父进程和 x64 broker，或反过来，都能按同一份 Unicode 配置解析。父进程随后启动目标位数的 `rundll32.exe`，调用 `LoaderDll_*!LepBrokerEntry`；broker 打开该命名映射，在自己的目标位数上下文中重新调用 `OpenOrCreateLepPeb`，由 `NtCreateSection`/`NtMapViewOfSection` 创建真正属于子进程的 `LEPPEB`，再加载对应位数的 LEP DLL、写入 shadow、保存并 patch 子进程的 `LdrLoadDll`。broker 将最终状态写回邮包的 `Result` 字段，父进程等待 broker 退出后读取结果。
+
+broker 启动使用线程级的 `TEB_ACTIVE_FRAME` 标记。父进程准备通过 `CreateProcessW` 启动 broker 时把 `LEP_BROKER_LAUNCH_CONTEXT` frame 压入当前线程，`CreateProcessW` 返回后弹出；因为父进程自己的 `NtCreateUserProcess` hook 也会在这条线程调用链上看到 broker 创建，`InjectSelfToChildProcess()` 发现该 frame 就跳过注入。这样不会影响其他线程同时创建的普通子进程，也只阻止“启动 broker → 又给 broker 注入 → broker 再启动 broker”的递归重入。
 
 注意：代码直接使用已保存的绝对地址 `LEPPEB->LdrLoadDllAddress`。这隐含假设同架构子进程 ntdll 映射基址与当前进程一致，因此 `ntdll!LdrLoadDll` 地址一致。
 
@@ -138,7 +146,7 @@ x86/x64：`NtCreateUserProcess` 本身走 HookPort filter。子进程 `LdrLoadDl
 
 x86：`SearchLdrInitNtContinue()` 扫描 `LdrInitializeThunk` 前 `0x5B` 字节，改写其中目标为 `NtContinue` 的 call site。`LepLdrInitNtContinue()` 在 loader 即将恢复线程初始 context 前，把当前线程的 `TEB.CurrentLocale` 设置为 `LEPB.LocaleID`，然后通过 `StubLdrInitNtContinue` 调用原 `NtContinue`。hook 范围限定在 loader 的这处调用。
 
-x64：HookPort 对 `NtContinue` syscall 入口安装 filter，覆盖经过该 ntdll stub 的调用。`LepNtContinue()` 设置当前线程的 `TEB.CurrentLocale`，保持 `CONTEXT`、`TestAlert` 和默认 `ContinueSystemCall` Action，随后由 wrapper 调用 original。`SearchLdrInitNtContinue()` 的扫描结果用于兼容性检查和日志。
+x64：不再扫描 `LdrInitializeThunk`，也不安装 x86 使用的 loader call-site hook。HookPort 直接对 `NtContinue` syscall 入口安装 filter，覆盖经过该 ntdll stub 的调用。`LepNtContinue()` 设置当前线程的 `TEB.CurrentLocale`，保持 `CONTEXT`、`TestAlert` 和默认 `ContinueSystemCall` Action，随后由 wrapper 调用 original。
 
 作用：`TEB.CurrentLocale` 是线程级状态。这个 hook 以 loader 结束线程初始化并通过 `NtContinue` 恢复用户执行现场的时刻为锚点，确保新线程进入用户入口前看到 LEP 的目标 locale。
 
@@ -173,7 +181,7 @@ x86/x64：均走 HookPort filter。
 
 启用时：inline hook `RtlCustomCPToUnicodeN` 为 `LepCustomCPToUnicodeN`。当调用者传入既不是目标代码页，也不是 UTF-8 的 CP table 时，先用目标 ANSI codepage table 重新初始化，再执行转换。
 
-用途：强制显式传入的 custom CP table 使用目标 ACP。默认 ANSI/OEM 转换由基础 NLS 表同步负责。
+用途：强制显式传入的 custom CP table 使用目标 ACP。默认 ANSI/OEM 转换由基础 NLS 表同步负责（LE 遗留代码，LEP 目前测试下来应该是不需要）。
 
 ### 7. 基础 NLS 表和 PEB/TEB codepage
 
