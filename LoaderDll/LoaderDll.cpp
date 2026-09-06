@@ -8,6 +8,8 @@
 
 static HANDLE g_BrokerLog = INVALID_HANDLE_VALUE;
 
+#if ENABLE_LOG
+
 static ULONG BrokerFormat(PWSTR Buffer, ULONG Capacity, PCWSTR Format, ...)
 {
     Int Length;
@@ -55,6 +57,23 @@ static VOID BrokerLog(PCWSTR Text)
     WriteFile(g_BrokerLog, Buffer, Length * sizeof(WCHAR), &Written, nullptr);
     OutputDebugStringW(Buffer);
 }
+
+#else
+
+static ULONG BrokerFormat(PWSTR Buffer, ULONG Capacity, PCWSTR Format, ...)
+{
+    UNREFERENCED_PARAMETER(Buffer);
+    UNREFERENCED_PARAMETER(Capacity);
+    UNREFERENCED_PARAMETER(Format);
+    return 0;
+}
+
+static VOID BrokerLog(PCWSTR Text)
+{
+    UNREFERENCED_PARAMETER(Text);
+}
+
+#endif
 
 static ULONG BrokerParseUIntA(LPCSTR& Cursor)
 {

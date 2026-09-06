@@ -179,7 +179,6 @@ NTSTATUS ReadFileInSystemDirectory(NtFileMemory &File, PUNICODE_STRING Path)
 NTSTATUS LepGlobalData::Initialize()
 {
     BOOL            IsLoader;
-    BOOL            LepPebMapped;
     PLEPPEB          LEPPEB;
     PLDR_MODULE     Ntdll;
     PPEB_BASE       ProcessEnvironment;
@@ -197,7 +196,6 @@ NTSTATUS LepGlobalData::Initialize()
     IsLoader = IsLepLoader();
     DiagVerbose = !IsLoader;
     LEP_DIAG_HERE_IF(DiagVerbose, L"LepGlobalData::Initialize entry");
-    LepPebMapped = FALSE;
 #if ML_AMD64 && defined(LEP_X64_ATTACH_WAIT)
     if (!IsLoader)
     {
@@ -243,120 +241,42 @@ NTSTATUS LepGlobalData::Initialize()
         LEPPEB = OpenOrCreateLepPeb();
         WriteLog(L"init stage OpenOrCreateLepPeb end mapped=%u", LEPPEB != nullptr);
         LEP_DIAG_HERE_IF(DiagVerbose, LEPPEB == nullptr ? L"OpenOrCreateLepPeb: null" : L"OpenOrCreateLepPeb: mapped");
-        LepPebMapped = LEPPEB != nullptr;
         if (LEPPEB == nullptr)
         {
-            ULONG_PTR       DefaultACPLength, DefaultLCIDLength, DefaultOEMCPLength;
-            WCHAR           DefaultACP[0x20], DefaultOEMCP[0x20], DefaultLCID[0x20];
-            PVOID           ReloadedNtdll;
-            PUNICODE_STRING FullDllName;
-            PLDR_MODULE     Lepdll;
-
-            LEPPEB = GetLepPeb();
-            LEP_DIAG_HERE_IF(DiagVerbose, L"GetLepPeb ok");
-
-            InitDefaultLeb(&LEPPEB->LEPB);
-            LEP_DIAG_HERE_IF(DiagVerbose, L"InitDefaultLeb ok");
-
-            Lepdll = FindLdrModuleByHandle(&__ImageBase);
-            LEP_DIAG_HERE_IF(DiagVerbose, Lepdll == nullptr ? L"FindLdrModuleByHandle(self): null" : L"FindLdrModuleByHandle(self): ok");
-            if (Lepdll)
-            {
-                FullDllName = &Lepdll->FullDllName;
-                CopyMemory(LEPPEB->LepDllFullPath, FullDllName->Buffer, FullDllName->Length + sizeof(WCHAR));
-                CopyMemory(LEPPEB->LepDllDirPath, FullDllName->Buffer,
-                    FullDllName->Length + sizeof(WCHAR) - Lepdll->BaseDllName.Length);
-                LEPPEB->LepDllDirPath[(FullDllName->Length - Lepdll->BaseDllName.Length) / sizeof(WCHAR)] = 0;
-            }
-
-            LEP_DIAG_HERE_IF(DiagVerbose, L"before LoadPeImage(ntdll)");
-            Status = LoadPeImage(Ntdll->FullDllName.Buffer, &ReloadedNtdll, nullptr, LOAD_PE_IGNORE_RELOC);
-#if LEP_DIAG_INIT
-            if (DiagVerbose || NT_FAILED(Status))
-                LepDiagStatus(L"LoadPeImage(ntdll)", Status);
-#endif
-            if (NT_SUCCESS(Status))
-            {
-                PVOID LdrLoadDllAddress;
-
-                LdrLoadDllAddress = LookupExportTable(ReloadedNtdll, NTDLL_LdrLoadDll);
-                LEP_DIAG_HERE_IF(DiagVerbose, LdrLoadDllAddress == nullptr ? L"Lookup LdrLoadDll: null" : L"Lookup LdrLoadDll: ok");
-                LEPPEB->LdrLoadDllAddress = PtrAdd(LdrLoadDllAddress, PtrOffset(Ntdll->DllBase, ReloadedNtdll));
-                CopyMemory(LEPPEB->LdrLoadDllBackup, LdrLoadDllAddress, LDR_LOAD_DLL_BACKUP_SIZE);
-                LEPPEB->LdrLoadDllBackupSize = LDR_LOAD_DLL_BACKUP_SIZE;
-
-                UnloadPeImage(ReloadedNtdll);
-                LEP_DIAG_HERE_IF(DiagVerbose, L"UnloadPeImage(ntdll) ok");
-            }
-
-            LEP_DIAG_HERE_IF(DiagVerbose, L"before format defaults");
-            DefaultACPLength    = (FormatLepUIntDecimal(DefaultACP, LEPPEB->LEPB.AnsiCodePage) + 1) * sizeof(WCHAR);
-            DefaultOEMCPLength  = (FormatLepUIntDecimal(DefaultOEMCP, LEPPEB->LEPB.OemCodePage) + 1) * sizeof(WCHAR);
-            DefaultLCIDLength   = (FormatLepUIntDecimal(DefaultLCID, LEPPEB->LEPB.LocaleID) + 1) * sizeof(WCHAR);
-            LEP_DIAG_HERE_IF(DiagVerbose, L"format defaults ok");
-
-            REGISTRY_REDIRECTION_ENTRY64 *Entry, Entries[] =
-            {
-                {
-                    { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_CODEPAGE), USTR64(REGKEY_ACP), REG_SZ, },
-                    { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_CODEPAGE), USTR64(REGKEY_ACP), REG_SZ, DefaultACP, DefaultACPLength },
-                },
-                {
-                    { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_CODEPAGE), USTR64(REGKEY_OEMCP), REG_SZ, },
-                    { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_CODEPAGE), USTR64(REGKEY_OEMCP), REG_SZ, DefaultOEMCP, DefaultOEMCPLength },
-                },
-                {
-                    { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_LANGUAGE), USTR64(REGKEY_DEFAULT_LANGUAGE), REG_SZ, },
-                    { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_LANGUAGE), USTR64(REGKEY_DEFAULT_LANGUAGE), REG_SZ, DefaultLCID, DefaultLCIDLength },
-                },
-            };
-
-            WriteLog(L"init stage InitRegistryRedirection defaults begin");
-            Status = this->InitRegistryRedirection(Entries, countof(Entries), nullptr);
-            WriteLog(L"init stage InitRegistryRedirection defaults end status=%08X", Status);
+            WriteLog(L"init failed: current process LEPPEB section is missing");
+            return STATUS_NONE_MAPPED;
         }
-        else
+
+        WriteLog(L"init stage copy shared LEPB begin");
+        *GetLepPeb() = *LEPPEB;
+        WriteLog(L"init stage copy shared LEPB end");
+        WriteLog(L"init stage InitRegistryRedirection shared begin count=%p", LEPPEB->LEPB.NumberOfRegistryRedirectionEntries);
+        if (LEPPEB->LEPB.NumberOfRegistryRedirectionEntries != 0)
         {
-            WriteLog(L"init stage copy shared LEPB begin");
-            *GetLepPeb() = *LEPPEB;
-            WriteLog(L"init stage copy shared LEPB end");
-            WriteLog(L"init stage InitRegistryRedirection shared begin count=%p", LEPPEB->LEPB.NumberOfRegistryRedirectionEntries);
-            if (LEPPEB->LEPB.NumberOfRegistryRedirectionEntries != 0)
-            {
-                PREGISTRY_REDIRECTION_ENTRY64 Entry64 = &LEPPEB->LEPB.RegistryReplacement[0];
-                WriteLog(L"init entry0 subkey=%p/%u value=%p/%u redir=%p/%u base=%p",
-                    Entry64->Original.SubKey.Buffer, Entry64->Original.SubKey.Length,
-                    Entry64->Original.ValueName.Buffer, Entry64->Original.ValueName.Length,
-                    Entry64->Redirected.SubKey.Buffer, Entry64->Redirected.SubKey.Length,
-                    &LEPPEB->LEPB);
-            }
-            Status = this->InitRegistryRedirection(LEPPEB->LEPB.RegistryReplacement, LEPPEB->LEPB.NumberOfRegistryRedirectionEntries, &LEPPEB->LEPB);
-            WriteLog(L"init stage InitRegistryRedirection shared end status=%08X entries=%p", Status, this->RegistryRedirectionEntry.GetSize());
-            if (this->RegistryRedirectionEntry.GetSize() == 0)
-            {
-                WriteLog(L"init stage InitDefaultRegistryRedirection begin");
-                Status = this->InitDefaultRegistryRedirection();
-                WriteLog(L"init stage InitDefaultRegistryRedirection end status=%08X", Status);
-            }
-#if ML_AMD64 && defined(LEP_X64_CRASH_PROBE)
-            if (LEP_X64_CRASH_PROBE == 20 && this->RegistryRedirectionEntry.GetSize() == 0)
-                return STATUS_DLL_INIT_FAILED;
-            if (LEP_X64_CRASH_PROBE == 21 && this->RegistryRedirectionEntry.GetSize() != 0)
-                return STATUS_DLL_INIT_FAILED;
-#endif
-
-            NtClose(LEPPEB->Section);
-            CloseLepPeb(LEPPEB);
+            PREGISTRY_REDIRECTION_ENTRY64 Entry64 = &LEPPEB->LEPB.RegistryReplacement[0];
+            WriteLog(L"init entry0 subkey=%p/%u value=%p/%u redir=%p/%u base=%p",
+                Entry64->Original.SubKey.Buffer, Entry64->Original.SubKey.Length,
+                Entry64->Original.ValueName.Buffer, Entry64->Original.ValueName.Length,
+                Entry64->Redirected.SubKey.Buffer, Entry64->Redirected.SubKey.Length,
+                &LEPPEB->LEPB);
         }
-
-        if (IsLoader && !LepPebMapped)
+        Status = this->InitRegistryRedirection(LEPPEB->LEPB.RegistryReplacement, LEPPEB->LEPB.NumberOfRegistryRedirectionEntries, &LEPPEB->LEPB);
+        WriteLog(L"init stage InitRegistryRedirection shared end status=%08X entries=%p", Status, this->RegistryRedirectionEntry.GetSize());
+        if (this->RegistryRedirectionEntry.GetSize() == 0)
         {
-#if ML_AMD64 && defined(LEP_X64_CRASH_PROBE)
-            if (LEP_X64_CRASH_PROBE == 12)
-                return STATUS_DLL_INIT_FAILED;
-#endif
-            break;
+            WriteLog(L"init stage InitDefaultRegistryRedirection begin");
+            Status = this->InitDefaultRegistryRedirection();
+            WriteLog(L"init stage InitDefaultRegistryRedirection end status=%08X", Status);
         }
+#if ML_AMD64 && defined(LEP_X64_CRASH_PROBE)
+        if (LEP_X64_CRASH_PROBE == 20 && this->RegistryRedirectionEntry.GetSize() == 0)
+            return STATUS_DLL_INIT_FAILED;
+        if (LEP_X64_CRASH_PROBE == 21 && this->RegistryRedirectionEntry.GetSize() != 0)
+            return STATUS_DLL_INIT_FAILED;
+#endif
+
+        NtClose(LEPPEB->Section);
+        CloseLepPeb(LEPPEB);
 
         WriteLog(L"init stage TextMetricCache.Initialize begin");
         LEP_DIAG_FAIL_RETURN(L"TextMetricCache.Initialize", this->TextMetricCache.Initialize());
@@ -498,15 +418,6 @@ NTSTATUS LepGlobalData::Initialize()
 
     WriteLog(L"hook ntdll: %08X", Status);
     LEP_DIAG_FAIL_RETURN(L"HookNtdllRoutines", Status);
-
-    if (IsLoader && !LepPebMapped)
-    {
-#if ML_AMD64 && defined(LEP_X64_CRASH_PROBE)
-        if (LEP_X64_CRASH_PROBE == 14)
-            return STATUS_DLL_INIT_FAILED;
-#endif
-        return Status;
-    }
 
     HackAnsiOemCodeHashNodes();
 
@@ -887,30 +798,31 @@ BOOL Initialize(PVOID BaseAddress)
     PLDR_MODULE         Kernel32;
     PLepGlobalData       GlobalData;
     BOOL                IsLoader;
-    BOOL                BrokerPreinitialized;
+    BOOL                CurrentProcessLepPebSectionPresent;
     PLEPPEB              ExistingLepPeb;
 
     ml::MlInitialize();
 
     IsLoader = FindThreadFrame(LEP_LOADER_PROCESS) != nullptr;
-    BrokerPreinitialized = FALSE;
+    CurrentProcessLepPebSectionPresent = FALSE;
     ExistingLepPeb = nullptr;
     if (!IsLoader)
     {
-        // The cross-architecture broker creates the per-process LEP section
-        // before loading this DLL. Its presence is the explicit marker that
-        // late initialization is intentional.
+        // The injector creates the per-process LEP section before loading this
+        // DLL. Its presence marks an intentional preinitialized load path,
+        // whether the injector is direct, same-architecture, or cross-architecture.
         ExistingLepPeb = OpenOrCreateLepPeb();
         if (ExistingLepPeb != nullptr)
         {
-            BrokerPreinitialized = TRUE;
+            CurrentProcessLepPebSectionPresent = TRUE;
             CloseLepPeb(ExistingLepPeb);
         }
     }
-    WriteLog(L"initialize entry loader=%u brokerPreinitialized=%u", IsLoader, BrokerPreinitialized);
+    WriteLog(L"initialize entry loader=%u currentProcessLepPebSectionPresent=%u",
+             IsLoader, CurrentProcessLepPebSectionPresent);
     LEP_DIAG_HERE_IF(!IsLoader, L"Initialize entry");
 
-    if (!IsLoader && !BrokerPreinitialized)
+    if (!IsLoader && !CurrentProcessLepPebSectionPresent)
     {
         Kernel32 = GetKernel32Ldr();
         if (Kernel32 != nullptr && FLAG_ON(Kernel32->Flags, LDRP_PROCESS_ATTACH_CALLED))
@@ -922,9 +834,9 @@ BOOL Initialize(PVOID BaseAddress)
             return FALSE;
         }
     }
-    else if (BrokerPreinitialized)
+    else if (CurrentProcessLepPebSectionPresent)
     {
-        WriteLog(L"late initialization accepted: broker LEP section present");
+        WriteLog(L"late initialization accepted: current process LEPPEB section already exists");
     }
 
     LdrDisableThreadCalloutsForDll(BaseAddress);
@@ -940,7 +852,8 @@ BOOL Initialize(PVOID BaseAddress)
 
 #if ENABLE_LOG
     InitLog(GlobalData->LogFile);
-    WriteLog(L"initialize entry loader=%u brokerPreinitialized=%u", IsLoader, BrokerPreinitialized);
+    WriteLog(L"initialize entry loader=%u currentProcessLepPebSectionPresent=%u",
+             IsLoader, CurrentProcessLepPebSectionPresent);
 #endif
 
     WriteLog(L"GlobalData.Initialize begin");

@@ -341,44 +341,6 @@ inline NTSTATUS CloseLepPeb(PLEPPEB LEPPEB)
     return LEPPEB == nullptr ? STATUS_INVALID_PARAMETER : NtUnmapViewOfSection(CurrentProcess, LEPPEB);
 }
 
-inline VOID InitDefaultLeb(PLEPB LEPB)
-{
-    static WCHAR StandardName[] = L"@tzres.dll,-632";
-    static WCHAR DaylightName[] = L"@tzres.dll,-631";
-
-    ZeroMemory(LEPB, sizeof(*LEPB));
-
-#if 0
-
-    static WCHAR FaceName[]     = L"MS Gothic";
-
-    LEPB->AnsiCodePage      = CP_SHIFTJIS;
-    LEPB->OemCodePage       = CP_SHIFTJIS;
-    LEPB->LocaleID          = 0x411;
-    LEPB->DefaultCharset    = SHIFTJIS_CHARSET;
-	LEPB->HookUILanguageApi = 0;
-
-#else
-
-    static WCHAR FaceName[]     = L"Microsoft YaHei";
-
-    LEPB->AnsiCodePage      = CP_GB2312;
-    LEPB->OemCodePage       = CP_GB2312;
-    LEPB->LocaleID          = 0x804;
-    LEPB->DefaultCharset    = GB2312_CHARSET;
-	LEPB->HookUILanguageApi = 0;
-
-#endif
-
-    CopyStruct(LEPB->DefaultFaceName, FaceName, sizeof(FaceName));
-
-    NtQuerySystemInformation(SystemCurrentTimeZoneInformation, &LEPB->Timezone, sizeof(LEPB->Timezone), nullptr);
-
-    LEPB->Timezone.Bias = -540;
-    CopyStruct(LEPB->Timezone.StandardName, StandardName, sizeof(StandardName));
-    CopyStruct(LEPB->Timezone.DaylightName, DaylightName, sizeof(DaylightName));
-}
-
 inline ULONG_PTR LepStringLengthW(PCWSTR String)
 {
     PCWSTR Current = String;
