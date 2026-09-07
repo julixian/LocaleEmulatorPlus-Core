@@ -4,19 +4,18 @@
 #include "../LocaleEmulatorPlus/LocaleEmulatorPlus.h"
 
 #define LEP_BROKER_CONFIG_MAGIC TAG4('LBC1')
-#define LEP_BROKER_CONFIG_VERSION 3
+#define LEP_BROKER_CONFIG_VERSION 4
 
 typedef struct LEP_BROKER_CONFIG
 {
     ULONG Magic;
     ULONG Version;
     ULONG Size;
-    ULONG ExtraSize;
+    ULONG PayloadSize;
     ULONG Result;
     ULONG ThreadId;
     ULONG InjectionFlags;
-    WCHAR DllPath[MAX_NTPATH];
-    LEPB  Environment;
+    BYTE Payload[1];
 } LEP_BROKER_CONFIG, *PLEP_BROKER_CONFIG;
 
 #endif

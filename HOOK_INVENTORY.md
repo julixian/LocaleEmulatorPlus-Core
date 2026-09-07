@@ -6,7 +6,7 @@
 
 ### 初始化顺序
 
-`LocaleEmulatorPlus` 初始化时先建立 `LEPPEB`/`LEPB` 配置，再初始化 HookPort，然后安装 ntdll hook，随后注册 `LdrRegisterDllNotification()` 处理后加载模块。若 kernel32/kernelbase 已经加载，会主动调用 `HookKernel32Routines()`；USER32/GDI32 则通常由 DLL notification 触发。
+`LocaleEmulatorPlus` 初始化时先校验并挂接 `LEP_BOOTSTRAP_PAYLOAD`，从其中读取 `LEPB` 配置，再初始化 HookPort，然后安装 ntdll hook，随后注册 `LdrRegisterDllNotification()` 处理后加载模块。若 kernel32/kernelbase 已经加载，会主动调用 `HookKernel32Routines()`；USER32/GDI32 则通常由 DLL notification 触发。
 
 ### Inline Hook
 
@@ -116,9 +116,9 @@ x64 syscall 入口 patch 策略：
 
 时机：`LoaderDll` 创建挂起的目标进程时。
 
-做法：加载 `LocaleEmulatorPlus_*` 的本地镜像并重定位后写入目标进程，将目标 `ntdll!LdrLoadDll` 入口改写为跳转到镜像内的 `LoadFirstDll`。首次 loader 调用命中 hook 后恢复原字节、读取共享 `LEPPEB` 内存块并完成初始化，然后继续原始 `LdrLoadDll`。
+做法：从磁盘加载 `LocaleEmulatorPlus_*` 的本地镜像并重定位后写入目标进程；bootstrap 元数据保存目标 `LdrLoadDll` 原始字节、原页面保护和 Payload 偏移/大小。目标入口改写为跳转到镜像内的 `LoadFirstDll` 后，首次调用先恢复原字节和页面保护，再校验 Payload 并完成初始化，最后继续原始 `LdrLoadDll`。
 
-作用：让 LEP 在 kernel32/kernelbase 初始化前取得执行权，并拿到目标进程真实 loader 调用现场。
+作用：让 LEP 在 kernel32/kernelbase 初始化前取得执行权。
 
 ### 2. 子进程传播：`NtCreateUserProcess`
 
@@ -126,17 +126,17 @@ x64 syscall 入口 patch 策略：
 
 共同的创建时序：wrapper 先从调用者传入的 `ThreadFlags` 记下“原本是否要求挂起”，然后无论同架构还是跨架构，都把实际传给 `NtCreateUserProcess` 的标志强制改为挂起。系统调用成功后，父进程趁子线程尚未运行完成注入；随后按照刚才记下的原始标志决定是否调用 `NtResumeThread`。
 
+父进程先根据自己的当前配置重新构建 `LEP_BOOTSTRAP_PAYLOAD`，再从磁盘读取对应位数的 `LocaleEmulatorPlus_*` 镜像。镜像按目标地址重定位后，与 Payload 一起写入子进程的一块连续内存；Payload 位于对齐后的 PE 镜像尾部。bootstrap 元数据同时写入 Payload 偏移/大小、目标 `LdrLoadDll` 原始字节和页面保护，再把目标入口 patch 到 shadow 中的 `LoadFirstDll`（x86 使用 `E9 rel32`，x64 使用 `FF 25 [rip+0]` 绝对跳）。第一次调用恢复原入口、校验并读取 Payload、完成初始化；初始化后的子进程继续拥有 `NtCreateUserProcess` filter，因此它创建后代时会重复这套传播流程。
+
 同架构传播：父子进程使用相同位数时，父进程可以直接按本架构格式操作目标进程。
 
-`OpenOrCreateLepPeb(childPid, TRUE, ...)` 用 `NtCreateSection` 创建按 PID 命名的 section，再用 `NtMapViewOfSection` 将它映射到当前进程并复制句柄到子进程；这块映射就是子进程后续读取的 `LEPPEB`，其中包含 `LEPB` 环境、DLL 路径、`LdrLoadDll` 地址/备份字节以及注册表重定向数据。随后把当前 LEP 的本架构镜像重定位后写入子进程，保存子进程 `ntdll!LdrLoadDll` 的原始入口并 patch 到 shadow 中的 `LoadFirstDll`（x86 使用 `E9 rel32`，x64 使用 `FF 25 [rip+0]` 绝对跳）。第一次 loader 调用恢复原入口、读取 `LEPPEB` 并完成初始化；初始化后的子进程继续拥有 `NtCreateUserProcess` filter，因此它创建后代时会重复这套传播流程。
+跨架构传播：父进程不能把本架构的指针、Payload 内部地址或 DLL 镜像直接交给另一位数进程。父进程先用 `CreateFileMappingW(INVALID_HANDLE_VALUE, ...)` 创建一个按名称访问的、由系统分页文件提供后备存储的临时 section，再用 `MapViewOfFile` 写入 broker 配置。这个 `Local\LEP_BROKER_<childPid>_<parentPid>` 映射只是父进程和 broker 之间的传输邮包。
 
-跨架构传播：父进程不能把本架构的指针、`LEPPEB` 布局或 DLL 镜像直接交给另一位数进程。父进程先用 `CreateFileMappingW(INVALID_HANDLE_VALUE, ...)` 创建一个按名称访问的、由系统分页文件提供后备存储的临时 section，再用 `MapViewOfFile` 写入 broker 配置。这个 `Local\LEP_BROKER_<childPid>_<parentPid>` 映射只是父进程和 broker 之间的传输邮包，不是目标进程最终使用的 `LEPPEB` section。
-
-邮包中的 `DllPath`、`LEPB` 和注册表重定向表被写成架构无关的格式：指针不跨进程传递，字符串统一为 `WCHAR`，表内的字符串和数据改用相对于 `Environment` 起点的偏移（`UNICODE_STRING64`/固定宽度整数）。因此 x86 父进程和 x64 broker，或反过来，都能按同一份 Unicode 配置解析。父进程随后启动目标位数的 `rundll32.exe`，调用 `LoaderDll_*!LepBrokerEntry`；broker 打开该命名映射，在自己的目标位数上下文中重新调用 `OpenOrCreateLepPeb`，由 `NtCreateSection`/`NtMapViewOfSection` 创建真正属于子进程的 `LEPPEB`，再加载对应位数的 LEP DLL、写入 shadow、保存并 patch 子进程的 `LdrLoadDll`。broker 将最终状态写回邮包的 `Result` 字段，父进程等待 broker 退出后读取结果。
+邮包中的 `LEP_BOOTSTRAP_PAYLOAD` 使用架构无关的固定宽度字段：指针不跨进程传递，字符串和重定向数据都使用相对于 Payload 内部 `LEPB` 起点的偏移。父进程随后启动目标位数的 `rundll32.exe`，调用 `LoaderDll_*!LepBrokerEntry`；broker 校验邮包中的 Payload，从磁盘加载对应位数的 LEP DLL，重新把同一份 Payload 序列化后写入目标 shadow 尾部，保存并 patch 子进程的 `LdrLoadDll`。broker 将最终状态写回邮包的 `Result` 字段，父进程等待 broker 退出后读取结果。
 
 broker 启动使用线程级的 `TEB_ACTIVE_FRAME` 标记。父进程准备通过 `CreateProcessW` 启动 broker 时把 `LEP_BROKER_LAUNCH_CONTEXT` frame 压入当前线程，`CreateProcessW` 返回后弹出；因为父进程自己的 `NtCreateUserProcess` hook 也会在这条线程调用链上看到 broker 创建，`InjectSelfToChildProcess()` 发现该 frame 就跳过注入。这样不会影响其他线程同时创建的普通子进程，也只阻止“启动 broker → 又给 broker 注入 → broker 再启动 broker”的递归重入。
 
-注意：代码直接使用已保存的绝对地址 `LEPPEB->LdrLoadDllAddress`。这隐含假设同架构子进程 ntdll 映射基址与当前进程一致，因此 `ntdll!LdrLoadDll` 地址一致。
+注意：代码直接使用当前进程解析出的 `LdrLoadDll` 地址写入 bootstrap 元数据。这隐含假设同架构子进程 ntdll 映射基址与当前进程一致，因此 `ntdll!LdrLoadDll` 地址一致；跨架构 broker 会在自身目标位数上下文中重新解析地址。
 
 作用：让目标进程创建的子进程自动继承 LEP 环境。
 

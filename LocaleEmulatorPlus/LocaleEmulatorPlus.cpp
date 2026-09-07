@@ -176,10 +176,9 @@ NTSTATUS ReadFileInSystemDirectory(NtFileMemory &File, PUNICODE_STRING Path)
     return Status;
 }
 
-NTSTATUS LepGlobalData::Initialize()
+NTSTATUS LepGlobalData::Initialize(PLEP_BOOTSTRAP_PAYLOAD Payload, BOOL OwnPayload)
 {
     BOOL            IsLoader;
-    PLEPPEB          LEPPEB;
     PLDR_MODULE     Ntdll;
     PPEB_BASE       ProcessEnvironment;
     NTSTATUS        Status;
@@ -195,6 +194,11 @@ NTSTATUS LepGlobalData::Initialize()
 
     IsLoader = IsLepLoader();
     DiagVerbose = !IsLoader;
+    if (!LepValidateBootstrapPayload(Payload))
+        return STATUS_INVALID_PARAMETER;
+
+    this->BootstrapPayload = Payload;
+    this->OwnBootstrapPayload = (BOOLEAN)OwnPayload;
     LEP_DIAG_HERE_IF(DiagVerbose, L"LepGlobalData::Initialize entry");
 #if ML_AMD64 && defined(LEP_X64_ATTACH_WAIT)
     if (!IsLoader)
@@ -232,36 +236,32 @@ NTSTATUS LepGlobalData::Initialize()
 #endif
         return STATUS_DLL_INIT_FAILED;
     }
+    RuntimeState.LdrLoadDllAddress = EATLookupRoutineByHashPNoFix(Ntdll->DllBase, NTDLL_LdrLoadDll);
+    if (RuntimeState.LdrLoadDllAddress == nullptr)
+        return STATUS_ENTRYPOINT_NOT_FOUND;
     LEP_DIAG_HERE_IF(DiagVerbose, L"GetNtdllLdrModule ok");
 
     LOOP_ONCE
     {
-        WriteLog(L"init stage OpenOrCreateLepPeb begin");
-        LEP_DIAG_HERE_IF(DiagVerbose, L"before OpenOrCreateLepPeb");
-        LEPPEB = OpenOrCreateLepPeb();
-        WriteLog(L"init stage OpenOrCreateLepPeb end mapped=%u", LEPPEB != nullptr);
-        LEP_DIAG_HERE_IF(DiagVerbose, LEPPEB == nullptr ? L"OpenOrCreateLepPeb: null" : L"OpenOrCreateLepPeb: mapped");
-        if (LEPPEB == nullptr)
+        PLEPB Environment = GetLepb();
+        WriteLog(L"init stage bootstrap payload size=%u environment=%u count=%p",
+                 Payload->TotalSize, Payload->EnvironmentSize,
+                 Environment->NumberOfRegistryRedirectionEntries);
+        if (Environment->NumberOfRegistryRedirectionEntries != 0)
         {
-            WriteLog(L"init failed: current process LEPPEB section is missing");
-            return STATUS_NONE_MAPPED;
-        }
-
-        WriteLog(L"init stage copy shared LEPB begin");
-        *GetLepPeb() = *LEPPEB;
-        WriteLog(L"init stage copy shared LEPB end");
-        WriteLog(L"init stage InitRegistryRedirection shared begin count=%p", LEPPEB->LEPB.NumberOfRegistryRedirectionEntries);
-        if (LEPPEB->LEPB.NumberOfRegistryRedirectionEntries != 0)
-        {
-            PREGISTRY_REDIRECTION_ENTRY64 Entry64 = &LEPPEB->LEPB.RegistryReplacement[0];
+            PREGISTRY_REDIRECTION_ENTRY64 Entry64 = &Environment->RegistryReplacement[0];
             WriteLog(L"init entry0 subkey=%p/%u value=%p/%u redir=%p/%u base=%p",
                 Entry64->Original.SubKey.Buffer, Entry64->Original.SubKey.Length,
                 Entry64->Original.ValueName.Buffer, Entry64->Original.ValueName.Length,
                 Entry64->Redirected.SubKey.Buffer, Entry64->Redirected.SubKey.Length,
-                &LEPPEB->LEPB);
+                Environment);
         }
-        Status = this->InitRegistryRedirection(LEPPEB->LEPB.RegistryReplacement, LEPPEB->LEPB.NumberOfRegistryRedirectionEntries, &LEPPEB->LEPB);
-        WriteLog(L"init stage InitRegistryRedirection shared end status=%08X entries=%p", Status, this->RegistryRedirectionEntry.GetSize());
+        Status = this->InitRegistryRedirection(Environment->RegistryReplacement,
+                                               Environment->NumberOfRegistryRedirectionEntries,
+                                               Environment, Payload->EnvironmentSize);
+        WriteLog(L"init stage InitRegistryRedirection payload end status=%08X entries=%p", Status, this->RegistryRedirectionEntry.GetSize());
+        if (NT_FAILED(Status) && Status != STATUS_NO_MORE_ENTRIES)
+            return Status;
         if (this->RegistryRedirectionEntry.GetSize() == 0)
         {
             WriteLog(L"init stage InitDefaultRegistryRedirection begin");
@@ -275,9 +275,6 @@ NTSTATUS LepGlobalData::Initialize()
             return STATUS_DLL_INIT_FAILED;
 #endif
 
-        NtClose(LEPPEB->Section);
-        CloseLepPeb(LEPPEB);
-
         WriteLog(L"init stage TextMetricCache.Initialize begin");
         LEP_DIAG_FAIL_RETURN(L"TextMetricCache.Initialize", this->TextMetricCache.Initialize());
         WriteLog(L"init stage TextMetricCache.Initialize end");
@@ -290,11 +287,11 @@ NTSTATUS LepGlobalData::Initialize()
         LEP_DIAG_FAIL_RETURN(L"NtInitializeNlsFiles", NtInitializeNlsFiles(&NlsBaseAddress, &DefaultLocaleID, &DefaultCasingTableSize));
         WriteLog(L"init stage NtInitializeNlsFiles end locale=%u", DefaultLocaleID);
 
-        this->GetLepPeb()->OriginalLocaleID = DefaultLocaleID;
+        this->GetRuntimeState()->OriginalLocaleID = DefaultLocaleID;
 
         NtUnmapViewOfSection(CurrentProcess, NlsBaseAddress);
 
-        WriteLog(L"init LEPB %ws", GetLepPeb()->LepDllFullPath);
+        WriteLog(L"init LEPB %ws", GetLepDllFullPath());
         WriteLog(L"LEP image base: %p", &__ImageBase);
 
         SystemDirectory = Ntdll->FullDllName;
@@ -372,6 +369,7 @@ NTSTATUS LepGlobalData::Initialize()
             &NlsTableInfo
         );
 
+#if !LEP_DIAG_SKIP_NLS_APPLY
         RtlResetRtlTranslations(&NlsTableInfo);
 
         LepSyncNtdllNlsGlobals(
@@ -391,9 +389,13 @@ NTSTATUS LepGlobalData::Initialize()
         ProcessEnvironment->AnsiCodePageData       = (PUSHORT)PtrAdd(CodePageMapView, AnsiCodePageOffset);
         ProcessEnvironment->OemCodePageData        = (PUSHORT)PtrAdd(CodePageMapView, OemCodePageOffset);
         ProcessEnvironment->UnicodeCaseTableData   = (PUSHORT)PtrAdd(CodePageMapView, UnicodeCaseTableOffset);
+#else
+        WriteLog(L"NLS apply disabled: RtlResetRtlTranslations, Ntdll NLS globals and PEB NLS pointers unchanged");
+#endif
 
         // LdrInitShimEngineDynamic(&__ImageBase);
 
+#if !LEP_DIAG_PROCESS_ONLY
         LdrRegisterDllNotification(0,
             [] (ULONG NotificationReason, PCLDR_DLL_NOTIFICATION_DATA NotificationData, PVOID Context)
             {
@@ -402,6 +404,7 @@ NTSTATUS LepGlobalData::Initialize()
             this,
             &DllNotificationCookie
         );
+#endif
     }
 
     WriteLog(L"init stage InstallHookPort begin");
@@ -419,6 +422,7 @@ NTSTATUS LepGlobalData::Initialize()
     WriteLog(L"hook ntdll: %08X", Status);
     LEP_DIAG_FAIL_RETURN(L"HookNtdllRoutines", Status);
 
+#if !LEP_DIAG_PROCESS_ONLY
     HackAnsiOemCodeHashNodes();
 
     PLDR_MODULE Kernel32Ldr;
@@ -441,21 +445,23 @@ NTSTATUS LepGlobalData::Initialize()
             Kernel32Ldr->EntryPoint = DelayInitDllEntry;
     }
 
+#else
+    WriteLog(L"process-only: nlsApply=%u; DLL notifications, module entry replacement and non-process hooks disabled",
+             (ULONG)!LEP_DIAG_SKIP_NLS_APPLY);
+#endif
+
     WriteLog(L"init %p", Status);
 
     return Status;
 }
 
-NTSTATUS LepGlobalData::InitRegistryRedirection(PREGISTRY_REDIRECTION_ENTRY64 Entry64, ULONG_PTR Count, PVOID BaseAddress)
+NTSTATUS LepGlobalData::InitRegistryRedirection(PREGISTRY_REDIRECTION_ENTRY64 Entry64, ULONG_PTR Count, PVOID BaseAddress, ULONG_PTR BaseSize)
 {
     NTSTATUS    Status;
-    PLEPPEB      LEPPEB;
     PREGISTRY_REDIRECTION_ENTRY Entry;
 
     if (Count == 0)
         return STATUS_NO_MORE_ENTRIES;
-
-    LEPPEB = this->GetLepPeb();
 
 #pragma push_macro("USTR64ToUSTR")
 #undef USTR64ToUSTR
@@ -469,21 +475,33 @@ NTSTATUS LepGlobalData::InitRegistryRedirection(PREGISTRY_REDIRECTION_ENTRY64 En
         HANDLE          OriginalKey, RedirectedKey;
         UNICODE_STRING  KeyFullPath;
 
-        auto ValidSerializedString = [] (UNICODE_STRING64& String) -> BOOL
+        auto ValidSerializedString = [BaseSize] (UNICODE_STRING64& String) -> BOOL
         {
-            ULONG_PTR Offset = (ULONG_PTR)String.Buffer;
-            ULONG_PTR Length = String.MaximumLength;
-
+            ULONG64 Offset = (ULONG64)String.Buffer;
+            ULONG64 Length = String.MaximumLength;
+            if (String.Length > String.MaximumLength || (String.Length & 1) != 0)
+                return FALSE;
+            if (BaseSize == 0)
+                return TRUE;
             return (Offset == 0 && Length == 0) ||
-                   (Offset < 0x100000 && Length < 0x100000 && Offset + Length < 0x100000);
+                   (Offset <= BaseSize && Length <= BaseSize - Offset);
+        };
+
+        auto ValidSerializedData = [BaseSize] (PVOID64 Data, ULONG64 Size) -> BOOL
+        {
+            ULONG64 Offset = (ULONG64)Data;
+            if (BaseSize == 0)
+                return TRUE;
+            return (Offset == 0 && Size == 0) ||
+                   (Offset <= BaseSize && Size <= BaseSize - Offset);
         };
 
         if (!ValidSerializedString(Entry64->Original.SubKey) ||
             !ValidSerializedString(Entry64->Original.ValueName) ||
             !ValidSerializedString(Entry64->Redirected.SubKey) ||
             !ValidSerializedString(Entry64->Redirected.ValueName) ||
-            (ULONG_PTR)Entry64->Original.Data > 0x100000 ||
-            (ULONG_PTR)Entry64->Redirected.Data > 0x100000)
+            !ValidSerializedData(Entry64->Original.Data, Entry64->Original.DataSize) ||
+            !ValidSerializedData(Entry64->Redirected.Data, Entry64->Redirected.DataSize))
         {
             WriteLog(L"InitRegistryRedirection invalid serialized entry offset subkey=%p value=%p redir=%p/%p",
                 Entry64->Original.SubKey.Buffer, Entry64->Original.ValueName.Buffer,
@@ -631,6 +649,9 @@ PDLL_HOOK_ENTRY LookupDllHookEntry(PCUNICODE_STRING BaseDllName)
 
 VOID LepGlobalData::HookModule(PVOID DllBase, PCUNICODE_STRING DllName, BOOL DllLoad)
 {
+#if LEP_DIAG_PROCESS_ONLY
+    return;
+#endif
     PDLL_HOOK_ENTRY Entry;
 
     Entry = LookupDllHookEntry(DllName);
@@ -645,6 +666,9 @@ VOID LepGlobalData::HookModule(PVOID DllBase, PCUNICODE_STRING DllName, BOOL Dll
 
 VOID LepGlobalData::DllNotification(ULONG NotificationReason, PCLDR_DLL_NOTIFICATION_DATA NotificationData)
 {
+#if LEP_DIAG_PROCESS_ONLY
+    return;
+#endif
     NTSTATUS            Status;
     PVOID               DllBase;
     ULONG_PTR           Length;
@@ -697,14 +721,23 @@ NTSTATUS LepGlobalData::UnInitialize()
         DllNotificationCookie = nullptr;
     }
 
+#if !LEP_DIAG_PROCESS_ONLY
     UnHookGdi32Routines();
     UnHookUser32Routines();
     UnHookKernel32Routines();
     UnHookNtdllRoutines();
+#endif
 
     UnInstallHookPort();
 
     RtlFreeUnicodeString(&SystemDirectory);
+
+    if (OwnBootstrapPayload && BootstrapPayload != nullptr)
+    {
+        FreeMemory(BootstrapPayload);
+        BootstrapPayload = nullptr;
+        OwnBootstrapPayload = FALSE;
+    }
 
     return 0;
 }
@@ -792,37 +825,33 @@ VOID GenerateModuleList(ml::String &ModuleNames)
     }
 }
 
-BOOL Initialize(PVOID BaseAddress)
+BOOL Initialize(PVOID BaseAddress, PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload = nullptr)
 {
     NTSTATUS            Status;
     PLDR_MODULE         Kernel32;
     PLepGlobalData       GlobalData;
     BOOL                IsLoader;
-    BOOL                CurrentProcessLepPebSectionPresent;
-    PLEPPEB              ExistingLepPeb;
+    BOOL                OwnBootstrapPayload;
+    BOOL                BootstrapPayloadPresent;
+    PTEB_ACTIVE_FRAME   LoaderFrame;
 
     ml::MlInitialize();
 
-    IsLoader = FindThreadFrame(LEP_LOADER_PROCESS) != nullptr;
-    CurrentProcessLepPebSectionPresent = FALSE;
-    ExistingLepPeb = nullptr;
-    if (!IsLoader)
+    LoaderFrame = FindThreadFrame(LEP_LOADER_PROCESS);
+    IsLoader = LoaderFrame != nullptr;
+    OwnBootstrapPayload = FALSE;
+    if (BootstrapPayload == nullptr && LoaderFrame != nullptr)
     {
-        // The injector creates the per-process LEP section before loading this
-        // DLL. Its presence marks an intentional preinitialized load path,
-        // whether the injector is direct, same-architecture, or cross-architecture.
-        ExistingLepPeb = OpenOrCreateLepPeb();
-        if (ExistingLepPeb != nullptr)
+        BootstrapPayload = (PLEP_BOOTSTRAP_PAYLOAD)LoaderFrame->Data;
+        if (LepValidateBootstrapPayload(BootstrapPayload))
         {
-            CurrentProcessLepPebSectionPresent = TRUE;
-            CloseLepPeb(ExistingLepPeb);
+            OwnBootstrapPayload = TRUE;
         }
     }
-    WriteLog(L"initialize entry loader=%u currentProcessLepPebSectionPresent=%u",
-             IsLoader, CurrentProcessLepPebSectionPresent);
+    BootstrapPayloadPresent = LepValidateBootstrapPayload(BootstrapPayload);
     LEP_DIAG_HERE_IF(!IsLoader, L"Initialize entry");
 
-    if (!IsLoader && !CurrentProcessLepPebSectionPresent)
+    if (!IsLoader && !BootstrapPayloadPresent)
     {
         Kernel32 = GetKernel32Ldr();
         if (Kernel32 != nullptr && FLAG_ON(Kernel32->Flags, LDRP_PROCESS_ATTACH_CALLED))
@@ -834,10 +863,13 @@ BOOL Initialize(PVOID BaseAddress)
             return FALSE;
         }
     }
-    else if (CurrentProcessLepPebSectionPresent)
+    else if (BootstrapPayloadPresent)
     {
-        WriteLog(L"late initialization accepted: current process LEPPEB section already exists");
+        WriteLog(L"initialization accepted: bootstrap payload is present");
     }
+
+    if (!BootstrapPayloadPresent)
+        return FALSE;
 
     LdrDisableThreadCalloutsForDll(BaseAddress);
 
@@ -848,16 +880,30 @@ BOOL Initialize(PVOID BaseAddress)
         return FALSE;
     }
 
+    if (OwnBootstrapPayload)
+        LoaderFrame->Data = 0;
+
     LepSetGlobalData(GlobalData);
 
 #if ENABLE_LOG
-    InitLog(GlobalData->LogFile);
-    WriteLog(L"initialize entry loader=%u currentProcessLepPebSectionPresent=%u",
-             IsLoader, CurrentProcessLepPebSectionPresent);
+    InitLog(GlobalData->LogFile, BootstrapPayload);
+    WriteLog(L"diagnostic skipChatChildInjection=%u", (ULONG)LEP_DIAG_SKIP_CHAT_CHILD_INJECTION);
+    WriteLog(L"diagnostic chatChildRestoreOnly=%u", (ULONG)LEP_DIAG_CHAT_CHILD_RESTORE_ONLY);
+    WriteLog(L"diagnostic chatChildNoLdrPatch=%u", (ULONG)LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH);
+    WriteLog(L"process identity pid=%u tid=%u bits=%u processOnly=%u nlsApply=%u",
+             (ULONG)CurrentPid(), (ULONG)CurrentTid(), (ULONG)(sizeof(PVOID) * 8),
+             (ULONG)LEP_DIAG_PROCESS_ONLY, (ULONG)!LEP_DIAG_SKIP_NLS_APPLY);
+    if (LepCurrentPeb()->ProcessParameters != nullptr)
+    {
+        const UNICODE_STRING& CommandLine = LepCurrentPeb()->ProcessParameters->CommandLine;
+        LepLogUnicodeString(L"process commandLine:", CommandLine);
+    }
+    WriteLog(L"initialize entry loader=%u bootstrapPayloadPresent=%u payloadSize=%u",
+             IsLoader, BootstrapPayloadPresent, BootstrapPayload->TotalSize);
 #endif
 
     WriteLog(L"GlobalData.Initialize begin");
-    Status = GlobalData->Initialize();
+    Status = GlobalData->Initialize(BootstrapPayload, OwnBootstrapPayload);
     WriteLog(L"GlobalData.Initialize end status=%08X", Status);
     if (NT_FAILED(Status))
     {
@@ -867,16 +913,19 @@ BOOL Initialize(PVOID BaseAddress)
         return FALSE;
     }
 
-    // Record the effective values that child processes must observe.  The
-    // first NtInitializeNlsFiles result is the host locale by design; these
-    // fields show the post-LEP values after NLS tables and TEB state are set.
-    WriteLog(L"effective locale=%u originalLocale=%p acp=%u oemcp=%u tebLocale=%u",
+    // Configuration is still propagated when NLS application is disabled;
+    // do not label configured values as the effective process state.
+    WriteLog(L"configured locale=%u originalLocale=%p acp=%u oemcp=%u tebLocale=%u",
              GlobalData->GetLepb()->LocaleID,
-             GlobalData->GetLepPeb()->OriginalLocaleID,
+             GlobalData->GetRuntimeState()->OriginalLocaleID,
              GlobalData->GetLepb()->AnsiCodePage,
              GlobalData->GetLepb()->OemCodePage,
              (ULONG)CurrentTeb()->CurrentLocale);
 
+    WriteLog(L"observed ntdllAcp=%u nlsApply=%u", (ULONG)NlsAnsiCodePage, (ULONG)!LEP_DIAG_SKIP_NLS_APPLY);
+    WriteLog(L"init complete pid=%u tid=%u processOnly=%u nlsApply=%u status=%08X",
+             (ULONG)CurrentPid(), (ULONG)CurrentTid(), (ULONG)LEP_DIAG_PROCESS_ONLY,
+             (ULONG)!LEP_DIAG_SKIP_NLS_APPLY, Status);
     WriteLog(L"init ret");
 
     return TRUE;

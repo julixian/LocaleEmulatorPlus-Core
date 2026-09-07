@@ -6014,7 +6014,7 @@ PVOID LookupImportTable(PVOID ImageBase, PCSTR DllName, PCSTR RoutineName)
 
 PVOID LookupExportTable(PVOID ImageBase, ULONG Hash)
 {
-    ULONG RoutineRVA = (ULONG)IMAGE_INVALID_RVA;
+    ULONG_PTR RoutineRVA = IMAGE_INVALID_RVA;
 
     WalkExportTableT(ImageBase,
         WalkEATCallbackM(Data)
@@ -9801,7 +9801,10 @@ GOT_HOOK_ADDRESS_AND_SIZE:
                 if (OpSize != 0)
                     return STATUS_BUFFER_TOO_SMALL;
 
-                Buffer = *(PBYTE *)(Buffer + Length + *(PLONG)&Buffer[2]);
+                // The RIP-relative displacement is a signed 32-bit value.
+                // Sign-extend it before 64-bit pointer arithmetic; otherwise a
+                // negative displacement is interpreted as roughly +4 GiB.
+                Buffer = *(PBYTE *)(Buffer + Length + (LONG_PTR)*(PLONG)&Buffer[2]);
                 *FinalAddress = Buffer;
                 continue;
 #endif // arch

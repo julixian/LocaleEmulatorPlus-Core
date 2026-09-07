@@ -11,10 +11,13 @@ set "TARGET=%~1"
 if "%TARGET%"=="" set "TARGET=all"
 
 if not defined EXTRA_CL set "EXTRA_CL=/DENABLE_LOG=1"
+if not defined LEP_DEPLOY_DIR set "LEP_DEPLOY_DIR=D:\GALGAME\GALGAMETOOLS\LocaleEmulatorPlus"
 
 if /I "%TARGET%"=="all" (
-  call "%~f0" x86 || exit /b 1
-  call "%~f0" x64 || exit /b 1
+  call "%~f0" x86
+  if errorlevel 1 exit /b !errorlevel!
+  call "%~f0" x64
+  if errorlevel 1 exit /b !errorlevel!
   exit /b 0
 )
 
@@ -143,6 +146,14 @@ popd
   %LIBPATHS% /nodefaultlib /debug:none /opt:ref /ignore:4254 %SAFESEH% /manifest:no /machine:%MACHINE% /subsystem:windows ^
   %ALT_UNDOC% ^
   "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" "%LIBOUT%\ntdll_vsnprintf.lib" kernel32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
+
+if exist "%LEP_DEPLOY_DIR%\." (
+  copy /y "%OUT%\%LEP_DLL%" "%LEP_DEPLOY_DIR%\%LEP_DLL%" >nul || exit /b 1
+  copy /y "%OUT%\%LOADER_DLL%" "%LEP_DEPLOY_DIR%\%LOADER_DLL%" >nul || exit /b 1
+  echo Copied DLLs to "%LEP_DEPLOY_DIR%"
+) else (
+  echo Deployment directory "%LEP_DEPLOY_DIR%" does not exist; skipped copy.
+)
 
 echo.
 echo [%TARGET%] Build succeeded.

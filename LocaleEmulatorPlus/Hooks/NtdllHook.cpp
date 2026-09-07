@@ -1,7 +1,7 @@
 ﻿#include "stdafx.h"
 #include "../../LoaderDll/BrokerProtocol.h"
 
-extern BOOL Initialize(PVOID BaseAddress);
+extern BOOL Initialize(PVOID BaseAddress, PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload = nullptr);
 
 typedef struct
 {
@@ -10,6 +10,8 @@ typedef struct
     WCHAR   Version16Name[1];
 
 } IMAGE_VERSION_INFO_DATA_ENTRY, *PIMAGE_VERSION_INFO_DATA_ENTRY;
+
+EXTC __declspec(dllexport) LEP_FIRST_DLL_BOOTSTRAP_DATA LepFirstDllBootstrapData = {};
 
 #if !ML_AMD64
 PVOID SearchLdrInitNtContinue()
@@ -76,15 +78,130 @@ static BOOL LepBuildLoaderPath(PCWSTR CorePath, BOOL TargetWow64, PWSTR Destinat
     return TRUE;
 }
 
-NTSTATUS LepGlobalData::InjectCrossArchitecture(ULONG_PTR ExtraSize, BOOL CurrentWow64, PCLIENT_ID Cid, BOOL TargetWow64, ULONG InjectionFlags)
+NTSTATUS LepGlobalData::BuildBootstrapPayload(
+    PCWSTR FullPath,
+    PLEP_BOOTSTRAP_PAYLOAD* Payload,
+    PULONG PayloadSize
+)
 {
-    // ExtraSize is the bytes after LEPB's inline RegistryReplacement[1].
-    // Reserve a little extra room while serializing.  The live registry
-    // strings can have allocator-specific lengths, so the wire size is
-    // finalized from the bytes actually written below.
-    ULONG_PTR PayloadCapacity = sizeof(LEPB) + ExtraSize + 0x1000;
-    ULONG_PTR PayloadSize = sizeof(LEPB) + ExtraSize;
-    ULONG_PTR ConfigSize = FIELD_OFFSET(LEP_BROKER_CONFIG, Environment) + PayloadCapacity;
+    if (FullPath == nullptr || Payload == nullptr || PayloadSize == nullptr)
+        return STATUS_INVALID_PARAMETER;
+
+    ULONG_PTR EntryCount = this->RegistryRedirectionEntry.GetSize();
+    ULONG64 EnvironmentSize64 = FIELD_OFFSET(LEPB, RegistryReplacement) +
+                                EntryCount * sizeof(REGISTRY_REDIRECTION_ENTRY64);
+    PREGISTRY_REDIRECTION_ENTRY Entry;
+    FOR_EACH_VEC(Entry, this->RegistryRedirectionEntry)
+    {
+        if (Entry->Original.SubKey.GetSize() > USHRT_MAX ||
+            Entry->Original.ValueName.GetSize() > USHRT_MAX ||
+            Entry->Redirected.SubKey.GetSize() > USHRT_MAX ||
+            Entry->Redirected.ValueName.GetSize() > USHRT_MAX)
+        {
+            return STATUS_NAME_TOO_LONG;
+        }
+        EnvironmentSize64 += Entry->Original.SubKey.GetSize() + sizeof(WCHAR);
+        EnvironmentSize64 += Entry->Original.ValueName.GetSize() + sizeof(WCHAR);
+        EnvironmentSize64 += Entry->Redirected.SubKey.GetSize() + sizeof(WCHAR);
+        EnvironmentSize64 += Entry->Redirected.ValueName.GetSize() + sizeof(WCHAR);
+        EnvironmentSize64 += Entry->Redirected.DataSize;
+    }
+    if (EntryCount > 0x10000 || EnvironmentSize64 > LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE)
+        return STATUS_BUFFER_OVERFLOW;
+
+    ULONG EnvironmentSize = (ULONG)EnvironmentSize64;
+    PLEPB Environment = (PLEPB)AllocateMemoryP(EnvironmentSize);
+    if (Environment == nullptr)
+        return STATUS_NO_MEMORY;
+    ZeroMemory(Environment, EnvironmentSize);
+
+    CopyMemory(Environment, GetLepb(), FIELD_OFFSET(LEPB, NumberOfRegistryRedirectionEntries));
+    Environment->NumberOfRegistryRedirectionEntries = EntryCount;
+    PREGISTRY_REDIRECTION_ENTRY64 Entry64 = Environment->RegistryReplacement;
+    PBYTE Buffer = (PBYTE)(Entry64 + EntryCount);
+
+    auto StringToUnicode64 = [&] (UNICODE_STRING64& Ustr64, ml::String& String)
+    {
+        ULONG Length = (ULONG)String.GetSize();
+        Ustr64.Length = (USHORT)Length;
+        Ustr64.MaximumLength = (USHORT)Length;
+        Ustr64.Dummy = PtrOffset(Buffer, Environment);
+        CopyMemory(Buffer, (PWSTR)String, Length);
+        Buffer += Length;
+        *(PWCHAR)Buffer = 0;
+        Buffer += sizeof(WCHAR);
+    };
+
+    FOR_EACH_VEC(Entry, this->RegistryRedirectionEntry)
+    {
+        Entry64->Original.Root = (ULONG64)Entry->Original.Root;
+        Entry64->Original.DataType = (ULONG)Entry->Original.DataType;
+        StringToUnicode64(Entry64->Original.SubKey, Entry->Original.SubKey);
+        StringToUnicode64(Entry64->Original.ValueName, Entry->Original.ValueName);
+
+        Entry64->Redirected.Root = (ULONG64)Entry->Redirected.Root;
+        Entry64->Redirected.DataType = (ULONG)Entry->Redirected.DataType;
+        StringToUnicode64(Entry64->Redirected.SubKey, Entry->Redirected.SubKey);
+        StringToUnicode64(Entry64->Redirected.ValueName, Entry->Redirected.ValueName);
+        if (Entry->Redirected.Data != nullptr && Entry->Redirected.DataSize != 0)
+        {
+            Entry64->Redirected.Data = (PVOID64)PtrOffset(Buffer, Environment);
+            Entry64->Redirected.DataSize = Entry->Redirected.DataSize;
+            CopyMemory(Buffer, Entry->Redirected.Data, Entry->Redirected.DataSize);
+            Buffer += Entry->Redirected.DataSize;
+        }
+        ++Entry64;
+    }
+
+    WCHAR DirPath[MAX_NTPATH];
+    ULONG_PTR FullPathLength = StrLengthW(FullPath);
+    if (FullPathLength + 1 > countof(DirPath))
+    {
+        FreeMemoryP(Environment);
+        return STATUS_NAME_TOO_LONG;
+    }
+    CopyMemory(DirPath, FullPath, (FullPathLength + 1) * sizeof(WCHAR));
+    for (ULONG_PTR Index = FullPathLength; Index != 0; --Index)
+    {
+        if (DirPath[Index - 1] == L'\\')
+        {
+            DirPath[Index] = 0;
+            break;
+        }
+    }
+
+    ULONG Required = LepBootstrapPayloadSize(EnvironmentSize, FullPath, DirPath);
+    if (Required == 0)
+    {
+        FreeMemoryP(Environment);
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    PLEP_BOOTSTRAP_PAYLOAD LocalPayload = (PLEP_BOOTSTRAP_PAYLOAD)AllocateMemoryP(Required);
+    if (LocalPayload == nullptr)
+    {
+        FreeMemoryP(Environment);
+        return STATUS_NO_MEMORY;
+    }
+
+    NTSTATUS Status = LepBuildBootstrapPayload(LocalPayload, Required, Environment,
+                                               EnvironmentSize, FullPath, DirPath);
+    FreeMemoryP(Environment);
+    if (NT_FAILED(Status))
+    {
+        FreeMemoryP(LocalPayload);
+        return Status;
+    }
+
+    *Payload = LocalPayload;
+    *PayloadSize = Required;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS LepGlobalData::InjectCrossArchitecture(BOOL CurrentWow64, PCLIENT_ID Cid, BOOL TargetWow64, ULONG InjectionFlags)
+{
+    ULONG_PTR ConfigSize;
+    ULONG PayloadSize;
+    PLEP_BOOTSTRAP_PAYLOAD Payload;
     WCHAR MappingName[128], CorePath[MAX_NTPATH], LoaderPath[MAX_NTPATH], WindowsPath[MAX_NTPATH];
     WCHAR RundllPath[MAX_NTPATH], CommandLine[2048];
     HANDLE Mapping;
@@ -96,23 +213,32 @@ NTSTATUS LepGlobalData::InjectCrossArchitecture(ULONG_PTR ExtraSize, BOOL Curren
     BOOL Created;
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
 
-    WriteLog(L"cross-arch begin pid=%u currentWow64=%u targetWow64=%u flags=%08X extra=%p", ProcessId, CurrentWow64, TargetWow64, InjectionFlags, ExtraSize);
-    if (ExtraSize > 0x100000 || ConfigSize > 0x7FFFFFFF)
-    {
-        WriteLog(L"cross-arch config too large extra=%p", ExtraSize);
-        return STATUS_BUFFER_OVERFLOW;
-    }
-    PLEPPEB CurrentPeb = this->GetLepPeb();
-    if (!LepBuildArchitecturePath(CurrentPeb->LepDllFullPath, TargetWow64, CorePath, countof(CorePath)) ||
+    Payload = nullptr;
+    PayloadSize = 0;
+    WriteLog(L"cross-arch begin pid=%u currentWow64=%u targetWow64=%u flags=%08X", ProcessId, CurrentWow64, TargetWow64, InjectionFlags);
+    if (!LepBuildArchitecturePath(GetLepDllFullPath(), TargetWow64, CorePath, countof(CorePath)) ||
         !LepBuildLoaderPath(CorePath, TargetWow64, LoaderPath, countof(LoaderPath)))
     {
-        WriteLog(L"cross-arch path derivation failed source=%ws", CurrentPeb->LepDllFullPath);
+        WriteLog(L"cross-arch path derivation failed source=%ws", GetLepDllFullPath());
         return STATUS_OBJECT_PATH_INVALID;
     }
     if (GetFileAttributesW(CorePath) == INVALID_FILE_ATTRIBUTES || GetFileAttributesW(LoaderPath) == INVALID_FILE_ATTRIBUTES)
     {
         WriteLog(L"cross-arch module missing core=%ws loader=%ws error=%u", CorePath, LoaderPath, GetLastError());
         return STATUS_DLL_NOT_FOUND;
+    }
+
+    Status = BuildBootstrapPayload(CorePath, &Payload, &PayloadSize);
+    if (NT_FAILED(Status))
+    {
+        WriteLog(L"cross-arch payload build failed status=%08X", Status);
+        return Status;
+    }
+    ConfigSize = FIELD_OFFSET(LEP_BROKER_CONFIG, Payload) + PayloadSize;
+    if (ConfigSize > 0x7FFFFFFF)
+    {
+        FreeMemoryP(Payload);
+        return STATUS_BUFFER_OVERFLOW;
     }
 
     wsprintfW(MappingName, L"Local\\LEP_BROKER_%u_%u", ProcessId, GetCurrentProcessId());
@@ -125,6 +251,7 @@ NTSTATUS LepGlobalData::InjectCrossArchitecture(ULONG_PTR ExtraSize, BOOL Curren
     {
         Error = GetLastError();
         WriteLog(L"cross-arch CreateFileMapping failed=%u", Error);
+        FreeMemoryP(Payload);
         return ML_NTSTATUS_FROM_WIN32(Error);
     }
     Config = (PLEP_BROKER_CONFIG)MapViewOfFile(Mapping, FILE_MAP_WRITE, 0, 0, ConfigSize);
@@ -133,78 +260,21 @@ NTSTATUS LepGlobalData::InjectCrossArchitecture(ULONG_PTR ExtraSize, BOOL Curren
         Error = GetLastError();
         WriteLog(L"cross-arch MapViewOfFile failed=%u", Error);
         CloseHandle(Mapping);
+        FreeMemoryP(Payload);
         return ML_NTSTATUS_FROM_WIN32(Error);
     }
     ZeroMemory(Config, ConfigSize);
     Config->Magic = LEP_BROKER_CONFIG_MAGIC;
     Config->Version = LEP_BROKER_CONFIG_VERSION;
     Config->Size = (ULONG)ConfigSize;
-    Config->ExtraSize = (ULONG)ExtraSize;
+    Config->PayloadSize = PayloadSize;
     Config->Result = STATUS_UNSUCCESSFUL;
     Config->ThreadId = (ULONG)(ULONG_PTR)Cid->UniqueThread;
     Config->InjectionFlags = InjectionFlags;
-    CopyMemory(Config->DllPath, CorePath, ML_MIN(sizeof(Config->DllPath) - sizeof(WCHAR), (StrLengthW(CorePath) + 1) * sizeof(WCHAR)));
-    // Rebuild the architecture-neutral registry payload. The live LEPB may
-    // contain process-local pointers on some launch paths.
-    CopyMemory(&Config->Environment, &CurrentPeb->LEPB,
-               FIELD_OFFSET(LEPB, NumberOfRegistryRedirectionEntries));
-    Config->Environment.NumberOfRegistryRedirectionEntries =
-        this->RegistryRedirectionEntry.GetSize();
-    PREGISTRY_REDIRECTION_ENTRY64 Entry64 = &Config->Environment.RegistryReplacement[0];
-    PBYTE Buffer = (PBYTE)(Entry64 + Config->Environment.NumberOfRegistryRedirectionEntries);
-    auto StringToUnicode64 = [&] (UNICODE_STRING64& Ustr64, ml::String& String)
-    {
-        ULONG Length = (ULONG)String.GetSize();
-        Ustr64.Length = (USHORT)Length;
-        Ustr64.MaximumLength = (USHORT)Length;
-        Ustr64.Dummy = PtrOffset(Buffer, &Config->Environment);
-        CopyMemory(Buffer, (PWSTR)String, Length);
-        Buffer += Length;
-        *Buffer++ = 0;
-        *Buffer++ = 0;
-    };
-    PREGISTRY_REDIRECTION_ENTRY Entry;
-    FOR_EACH_VEC(Entry, this->RegistryRedirectionEntry)
-    {
-        Entry64->Original.Root = (ULONG64)Entry->Original.Root;
-        Entry64->Original.DataType = (ULONG)Entry->Original.DataType;
-        Entry64->Original.Data = 0;
-        Entry64->Original.DataSize = 0;
-        StringToUnicode64(Entry64->Original.SubKey, Entry->Original.SubKey);
-        StringToUnicode64(Entry64->Original.ValueName, Entry->Original.ValueName);
-
-        Entry64->Redirected.Root = (ULONG64)Entry->Redirected.Root;
-        Entry64->Redirected.DataType = (ULONG)Entry->Redirected.DataType;
-        Entry64->Redirected.Data = 0;
-        Entry64->Redirected.DataSize = 0;
-        StringToUnicode64(Entry64->Redirected.SubKey, Entry->Redirected.SubKey);
-        StringToUnicode64(Entry64->Redirected.ValueName, Entry->Redirected.ValueName);
-        if (Entry->Redirected.Data != nullptr && Entry->Redirected.DataSize != 0)
-        {
-            Entry64->Redirected.Data = (PVOID64)PtrOffset(Buffer, &Config->Environment);
-            Entry64->Redirected.DataSize = Entry->Redirected.DataSize;
-            CopyMemory(Buffer, Entry->Redirected.Data, Entry->Redirected.DataSize);
-            Buffer += Entry->Redirected.DataSize;
-        }
-        ++Entry64;
-    }
-    ULONG PayloadWritten = (ULONG)(Buffer - (PBYTE)&Config->Environment);
-    ULONG PayloadExpected = (ULONG)PayloadSize;
-    WriteLog(L"cross-arch payload serialized entries=%u bytes=%u estimated=%u capacity=%u extra=%u",
-             (ULONG)Config->Environment.NumberOfRegistryRedirectionEntries,
-             PayloadWritten, PayloadExpected, (ULONG)PayloadCapacity, Config->ExtraSize);
-    if ((ULONG_PTR)PayloadWritten > PayloadCapacity)
-    {
-        WriteLog(L"cross-arch payload exceeds reserved capacity written=%u capacity=%u", PayloadWritten, (ULONG)PayloadCapacity);
-        UnmapViewOfFile(Config);
-        CloseHandle(Mapping);
-        return STATUS_BUFFER_TOO_SMALL;
-    }
-    // Publish the exact wire size to the broker.  This prevents truncation
-    // when a string representation differs from the initial estimate.
-    Config->ExtraSize = PayloadWritten - sizeof(LEPB);
-    Config->Size = FIELD_OFFSET(LEP_BROKER_CONFIG, Environment) + PayloadWritten;
-    WriteLog(L"cross-arch payload size verified bytes=%u extra=%u", PayloadWritten, Config->ExtraSize);
+    CopyMemory(Config->Payload, Payload, PayloadSize);
+    FreeMemoryP(Payload);
+    Payload = nullptr;
+    WriteLog(L"cross-arch payload serialized bytes=%u", PayloadSize);
     WriteLog(L"cross-arch mapping ready name=%ws size=%u loader=%ws core=%ws", MappingName,
              (ULONG)ConfigSize, LoaderPath, CorePath);
 
@@ -345,12 +415,143 @@ NTSTATUS QueryRegKeyFullPath(HANDLE Key, PUNICODE_STRING KeyFullPath)
     return Status;
 }
 
-NoInline PVOID FASTCALL LoadSelfAsFirstDll(PVOID ReturnAddress)
+static PCWSTR LepBootstrapStageName(ULONG Stage)
 {
-    PVOID   BaseToFree;
-    PLEPPEB  LEPPEB;
+    switch (Stage)
+    {
+        case LepBootstrapStageValidateMetadata:  return L"validate-metadata";
+        case LepBootstrapStageRestoreLdrLoadDll: return L"restore-ldr-load-dll";
+        case LepBootstrapStageRestoreProtection: return L"restore-protection";
+        case LepBootstrapStageInitialize:        return L"initialize";
+        case LepBootstrapStageComplete:          return L"complete";
+        default:                                 return L"bootstrap-entry";
+    }
+}
+
+static VOID LepWriteBootstrapFailureLog(ULONG Stage, NTSTATUS Status, PCUNICODE_STRING ModuleFileName)
+{
+#if ENABLE_LOG
+    WCHAR DosPath[MAX_NTPATH];
+    WCHAR NtPath[MAX_NTPATH + 4];
+    ULONG_PTR Offset, Length, ProcessId;
+    NtFileDisk LogFile;
+
+    PLEP_BOOTSTRAP_PAYLOAD Payload = nullptr;
+    if (LepFirstDllBootstrapData.PayloadOffset <= LEP_BOOTSTRAP_IMAGE_MAX_SIZE &&
+        LepFirstDllBootstrapData.PayloadSize >= sizeof(LEP_BOOTSTRAP_PAYLOAD) &&
+        LepFirstDllBootstrapData.PayloadSize <= LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE)
+    {
+        Payload = (PLEP_BOOTSTRAP_PAYLOAD)PtrAdd(&__ImageBase, LepFirstDllBootstrapData.PayloadOffset);
+    }
+    PCWSTR Directory = LepBootstrapDllDirPath(Payload);
+    if (Directory == nullptr)
+        return;
+
+    Length = ML_MIN(StrLengthW(Directory), countof(DosPath) - 1);
+    CopyMemory(DosPath, Directory, Length * sizeof(WCHAR));
+    Offset = Length;
+    if (Offset != 0 && DosPath[Offset - 1] != L'\\')
+        DosPath[Offset++] = L'\\';
+
+    static const WCHAR Prefix[] = L"LEP-bootstrap-";
+    Length = ML_MIN(CONST_STRLEN(Prefix), countof(DosPath) - Offset - 1);
+    CopyMemory(&DosPath[Offset], Prefix, Length * sizeof(WCHAR));
+    Offset += Length;
+
+    ProcessId = CurrentPid();
+    for (LONG_PTR Shift = bitsof(ProcessId) - 4; Shift >= 0 && Offset + 1 < countof(DosPath); Shift -= 4)
+    {
+        ULONG_PTR Digit = (ProcessId >> Shift) & 0xF;
+        if (Digit == 0 && Offset != 0 && DosPath[Offset - 1] == L'-' && Shift != 0)
+            continue;
+        DosPath[Offset++] = (WCHAR)(Digit < 10 ? L'0' + Digit : L'A' + Digit - 10);
+    }
+
+    static const WCHAR Suffix[] = L".log.txt";
+    Length = ML_MIN(CONST_STRLEN(Suffix), countof(DosPath) - Offset - 1);
+    CopyMemory(&DosPath[Offset], Suffix, Length * sizeof(WCHAR));
+    Offset += Length;
+    DosPath[Offset] = 0;
+
+    static const WCHAR NtPrefix[] = L"\\??\\";
+    CopyMemory(NtPath, NtPrefix, sizeof(NtPrefix) - sizeof(WCHAR));
+    Length = ML_MIN((Offset + 1) * sizeof(WCHAR), sizeof(NtPath) - sizeof(NtPrefix) + sizeof(WCHAR));
+    CopyMemory(&NtPath[countof(NtPrefix) - 1], DosPath, Length);
+
+    NTSTATUS LogStatus = LogFile.Create(
+        NtPath,
+        NFD_NOT_RESOLVE_PATH,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        GENERIC_WRITE,
+        FILE_OVERWRITE_IF,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SYNCHRONOUS_IO_NONALERT
+    );
+    if (NT_FAILED(LogStatus))
+        return;
+
+    ULONG Bom = BOM_UTF16_LE;
+    LogFile.Write(&Bom, 2);
+    LogFile.Print(nullptr, L"pid=%u stage=%ws status=%08X\r\n", (ULONG)ProcessId,
+                  LepBootstrapStageName(Stage), Status);
+    if (ModuleFileName != nullptr && ModuleFileName->Buffer != nullptr)
+    {
+        LogFile.Write((PVOID)L"module=", 7 * sizeof(WCHAR));
+        LogFile.Write(ModuleFileName->Buffer, ModuleFileName->Length);
+        LogFile.Write((PVOID)L"\r\n", 2 * sizeof(WCHAR));
+    }
+#else
+    UNREFERENCED_PARAMETER(Stage);
+    UNREFERENCED_PARAMETER(Status);
+    UNREFERENCED_PARAMETER(ModuleFileName);
+#endif
+}
+
+NoInline PVOID FASTCALL LoadSelfAsFirstDll(PVOID ReturnAddress, NTSTATUS* BootstrapStatus, PULONG BootstrapStage)
+{
+    PVOID BaseToFree;
+    PLEP_BOOTSTRAP_PAYLOAD Payload;
 
     BaseToFree = nullptr;
+    Payload = nullptr;
+    *BootstrapStage = LepBootstrapStageValidateMetadata;
+
+    if (LepFirstDllBootstrapData.Magic != LEP_FIRST_DLL_BOOTSTRAP_MAGIC ||
+        LepFirstDllBootstrapData.LdrLoadDllAddress == nullptr ||
+        LepFirstDllBootstrapData.BackupSize == 0 ||
+        LepFirstDllBootstrapData.BackupSize > sizeof(LepFirstDllBootstrapData.Backup) ||
+        LepFirstDllBootstrapData.PayloadOffset == 0 ||
+        LepFirstDllBootstrapData.PayloadOffset > LEP_BOOTSTRAP_IMAGE_MAX_SIZE ||
+        LepFirstDllBootstrapData.PayloadSize < sizeof(LEP_BOOTSTRAP_PAYLOAD) ||
+        LepFirstDllBootstrapData.PayloadSize > LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE)
+    {
+        *BootstrapStatus = STATUS_INVALID_PARAMETER;
+        return nullptr;
+    }
+
+    *BootstrapStage = LepBootstrapStageRestoreLdrLoadDll;
+    // The parent leaves this page writable. Restore it with ordinary CPU
+    // stores before parsing the variable-length payload or initializing LEP.
+    for (ULONG Index = 0; Index != LepFirstDllBootstrapData.BackupSize; ++Index)
+    {
+        ((volatile BYTE*)LepFirstDllBootstrapData.LdrLoadDllAddress)[Index] =
+            LepFirstDllBootstrapData.Backup[Index];
+    }
+
+    ULONG IgnoredProtect;
+    *BootstrapStage = LepBootstrapStageRestoreProtection;
+    *BootstrapStatus = ProtectVirtualMemory(
+        LepFirstDllBootstrapData.LdrLoadDllAddress,
+        LepFirstDllBootstrapData.BackupSize,
+        LepFirstDllBootstrapData.OriginalProtect,
+        &IgnoredProtect,
+        CurrentProcess
+    );
+    if (NT_FAILED(*BootstrapStatus) ||
+        (LepFirstDllBootstrapData.InjectionFlags & LEP_INJECT_RESTORE_ONLY) != 0)
+    {
+        return nullptr;
+    }
 
 #if ML_AMD64 && defined(LEP_X64_ATTACH_SPIN)
     while (!CurrentPeb()->BeingDebugged)
@@ -361,45 +562,24 @@ NoInline PVOID FASTCALL LoadSelfAsFirstDll(PVOID ReturnAddress)
     }
 #endif
 
-    LOOP_ONCE
+    *BootstrapStage = LepBootstrapStageValidateMetadata;
+    Payload = (PLEP_BOOTSTRAP_PAYLOAD)PtrAdd(&__ImageBase, LepFirstDllBootstrapData.PayloadOffset);
+    if (LepFirstDllBootstrapData.PayloadOffset != ROUND_UP(ImageGetSizeOfImage(&__ImageBase), 16) ||
+        !LepValidateBootstrapPayload(Payload) ||
+        Payload->TotalSize != LepFirstDllBootstrapData.PayloadSize)
     {
-        PVOID DllHandle;
-
-        WriteLog(L"first LdrLoadDll entry return=%p", ReturnAddress);
-        LEPPEB = OpenOrCreateLepPeb();
-        if (LEPPEB == nullptr)
-        {
-            WriteLog(L"first LdrLoadDll shared state unavailable");
-            break;
-        }
-
-        NTSTATUS RestoreStatus = WriteProtectMemory(CurrentProcess, LEPPEB->LdrLoadDllAddress, LEPPEB->LdrLoadDllBackup, LEPPEB->LdrLoadDllBackupSize);
-        WriteLog(L"first LdrLoadDll restore status=%p flags=%08X", RestoreStatus, LEPPEB->InjectionFlags);
-
-        WriteLog(L"first LdrLoadDll Initialize begin");
-        if(!Initialize(&__ImageBase))
-        {
-            WriteLog(L"first LdrLoadDll Initialize failed");
-            break;
-        }
-        WriteLog(L"first LdrLoadDll Initialize end");
-
-        // UNICODE_STRING DllPath;
-
-        // RtlInitUnicodeString(&DllPath, LEPPEB->LepDllFullPath);
-
-        // if (NT_FAILED(LdrLoadDll(nullptr, nullptr, &DllPath, &DllHandle)))
-        // {
-            // CloseLepPeb(LEPPEB);
-            // break;
-        // }
-
-        // *(PULONG_PTR)_AddressOfReturnAddress() += PtrOffset(DllHandle, &__ImageBase);
-
-        CloseLepPeb(LEPPEB);
-
-        // BaseToFree = &__ImageBase;
+        *BootstrapStatus = STATUS_INVALID_PARAMETER;
+        return nullptr;
     }
+
+    *BootstrapStage = LepBootstrapStageInitialize;
+    if (!Initialize(&__ImageBase, Payload))
+    {
+        *BootstrapStatus = STATUS_DLL_INIT_FAILED;
+        return nullptr;
+    }
+
+    *BootstrapStage = LepBootstrapStageComplete;
 
     return BaseToFree;
 }
@@ -416,9 +596,17 @@ LoadFirstDll(
 {
     PVOID BaseToFree;
 
+    NTSTATUS BootstrapStatus = STATUS_SUCCESS;
+    ULONG BootstrapStage = LepBootstrapStageNone;
+
     WriteLog(L"LoadFirstDll module=%ws return=%p", ModuleFileName != nullptr ? ModuleFileName->Buffer : nullptr, _ReturnAddress());
 
-    BaseToFree = LoadSelfAsFirstDll(_ReturnAddress());
+    BaseToFree = LoadSelfAsFirstDll(_ReturnAddress(), &BootstrapStatus, &BootstrapStage);
+    if (NT_FAILED(BootstrapStatus))
+    {
+        LepWriteBootstrapFailureLog(BootstrapStage, BootstrapStatus, ModuleFileName);
+        return BootstrapStatus;
+    }
     // if (BaseToFree != nullptr)
         // Mm::FreeVirtualMemory(BaseToFree);
 
@@ -503,219 +691,145 @@ LepNtQueryInformationThread(
 
 NTSTATUS LepGlobalData::InjectSelfToChildProcess(HANDLE Process, PCLIENT_ID Cid, ULONG InjectionFlags)
 {
-    NTSTATUS    Status;
-    PVOID       SelfShadow, LocalSelfShadow, ShadowLoadFirstDll;
-    ULONG_PTR   SizeOfImage, ExtraSize;
-    PLEPPEB      TargetLepPeb, LEPPEB;
-    HANDLE      Section;
-    BYTE        Backup[LDR_LOAD_DLL_BACKUP_SIZE];
-    PVOID       LdrLoadDllAddress;
-    ULONG       StartTime;
-
-    // The broker itself is created through NtCreateUserProcess and must not be reinjected.
     if (FindThreadFrame(LEP_BROKER_LAUNCH_CONTEXT) != nullptr)
     {
         WriteLog(L"skip child injection while broker launch is active");
         return STATUS_SUCCESS;
     }
 
-    // Process = CurrentProcess;
-
     BOOL TargetWow64 = Ps::IsWow64Process(Process);
+    if (this->Wow64 != TargetWow64)
+        return this->InjectCrossArchitecture(this->Wow64, Cid, TargetWow64, InjectionFlags);
+
+    NTSTATUS Status = STATUS_SUCCESS;
+    ULONG StartTime = LepCurrentTimeMs();
+    PVOID SelfShadow = nullptr;
+    PVOID LocalSelfShadow = nullptr;
+    PLEP_BOOTSTRAP_PAYLOAD Payload = nullptr;
+    ULONG PayloadSize = 0;
+    ULONG_PTR ImageSize = 0;
+    ULONG_PTR PayloadOffset = 0;
+    PVOID LdrLoadDllAddress = GetRuntimeState()->LdrLoadDllAddress;
+    ULONG LdrLoadDllProtect = 0;
+    BOOL LdrLoadDllWritable = FALSE;
+    BYTE Backup[LDR_LOAD_DLL_BACKUP_SIZE];
+
     WriteLog(L"child injection begin pid=%u tid=%u currentWow64=%u targetWow64=%u flags=%08X",
              (ULONG)(ULONG_PTR)Cid->UniqueProcess, (ULONG)(ULONG_PTR)Cid->UniqueThread,
              this->Wow64, TargetWow64, InjectionFlags);
-    if (this->Wow64 != TargetWow64)
-    {
-        ULONG_PTR EntryCount = this->RegistryRedirectionEntry.GetSize();
-        ULONG_PTR ExtraSize = EntryCount > 0 ? (EntryCount - 1) * sizeof(REGISTRY_REDIRECTION_ENTRY64) : 0;
-        PREGISTRY_REDIRECTION_ENTRY Entry;
-        FOR_EACH_VEC(Entry, this->RegistryRedirectionEntry)
-        {
-            // Cross-architecture serialization carries redirected data only;
-            // original match data is intentionally represented by its type.
-            ExtraSize += Entry->Redirected.DataSize;
-            ExtraSize += 2 * sizeof(WCHAR) + Entry->Original.SubKey.GetSize() + Entry->Redirected.SubKey.GetSize();
-            ExtraSize += 2 * sizeof(WCHAR) + Entry->Original.ValueName.GetSize() + Entry->Redirected.ValueName.GetSize();
-        }
-        return this->InjectCrossArchitecture(ExtraSize, this->Wow64, Cid, TargetWow64, InjectionFlags);
-    }
 
-    LEPPEB = GetLepPeb();
-    StartTime = LepCurrentTimeMs();
-    SelfShadow = nullptr;
-    LocalSelfShadow = nullptr;
-    TargetLepPeb = nullptr;
-    LdrLoadDllAddress = LEPPEB->LdrLoadDllAddress;
+    if ((InjectionFlags & LEP_INJECT_PATCH_LDR_LOAD_DLL) != 0)
+    {
+        Status = ReadMemory(Process, LdrLoadDllAddress, Backup, sizeof(Backup));
+        if (NT_FAILED(Status))
+            goto INJECT_FINISH_NEW;
+        Status = ProtectVirtualMemory(LdrLoadDllAddress, sizeof(Backup), PAGE_EXECUTE_READWRITE,
+                                      &LdrLoadDllProtect, Process);
+        if (NT_FAILED(Status))
+            goto INJECT_FINISH_NEW;
+        LdrLoadDllWritable = TRUE;
+    }
 
     if ((InjectionFlags & LEP_INJECT_WRITE_SHADOW) != 0)
     {
-        SizeOfImage = ImageGetSizeOfImage(&__ImageBase);
-
-        Status = AllocVirtualMemoryEx(Process, &SelfShadow, SizeOfImage);
-        WriteLog(L"inject stage shadow alloc status=%p base=%p elapsed=%u", Status, SelfShadow, LepCurrentTimeMs() - StartTime);
+        Status = BuildBootstrapPayload(GetLepDllFullPath(), &Payload, &PayloadSize);
         if (NT_FAILED(Status))
-            return Status;
+            goto INJECT_FINISH_NEW;
 
-        Status = LoadPeImage(LEPPEB->LepDllFullPath, &LocalSelfShadow, nullptr, 0);
-        WriteLog(L"inject stage shadow load status=%p elapsed=%u", Status, LepCurrentTimeMs() - StartTime);
+        Status = LoadPeImage(GetLepDllFullPath(), &LocalSelfShadow, nullptr, 0);
         if (NT_FAILED(Status))
-            goto INJECT_FINISH;
+            goto INJECT_FINISH_NEW;
+
+        // The shadow contents come from the DLL currently on disk.  Derive the
+        // allocation and copy size from that same image: the injecting process
+        // may still have an older build loaded after an in-place deployment.
+        ImageSize = ImageGetSizeOfImage(LocalSelfShadow);
+        if (ImageSize > LEP_BOOTSTRAP_IMAGE_MAX_SIZE)
+        {
+            Status = STATUS_BUFFER_OVERFLOW;
+            goto INJECT_FINISH_NEW;
+        }
+        PayloadOffset = ROUND_UP(ImageSize, 16);
+        Status = AllocVirtualMemoryEx(Process, &SelfShadow, PayloadOffset + PayloadSize);
+        if (NT_FAILED(Status))
+            goto INJECT_FINISH_NEW;
 
         RelocPeImage(LocalSelfShadow, LocalSelfShadow, nullptr, SelfShadow);
 
-        Status = WriteMemory(Process, SelfShadow, LocalSelfShadow, SizeOfImage);
-        UnloadPeImage(LocalSelfShadow);
-        LocalSelfShadow = nullptr;
+        PLEP_FIRST_DLL_BOOTSTRAP_DATA BootstrapData = (PLEP_FIRST_DLL_BOOTSTRAP_DATA)
+            LookupExportTable(LocalSelfShadow, LEP_FIRST_DLL_BOOTSTRAP_EXPORT);
+        if (BootstrapData == nullptr)
+        {
+            Status = STATUS_ENTRYPOINT_NOT_FOUND;
+            goto INJECT_FINISH_NEW;
+        }
+        ZeroMemory(BootstrapData, sizeof(*BootstrapData));
+        BootstrapData->Magic = LEP_FIRST_DLL_BOOTSTRAP_MAGIC;
+        BootstrapData->InjectionFlags = InjectionFlags;
+        BootstrapData->PayloadOffset = (ULONG)PayloadOffset;
+        BootstrapData->PayloadSize = PayloadSize;
+        if ((InjectionFlags & LEP_INJECT_PATCH_LDR_LOAD_DLL) != 0)
+        {
+            BootstrapData->BackupSize = sizeof(Backup);
+            BootstrapData->OriginalProtect = LdrLoadDllProtect;
+            BootstrapData->LdrLoadDllAddress = LdrLoadDllAddress;
+            CopyMemory(BootstrapData->Backup, Backup, sizeof(Backup));
+        }
 
-        WriteLog(L"inject stage shadow write status=%p elapsed=%u", Status, LepCurrentTimeMs() - StartTime);
-
+        Status = WriteMemory(Process, SelfShadow, LocalSelfShadow, ImageSize);
+        if (NT_SUCCESS(Status))
+            Status = WriteMemory(Process, PtrAdd(SelfShadow, PayloadOffset), Payload, PayloadSize);
         if (NT_FAILED(Status))
-            goto INJECT_FINISH;
-    }
-
-    if ((InjectionFlags & LEP_INJECT_CREATE_SHARED_PEB) == 0)
-    {
-        Status = STATUS_SUCCESS;
-        goto INJECT_FINISH;
-    }
-
-    ExtraSize = this->RegistryRedirectionEntry.GetSize() * sizeof(TargetLepPeb->LEPB.RegistryReplacement[0]);
-    if (ExtraSize != 0)
-    {
-        PREGISTRY_REDIRECTION_ENTRY Entry;
-        FOR_EACH_VEC(Entry, this->RegistryRedirectionEntry)
-        {
-            ExtraSize += Entry->Redirected.DataSize;
-            ExtraSize += 2 * sizeof(WCHAR) + Entry->Original.SubKey.GetSize()    + Entry->Redirected.SubKey.GetSize();
-            ExtraSize += 2 * sizeof(WCHAR) + Entry->Original.ValueName.GetSize() + Entry->Redirected.ValueName.GetSize();
-        }
-    }
-
-    TargetLepPeb = OpenOrCreateLepPeb((ULONG_PTR)Cid->UniqueProcess, TRUE, ExtraSize);
-    WriteLog(L"inject stage shared state extra=%p result=%p elapsed=%u", ExtraSize, TargetLepPeb, LepCurrentTimeMs() - StartTime);
-    if (TargetLepPeb == nullptr)
-    {
-        Status = STATUS_UNSUCCESSFUL;
-        goto INJECT_FINISH;
-    }
-
-    Section = TargetLepPeb->Section;
-    *TargetLepPeb = *LEPPEB;
-    TargetLepPeb->Section = Section;
-    TargetLepPeb->LdrLoadDllAddress = LdrLoadDllAddress;
-    TargetLepPeb->InjectionFlags = InjectionFlags;
-
-    if (ExtraSize != 0)
-    {
-        ULONG_PTR                       Length;
-        PBYTE                           Buffer;
-        PREGISTRY_REDIRECTION_ENTRY     Entry;
-        PREGISTRY_REDIRECTION_ENTRY64   Entry64;
-
-        TargetLepPeb->LEPB.NumberOfRegistryRedirectionEntries = this->RegistryRedirectionEntry.GetSize();
-        Entry64 = &TargetLepPeb->LEPB.RegistryReplacement[0];
-        Buffer = (PBYTE)(Entry64 + TargetLepPeb->LEPB.NumberOfRegistryRedirectionEntries);
-
-        auto StringToUnicode64 = [&] (UNICODE_STRING64& ustr64, ml::String& str)
-        {
-            ULONG_PTR Length;
-
-            Length = (USHORT)str.GetSize();
-
-            ustr64.Length         = (USHORT)Length;
-            ustr64.MaximumLength  = (USHORT)Length;
-            ustr64.Dummy          = PtrOffset(Buffer, &TargetLepPeb->LEPB);
-
-            CopyMemory(Buffer, (PWSTR)str, Length);
-            Buffer += Length;
-            *Buffer++ = 0;
-            *Buffer++ = 0;
-        };
-
-        FOR_EACH_VEC(Entry, this->RegistryRedirectionEntry)
-        {
-            Entry64->Original.Root      = (ULONG64)Entry->Original.Root;
-            Entry64->Original.DataType  = Entry->Original.DataType;
-            Entry64->Original.Data      = nullptr;
-            Entry64->Original.DataSize  = 0;
-
-            StringToUnicode64(Entry64->Original.SubKey, Entry->Original.SubKey);
-            StringToUnicode64(Entry64->Original.ValueName, Entry->Original.ValueName);
-
-            Entry64->Redirected.Root      = (ULONG64)Entry->Redirected.Root;
-            Entry64->Redirected.DataType  = Entry->Redirected.DataType;
-            Entry64->Redirected.Data      = nullptr;
-            Entry64->Redirected.DataSize  = 0;
-
-            StringToUnicode64(Entry64->Redirected.SubKey, Entry->Redirected.SubKey);
-            StringToUnicode64(Entry64->Redirected.ValueName, Entry->Redirected.ValueName);
-
-            if (Entry->Redirected.Data != nullptr && Entry->Redirected.DataSize != 0)
-            {
-                Length = Entry->Redirected.DataSize;
-                Entry64->Redirected.Data = (PVOID)PtrOffset(Buffer, &TargetLepPeb->LEPB);
-                Entry64->Redirected.DataSize = Length;
-                CopyMemory(Buffer, Entry->Redirected.Data, Length);
-                Buffer += Length;
-            }
-
-            ++Entry64;
-        }
+            goto INJECT_FINISH_NEW;
     }
 
     if ((InjectionFlags & LEP_INJECT_PATCH_LDR_LOAD_DLL) != 0)
     {
-        BYTE Jump[16];
-
         if (SelfShadow == nullptr)
         {
             Status = STATUS_INVALID_PARAMETER;
-            goto INJECT_FINISH;
+            goto INJECT_FINISH_NEW;
         }
 
-        Status = ReadMemory(Process, LdrLoadDllAddress, Backup, LDR_LOAD_DLL_BACKUP_SIZE);
-        WriteLog(L"inject stage LdrLoadDll read address=%p status=%p elapsed=%u", LdrLoadDllAddress, Status, LepCurrentTimeMs() - StartTime);
-        if (NT_FAILED(Status))
-            goto INJECT_FINISH;
-
-        CopyStruct(TargetLepPeb->LdrLoadDllBackup, Backup, LDR_LOAD_DLL_BACKUP_SIZE);
-        TargetLepPeb->LdrLoadDllBackupSize = LDR_LOAD_DLL_BACKUP_SIZE;
-        ShadowLoadFirstDll = PtrAdd(LoadFirstDll, PtrOffset(SelfShadow, &__ImageBase));
-        ZeroMemory(Jump, sizeof(Jump));
+        PVOID LocalLoadFirstDll = LookupExportTable(LocalSelfShadow, "LoadFirstDll");
+        if (LocalLoadFirstDll == nullptr)
+        {
+            Status = STATUS_ENTRYPOINT_NOT_FOUND;
+            goto INJECT_FINISH_NEW;
+        }
+        PVOID ShadowLoadFirstDll = PtrAdd(SelfShadow, PtrOffset(LocalLoadFirstDll, LocalSelfShadow));
+        BYTE Jump[16] = {};
 #if ML_AMD64
         Jump[0] = 0xFF;
         Jump[1] = 0x25;
-        *(PULONG)&Jump[2] = 0;
-        *(PVOID *)&Jump[6] = ShadowLoadFirstDll;
+        *(PVOID*)&Jump[6] = ShadowLoadFirstDll;
 #else
         Jump[0] = JUMP;
         *(PULONG)&Jump[1] = PtrOffset(ShadowLoadFirstDll, PtrAdd(LdrLoadDllAddress, 5));
 #endif
-        Status = WriteProtectMemory(Process, LdrLoadDllAddress, Jump, LDR_LOAD_DLL_BACKUP_SIZE);
-        WriteLog(L"inject stage LdrLoadDll patch status=%p target=%p shadow=%p elapsed=%u", Status, LdrLoadDllAddress, ShadowLoadFirstDll, LepCurrentTimeMs() - StartTime);
-        if (NT_FAILED(Status))
-            goto INJECT_FINISH;
-    }
-    else
-    {
-        WriteLog(L"inject stage LdrLoadDll patch skipped mode flags=%08X elapsed=%u", InjectionFlags, LepCurrentTimeMs() - StartTime);
+        Status = WriteMemory(Process, LdrLoadDllAddress, Jump, sizeof(Backup));
     }
 
-    Status = STATUS_SUCCESS;
-
-INJECT_FINISH:
-    if (TargetLepPeb != nullptr)
-        CloseLepPeb(TargetLepPeb);
+INJECT_FINISH_NEW:
+    if (Payload != nullptr)
+        FreeMemoryP(Payload);
     if (LocalSelfShadow != nullptr)
         UnloadPeImage(LocalSelfShadow);
+    if (NT_FAILED(Status) && LdrLoadDllWritable)
+    {
+        ULONG IgnoredProtect;
+        ProtectVirtualMemory(LdrLoadDllAddress, sizeof(Backup), LdrLoadDllProtect,
+                             &IgnoredProtect, Process);
+    }
     if (NT_FAILED(Status) && SelfShadow != nullptr)
         Mm::FreeVirtualMemory(SelfShadow, Process);
 
-    WriteLog(L"child injection complete pid=%u status=%p elapsed=%u", (ULONG)(ULONG_PTR)Cid->UniqueProcess, Status, LepCurrentTimeMs() - StartTime);
-
+    WriteLog(L"child injection complete pid=%u status=%p payload=%u elapsed=%u",
+             (ULONG)(ULONG_PTR)Cid->UniqueProcess, Status, PayloadSize,
+             LepCurrentTimeMs() - StartTime);
     return Status;
 }
+
 
 NTSTATUS
 HPCALL
@@ -745,8 +859,17 @@ LepNtCreateUserProcess(
     BOOL                ResumeAfterInjection;
     HpSetFilterAction(BlockSystemCall);
     WriteLog(L"create proc");
+    WriteLog(L"create request creatorPid=%u creatorTid=%u processOnly=%u processFlags=%08X originalThreadFlags=%08X",
+             (ULONG)CurrentPid(), (ULONG)CurrentTid(), (ULONG)LEP_DIAG_PROCESS_ONLY, ProcessFlags, ThreadFlags);
+    if (ProcessParameters != nullptr)
+    {
+        LepLogUnicodeString(L"create image:", ProcessParameters->ImagePathName);
+        LepLogUnicodeString(L"create commandLine:", ProcessParameters->CommandLine);
+    }
     ResumeAfterInjection = FLAG_OFF(ThreadFlags, THREAD_CREATE_FLAGS_CREATE_SUSPENDED);
     ThreadFlags |= THREAD_CREATE_FLAGS_CREATE_SUSPENDED;
+
+    GlobalData = (PLepGlobalData)HpGetFilterContext();
 
     LocalAttributeList = nullptr;
     Attribute = nullptr;
@@ -821,16 +944,53 @@ LepNtCreateUserProcess(
              Cid != nullptr ? (ULONG)(ULONG_PTR)Cid->UniqueThread : 0,
              !ResumeAfterInjection);
 
-    GlobalData = (PLepGlobalData)HpGetFilterContext();
-
-    Status2 = GlobalData->InjectSelfToChildProcess(*ProcessHandle, Cid);
+    BOOL InjectionSkipped = FALSE;
+    ULONG ChildInjectionFlags = LEP_INJECT_FULL;
+#if LEP_DIAG_SKIP_CHAT_CHILD_INJECTION || LEP_DIAG_CHAT_CHILD_RESTORE_ONLY || LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH
+    PLDR_MODULE CreatorModule = FindLdrModuleByHandle(nullptr);
+    BOOL IsChatCreator = CreatorModule != nullptr &&
+        RtlEqualUnicodeString(&CreatorModule->BaseDllName, &USTR(L"QQSpeedChatBrowser.exe"), TRUE);
+#if LEP_DIAG_SKIP_CHAT_CHILD_INJECTION
+    InjectionSkipped = IsChatCreator;
+#elif LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH
+    if (IsChatCreator)
+    {
+        ChildInjectionFlags = LEP_INJECT_WRITE_SHADOW;
+        WriteLog(L"diagnostic chat child no-Ldr-patch: creatorPid=%u childPid=%u flags=%08X",
+                 (ULONG)CurrentPid(), (ULONG)(ULONG_PTR)Cid->UniqueProcess, ChildInjectionFlags);
+    }
+#else
+    if (IsChatCreator)
+    {
+        ChildInjectionFlags |= LEP_INJECT_RESTORE_ONLY;
+        WriteLog(L"diagnostic chat child restore-only: creatorPid=%u childPid=%u flags=%08X",
+                 (ULONG)CurrentPid(), (ULONG)(ULONG_PTR)Cid->UniqueProcess, ChildInjectionFlags);
+    }
+#endif
+#endif
+    if (InjectionSkipped)
+    {
+        Status2 = STATUS_SUCCESS;
+        WriteLog(L"diagnostic skip child injection: chat boundary creatorPid=%u childPid=%u childTid=%u",
+                 (ULONG)CurrentPid(), (ULONG)(ULONG_PTR)Cid->UniqueProcess,
+                 (ULONG)(ULONG_PTR)Cid->UniqueThread);
+    }
+    else
+    {
+        Status2 = GlobalData->InjectSelfToChildProcess(*ProcessHandle, Cid, ChildInjectionFlags);
+    }
 
     WriteLog(L"inject %p", Status2);
+    WriteLog(L"create edge creatorPid=%u creatorTid=%u childPid=%u childTid=%u createStatus=%08X injectStatus=%08X originalSuspended=%u injectionSkipped=%u",
+             (ULONG)CurrentPid(), (ULONG)CurrentTid(),
+             (ULONG)(ULONG_PTR)Cid->UniqueProcess, (ULONG)(ULONG_PTR)Cid->UniqueThread,
+             Status, Status2, !ResumeAfterInjection, InjectionSkipped);
 
     if (ResumeAfterInjection)
     {
         NTSTATUS ResumeStatus = NtResumeThread(*ThreadHandle, nullptr);
-        WriteLog(L"resume child status=%p", ResumeStatus);
+        WriteLog(L"resume child status=%p pid=%u tid=%u", ResumeStatus,
+                 (ULONG)(ULONG_PTR)Cid->UniqueProcess, (ULONG)(ULONG_PTR)Cid->UniqueThread);
     }
     else
     {
@@ -1256,7 +1416,7 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
         return STATUS_DLL_INIT_FAILED;
 #endif
 
-#if !ML_AMD64
+#if !ML_AMD64 && !LEP_DIAG_PROCESS_ONLY
     LdrInitNtContinue = SearchLdrInitNtContinue();
     if (LdrInitNtContinue == nullptr)
         return STATUS_NOT_SUPPORTED;
@@ -1268,6 +1428,10 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
     WriteLog(L"hook NtCreateUserProcess: %08X", Status);
     FAIL_RETURN(Status);
 
+#if LEP_DIAG_PROCESS_ONLY
+    WriteLog(L"process-only: installed NtCreateUserProcess only");
+    return STATUS_SUCCESS;
+#else
     if (IsLepLoader())
         return STATUS_SUCCESS;
 
@@ -1313,6 +1477,7 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
     RtlInitializeCriticalSectionAndSpinCount(&HookRoutineData.Ntdll.NtLock, 4000);
 
     return STATUS_SUCCESS;
+#endif
 }
 
 NTSTATUS LepGlobalData::UnHookNtdllRoutines()

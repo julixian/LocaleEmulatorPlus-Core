@@ -27,14 +27,16 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 
 主要流程：
 
-1. `LEPProc_*` 把 GUI 配置转换成 `LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK`，调用 `LoaderDll_*!LepCreateProcess2`。
-2. `LepCreateProcess2` 通过 `ml.cpp` 中的 `CreateProcess` wrapper 调用非公开的 `CreateProcessInternalW`，创建挂起的目标进程。
-3. `LoaderDll` 生成或打开按 PID 命名的共享 section：`Local\LOCALE_EMULATOR_PLUS_PROCESS_ENVIRONMENT_BLOCK_SECTION_<pid>`。
-4. 共享 section 内放 `LEPPEB`，包含目标 ACP/OEMCP/LCID、时区、注册表重定向项、LEP DLL 路径、`LdrLoadDll` 地址/备份字节等。
-5. `LoaderDll` 创建挂起目标进程，将重定位后的 `LocaleEmulatorPlus_*` 镜像写入目标地址空间，并把 `ntdll!LdrLoadDll` 入口改写为 `LoadFirstDll` hook。
-6. 首次 loader 侧 `LdrLoadDll` 调用命中 hook 后恢复原字节、读取共享 `LEPPEB` 并完成初始化，让 LEP 在 kernel32 初始化前取得执行权。
-7. `LocaleEmulatorPlus` 初始化后读取 `LEPPEB`，安装 ntdll/kernelbase/user32/gdi32 等 hook。
-8. 之后目标进程调用 NLS、locale、窗口文字、字体、剪贴板、注册表、时区等相关 API 时，会被 LEP 的 hook 改写结果。
+1. `LEPProc_*` 把 GUI 配置转换成 `LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK` (LEPB)，调用 `LoaderDll_*!LepCreateProcess2`。
+2. `LepCreateProcess2` 调用非公开的 `CreateProcessInternalW`，创建挂起且未加载 kernel32.dll/kernelbase.dll 的目标进程。
+3. `LoaderDll` 把 LEPB、注册表重定向数据和 `LocaleEmulatorPlus_*` 的完整路径序列化为 `LEP_BOOTSTRAP_PAYLOAD`。Payload 的字符串和数据都放在同一块内存中，结构体只保存相对偏移。
+4. `LoaderDll` 从磁盘读取对应位数的 `LocaleEmulatorPlus_*`，根据 `SizeOfImage` 和 Payload 大小在目标进程中申请一块连续区域。
+5. `LoaderDll` 根据申请的确定的远程地址在本地重定位 `LocaleEmulatorPlus_*` 镜像后，把镜像和 Payload 写入目标进程；Payload 紧跟在 PE `SizeOfImage` 对齐后的尾部。
+6. `LoaderDll` 把目标 `ntdll!LdrLoadDll` 的原始字节、原页面保护以及 Payload 偏移/大小写入 shadow 的 bootstrap 元数据，然后 patch 目标 `ntdll!LdrLoadDll` 到 `LocaleEmulatorPlus_*!LoadFirstDll`。
+7. `LocaleEmulatorPlus` 侧 `LdrLoadDll` 调用命中 `LoadFirstDll` 后，先恢复原入口并恢复页面保护，再校验 Payload，调用 LEP 初始化，最后转回原始 `LdrLoadDll`。
+8. `LocaleEmulatorPlus` 从已校验的 Payload 读取静态配置；运行时获取的原始 locale、字体 charset 和 script name 保存在进程内的 `LEP_RUNTIME_STATE` 中。初始化完成后，目标进程调用 NLS、locale、窗口文字、字体、剪贴板、注册表、时区等相关 API 时，会被 LEP 的 hook 改写结果。
+
+`LepCreateProcess` 路径（当前进程直接加载 `LocaleEmulatorPlus_*`）无法把 Payload 放在 PE 镜像尾部，因此使用 `TEB_ACTIVE_FRAME::Data` 传递指针。Payload 由进程堆分配：Loader 初始拥有它，LEP 接受后清空 frame 中的指针并负责释放；如果 LEP 没有接受，Loader 在返回前释放。
 
 关键点是“早”：如果目标进程在 LEP 初始化前已经加载并初始化 kernel32/kernelbase，NLS 缓存已经按本机区域建立，后续再改 ACP/LCID 往往无效。因此 `LocaleEmulatorPlus.dll` 自身必须尽量只静态依赖 `ntdll.dll`；其他 DLL 只能 delay-load，且 delay helper 也不能依赖 kernel32。
 
@@ -85,6 +87,8 @@ set EXTRA_CL=/DENABLE_LOG=1
 build.bat
 set EXTRA_CL=
 ```
+
+`build.bat` 默认把四个 DLL 复制到 `LEP_DEPLOY_DIR` 指向的目录，但只有该目录已经存在时才复制；构建脚本不会创建部署目录。目录不存在时仍报告构建成功，并保留各架构的 `out` 构建产物。
 
 `ENABLE_LOG=1` 会启用 `WriteLog`，并同时启用远程注入阶段的详细诊断日志。普通运行日志文件通常位于 LEP DLL 同目录，文件名形如 `<目标进程模块名>.<pid>.log.txt`；注入阶段日志位于系统临时目录，文件名形如 `LocaleEmulatorPlus-inject-<arch>-<pid>.log`。
 日志会改变早期执行路径和时序，定位完问题后可以通过自定义 `EXTRA_CL` 关闭：

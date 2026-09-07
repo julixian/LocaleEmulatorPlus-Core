@@ -105,211 +105,314 @@ static BOOL BrokerReadTokenW(LPCSTR& Cursor, LPWSTR Buffer, ULONG Capacity)
     return Length != 0;
 }
 
-static NTSTATUS LepBrokerInject(ULONG ProcessId, LPCWSTR MappingName)
+static NTSTATUS LepFillFirstDllBootstrapData(
+    PVOID LocalImage,
+    PVOID LdrLoadDllAddress,
+    PBYTE LdrLoadDllBackup,
+    ULONG OriginalProtect,
+    ULONG InjectionFlags,
+    ULONG PayloadOffset,
+    ULONG PayloadSize
+)
 {
-    HANDLE Process, Mapping, Thread;
-    PLEP_BROKER_CONFIG Config;
-    PLEPPEB LepPeb;
-    PVOID View, LdrLoadDllAddress, LocalSelfShadow, SelfShadow, ShadowLoadFirstDll;
-    BYTE LdrLoadDllBackup[LDR_LOAD_DLL_BACKUP_SIZE];
-    DWORD Error;
-    ULONG_PTR Length, SizeOfImage;
-    NTSTATUS Status;
-    WCHAR Log[512];
-    LPCWSTR DllPath;
-    BYTE Jump[16];
+    PLEP_FIRST_DLL_BOOTSTRAP_DATA Data = (PLEP_FIRST_DLL_BOOTSTRAP_DATA)
+        LookupExportTable(LocalImage, LEP_FIRST_DLL_BOOTSTRAP_EXPORT);
+    if (Data == nullptr)
+        return STATUS_ENTRYPOINT_NOT_FOUND;
 
-    BrokerFormat(Log, countof(Log), L"begin pid=%u map=%s", ProcessId, MappingName);
-    BrokerLog(Log);
+    ZeroMemory(Data, sizeof(*Data));
+    Data->Magic = LEP_FIRST_DLL_BOOTSTRAP_MAGIC;
+    Data->InjectionFlags = InjectionFlags;
+    Data->BackupSize = LDR_LOAD_DLL_BACKUP_SIZE;
+    Data->OriginalProtect = OriginalProtect;
+    Data->LdrLoadDllAddress = LdrLoadDllAddress;
+    Data->PayloadOffset = PayloadOffset;
+    Data->PayloadSize = PayloadSize;
+    CopyMemory(Data->Backup, LdrLoadDllBackup, LDR_LOAD_DLL_BACKUP_SIZE);
 
-    Process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, ProcessId);
-    if (Process == nullptr)
-    {
-        BrokerFormat(Log, countof(Log), L"OpenProcess failed=%u", GetLastError());
-        BrokerLog(Log);
-        return ML_NTSTATUS_FROM_WIN32(GetLastError());
-    }
+    return STATUS_SUCCESS;
+}
 
-    Mapping = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, MappingName);
-    if (Mapping == nullptr)
-    {
-        BrokerFormat(Log, countof(Log), L"OpenFileMapping failed=%u", GetLastError());
-        BrokerLog(Log);
-        NtClose(Process);
-        return ML_NTSTATUS_FROM_WIN32(GetLastError());
-    }
-
-    View = MapViewOfFile(Mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
-    if (View == nullptr)
-    {
-        BrokerFormat(Log, countof(Log), L"MapViewOfFile failed=%u", GetLastError());
-        BrokerLog(Log);
-        NtClose(Mapping);
-        NtClose(Process);
-        return ML_NTSTATUS_FROM_WIN32(GetLastError());
-    }
-
-    Config = (PLEP_BROKER_CONFIG)View;
-    Config->Result = STATUS_UNSUCCESSFUL;
-    if (Config->Magic != LEP_BROKER_CONFIG_MAGIC || Config->Version != LEP_BROKER_CONFIG_VERSION ||
-        Config->Size < FIELD_OFFSET(LEP_BROKER_CONFIG, Environment) + sizeof(LEPB) ||
-        Config->ExtraSize > 0x100000 ||
-        Config->Size < FIELD_OFFSET(LEP_BROKER_CONFIG, Environment) + sizeof(LEPB) + Config->ExtraSize)
-    {
-        BrokerLog(L"invalid config header");
-        UnmapViewOfFile(View);
-        NtClose(Mapping);
-        NtClose(Process);
+static NTSTATUS LepCreateBootstrapPayload(
+    PLEPB Environment,
+    PCWSTR DllPath,
+    PLEP_BOOTSTRAP_PAYLOAD* Payload,
+    PULONG PayloadSize
+)
+{
+    if (Environment == nullptr || DllPath == nullptr || Payload == nullptr || PayloadSize == nullptr)
         return STATUS_INVALID_PARAMETER;
-    }
 
-    // Paths are transported only in the Unicode shared configuration.
-    DllPath = Config->DllPath;
-    if (DllPath[0] == 0)
-    {
-        BrokerLog(L"missing dll path");
-        UnmapViewOfFile(View);
-        NtClose(Mapping);
-        NtClose(Process);
+    ULONG64 Count = Environment->NumberOfRegistryRedirectionEntries;
+    ULONG64 EnvironmentSize64 = FIELD_OFFSET(LEPB, RegistryReplacement) +
+                                Count * sizeof(REGISTRY_REDIRECTION_ENTRY64);
+    if (Count > 0x10000 || EnvironmentSize64 > LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE)
         return STATUS_INVALID_PARAMETER;
-    }
-    BrokerFormat(Log, countof(Log), L"config ok size=%u extra=%u dll=%s",
-                 Config->Size, Config->ExtraSize, DllPath);
-    BrokerLog(Log);
-    BrokerFormat(Log, countof(Log), L"injection flags=%08X", Config->InjectionFlags);
-    BrokerLog(Log);
-    BrokerFormat(Log, countof(Log), L"target thread id=%u", Config->ThreadId);
-    BrokerLog(Log);
-    if (Config->Environment.NumberOfRegistryRedirectionEntries != 0)
+    PREGISTRY_REDIRECTION_ENTRY64 SourceEntry = Environment->RegistryReplacement;
+    for (ULONG64 Index = 0; Index != Count; ++Index, ++SourceEntry)
     {
-        PREGISTRY_REDIRECTION_ENTRY64 Entry64 = &Config->Environment.RegistryReplacement[0];
-        BrokerFormat(Log, countof(Log), L"config entry0 subkey=%I64X/%u value=%I64X/%u redir=%I64X/%u",
-                     (ULONG64)Entry64->Original.SubKey.Buffer, Entry64->Original.SubKey.Length,
-                     (ULONG64)Entry64->Original.ValueName.Buffer, Entry64->Original.ValueName.Length,
-                     (ULONG64)Entry64->Redirected.SubKey.Buffer, Entry64->Redirected.SubKey.Length);
-        BrokerLog(Log);
-    }
-
-    LepPeb = OpenOrCreateLepPeb(ProcessId, TRUE, Config->ExtraSize);
-    if (LepPeb == nullptr)
-    {
-        BrokerLog(L"OpenOrCreateLepPeb failed");
-        UnmapViewOfFile(View);
-        NtClose(Mapping);
-        NtClose(Process);
-        return STATUS_NONE_MAPPED;
-    }
-
-    CopyMemory(&LepPeb->LEPB, &Config->Environment, sizeof(LEPB) + Config->ExtraSize);
-    Length = (StrLengthW(DllPath) + 1) * sizeof(WCHAR);
-    ZeroMemory(LepPeb->LepDllFullPath, sizeof(LepPeb->LepDllFullPath));
-    ZeroMemory(LepPeb->LepDllDirPath, sizeof(LepPeb->LepDllDirPath));
-    CopyMemory(LepPeb->LepDllFullPath, DllPath, ML_MIN(Length, sizeof(LepPeb->LepDllFullPath) - sizeof(WCHAR)));
-    CopyMemory(LepPeb->LepDllDirPath, DllPath, ML_MIN(Length, sizeof(LepPeb->LepDllDirPath) - sizeof(WCHAR)));
-    for (ULONG_PTR i = StrLengthW(LepPeb->LepDllDirPath); i != 0; --i)
-    {
-        if (LepPeb->LepDllDirPath[i - 1] == L'\\')
+        if (SourceEntry->Original.SubKey.Length > SourceEntry->Original.SubKey.MaximumLength ||
+            SourceEntry->Original.ValueName.Length > SourceEntry->Original.ValueName.MaximumLength ||
+            SourceEntry->Redirected.SubKey.Length > SourceEntry->Redirected.SubKey.MaximumLength ||
+            SourceEntry->Redirected.ValueName.Length > SourceEntry->Redirected.ValueName.MaximumLength ||
+            (SourceEntry->Original.SubKey.Length != 0 && SourceEntry->Original.SubKey.Buffer == 0) ||
+            (SourceEntry->Original.ValueName.Length != 0 && SourceEntry->Original.ValueName.Buffer == 0) ||
+            (SourceEntry->Redirected.SubKey.Length != 0 && SourceEntry->Redirected.SubKey.Buffer == 0) ||
+            (SourceEntry->Redirected.ValueName.Length != 0 && SourceEntry->Redirected.ValueName.Buffer == 0) ||
+            (SourceEntry->Redirected.DataSize != 0 && SourceEntry->Redirected.Data == nullptr))
         {
-            LepPeb->LepDllDirPath[i] = 0;
+            return STATUS_INVALID_PARAMETER;
+        }
+        EnvironmentSize64 += SourceEntry->Original.SubKey.Length + sizeof(WCHAR);
+        EnvironmentSize64 += SourceEntry->Original.ValueName.Length + sizeof(WCHAR);
+        EnvironmentSize64 += SourceEntry->Redirected.SubKey.Length + sizeof(WCHAR);
+        EnvironmentSize64 += SourceEntry->Redirected.ValueName.Length + sizeof(WCHAR);
+        EnvironmentSize64 += SourceEntry->Redirected.DataSize;
+        if (EnvironmentSize64 > LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE)
+            return STATUS_BUFFER_OVERFLOW;
+    }
+
+    ULONG EnvironmentSize = (ULONG)EnvironmentSize64;
+    // LoaderDll has no entry point, so its private MemoryAllocator heap is not
+    // initialized on this path.  Use the process heap for all bootstrap
+    // construction storage.
+    PLEPB CanonicalEnvironment = (PLEPB)AllocateMemory(EnvironmentSize);
+    if (CanonicalEnvironment == nullptr)
+        return STATUS_NO_MEMORY;
+    ZeroMemory(CanonicalEnvironment, EnvironmentSize);
+    CopyMemory(CanonicalEnvironment, Environment, FIELD_OFFSET(LEPB, NumberOfRegistryRedirectionEntries));
+    CanonicalEnvironment->NumberOfRegistryRedirectionEntries = Count;
+
+    PREGISTRY_REDIRECTION_ENTRY64 DestinationEntry = CanonicalEnvironment->RegistryReplacement;
+    PBYTE EnvironmentBuffer = (PBYTE)(DestinationEntry + Count);
+    auto CopyString = [&] (UNICODE_STRING64& Destination, UNICODE_STRING64& Source)
+    {
+        Destination.Length = Source.Length;
+        Destination.MaximumLength = Source.Length;
+        Destination.Dummy = PtrOffset(EnvironmentBuffer, CanonicalEnvironment);
+        if (Source.Length != 0)
+            CopyMemory(EnvironmentBuffer, PtrAdd(Environment, (ULONG_PTR)Source.Buffer), Source.Length);
+        EnvironmentBuffer += Source.Length;
+        *(PWCHAR)EnvironmentBuffer = 0;
+        EnvironmentBuffer += sizeof(WCHAR);
+    };
+    SourceEntry = Environment->RegistryReplacement;
+    for (ULONG64 Index = 0; Index != Count; ++Index, ++SourceEntry, ++DestinationEntry)
+    {
+        DestinationEntry->Original.Root = SourceEntry->Original.Root;
+        DestinationEntry->Original.DataType = SourceEntry->Original.DataType;
+        CopyString(DestinationEntry->Original.SubKey, SourceEntry->Original.SubKey);
+        CopyString(DestinationEntry->Original.ValueName, SourceEntry->Original.ValueName);
+
+        DestinationEntry->Redirected.Root = SourceEntry->Redirected.Root;
+        DestinationEntry->Redirected.DataType = SourceEntry->Redirected.DataType;
+        CopyString(DestinationEntry->Redirected.SubKey, SourceEntry->Redirected.SubKey);
+        CopyString(DestinationEntry->Redirected.ValueName, SourceEntry->Redirected.ValueName);
+        if (SourceEntry->Redirected.Data != nullptr && SourceEntry->Redirected.DataSize != 0)
+        {
+            DestinationEntry->Redirected.Data = (PVOID64)PtrOffset(EnvironmentBuffer, CanonicalEnvironment);
+            DestinationEntry->Redirected.DataSize = SourceEntry->Redirected.DataSize;
+            CopyMemory(EnvironmentBuffer, PtrAdd(Environment, (ULONG_PTR)SourceEntry->Redirected.Data),
+                       SourceEntry->Redirected.DataSize);
+            EnvironmentBuffer += SourceEntry->Redirected.DataSize;
+        }
+    }
+
+    WCHAR DirPath[MAX_NTPATH];
+    ULONG_PTR Length = StrLengthW(DllPath);
+    if (Length + 1 > countof(DirPath))
+    {
+        FreeMemory(CanonicalEnvironment);
+        return STATUS_NAME_TOO_LONG;
+    }
+    CopyMemory(DirPath, DllPath, (Length + 1) * sizeof(WCHAR));
+    for (ULONG_PTR Index = Length; Index != 0; --Index)
+    {
+        if (DirPath[Index - 1] == L'\\')
+        {
+            DirPath[Index] = 0;
             break;
         }
     }
 
-    // Same-architecture descendants use these fields to install the early
-    // LdrLoadDll trampoline.  The cross-architecture broker used to omit
-    // them, so the first descendant failed after its image was copied.
-    LdrLoadDllAddress = EATLookupRoutineByHashPNoFix(GetNtdllHandle(), NTDLL_LdrLoadDll);
-    LepPeb->LdrLoadDllAddress = LdrLoadDllAddress;
-    LepPeb->LdrLoadDllBackupSize = LDR_LOAD_DLL_BACKUP_SIZE;
-    LepPeb->InjectionFlags = Config->InjectionFlags;
-    Status = ReadMemory(Process, LdrLoadDllAddress, LdrLoadDllBackup, LDR_LOAD_DLL_BACKUP_SIZE);
-    BrokerFormat(Log, countof(Log), L"LdrLoadDll metadata address=%I64X read=%08X",
-                 (ULONG64)(ULONG_PTR)LdrLoadDllAddress, Status);
-    BrokerLog(Log);
+    ULONG Required = LepBootstrapPayloadSize(EnvironmentSize, DllPath, DirPath);
+    if (Required == 0)
+    {
+        FreeMemory(CanonicalEnvironment);
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    PLEP_BOOTSTRAP_PAYLOAD LocalPayload = (PLEP_BOOTSTRAP_PAYLOAD)AllocateMemory(Required);
+    if (LocalPayload == nullptr)
+    {
+        FreeMemory(CanonicalEnvironment);
+        return STATUS_NO_MEMORY;
+    }
+
+    NTSTATUS Status = LepBuildBootstrapPayload(LocalPayload, Required, CanonicalEnvironment, EnvironmentSize,
+                                      DllPath, DirPath);
+    FreeMemory(CanonicalEnvironment);
     if (NT_FAILED(Status))
     {
-        CloseLepPeb(LepPeb);
-        UnmapViewOfFile(View);
-        NtClose(Mapping);
-        NtClose(Process);
+        FreeMemory(LocalPayload);
         return Status;
     }
-    CopyMemory(LepPeb->LdrLoadDllBackup, LdrLoadDllBackup, LDR_LOAD_DLL_BACKUP_SIZE);
+    *Payload = LocalPayload;
+    *PayloadSize = Required;
+    return STATUS_SUCCESS;
+}
 
-    CloseLepPeb(LepPeb);
+static NTSTATUS LepBrokerInject(ULONG ProcessId, LPCWSTR MappingName)
+{
+    HANDLE Process = nullptr;
+    HANDLE Mapping = nullptr;
+    PVOID View = nullptr;
+    PVOID LocalImage = nullptr;
+    PVOID RemoteImage = nullptr;
+    PVOID LdrLoadDllAddress = nullptr;
+    ULONG LdrLoadDllProtect = 0;
+    BOOL LdrLoadDllWritable = FALSE;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    PLEP_BROKER_CONFIG Config = nullptr;
+    BYTE Backup[LDR_LOAD_DLL_BACKUP_SIZE];
+    WCHAR Log[512];
 
-    Thread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME |
-                        THREAD_QUERY_INFORMATION, FALSE, Config->ThreadId);
-    if (Thread == nullptr)
+    Process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, ProcessId);
+    if (Process == nullptr)
+        return ML_NTSTATUS_FROM_WIN32(GetLastError());
+
+    Mapping = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, MappingName);
+    if (Mapping == nullptr)
     {
-        Error = GetLastError();
-        BrokerFormat(Log, countof(Log), L"OpenThread failed error=%u tid=%u", Error, Config->ThreadId);
-        BrokerLog(Log);
-        UnmapViewOfFile(View);
-        NtClose(Mapping);
-        NtClose(Process);
-        return ML_NTSTATUS_FROM_WIN32(Error);
+        Status = ML_NTSTATUS_FROM_WIN32(GetLastError());
+        goto BROKER_FINISH_NEW;
+    }
+    View = MapViewOfFile(Mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
+    if (View == nullptr)
+    {
+        Status = ML_NTSTATUS_FROM_WIN32(GetLastError());
+        goto BROKER_FINISH_NEW;
     }
 
-    // The target is already suspended by the creator hook. Install the same
-    // first-LdrLoadDll trampoline used by same-architecture propagation.
-    LocalSelfShadow = nullptr;
-    Status = LoadPeImage(DllPath, &LocalSelfShadow, nullptr, 0);
-    BrokerFormat(Log, countof(Log), L"load core shadow status=%08X base=%I64X",
-                 Status, (ULONG64)(ULONG_PTR)LocalSelfShadow);
-    BrokerLog(Log);
-    if (NT_FAILED(Status))
-        goto BROKER_FINISH;
+    Config = (PLEP_BROKER_CONFIG)View;
+    Config->Result = STATUS_UNSUCCESSFUL;
+    if (Config->Magic != LEP_BROKER_CONFIG_MAGIC ||
+        Config->Version != LEP_BROKER_CONFIG_VERSION ||
+        Config->PayloadSize < sizeof(LEP_BOOTSTRAP_PAYLOAD) ||
+        Config->PayloadSize > LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE ||
+        Config->Size < FIELD_OFFSET(LEP_BROKER_CONFIG, Payload) + Config->PayloadSize ||
+        !LepValidateBootstrapPayload((PLEP_BOOTSTRAP_PAYLOAD)Config->Payload) ||
+        ((PLEP_BOOTSTRAP_PAYLOAD)Config->Payload)->TotalSize != Config->PayloadSize)
+    {
+        Status = STATUS_INVALID_PARAMETER;
+        goto BROKER_FINISH_NEW;
+    }
 
-    SizeOfImage = ImageGetSizeOfImage(LocalSelfShadow);
-    SelfShadow = nullptr;
-    Status = AllocVirtualMemoryEx(Process, &SelfShadow, SizeOfImage);
-    BrokerFormat(Log, countof(Log), L"alloc core shadow status=%08X base=%I64X size=%I64X",
-                 Status, (ULONG64)(ULONG_PTR)SelfShadow, (ULONG64)SizeOfImage);
-    BrokerLog(Log);
+    PLEP_BOOTSTRAP_PAYLOAD Payload = (PLEP_BOOTSTRAP_PAYLOAD)Config->Payload;
+    PCWSTR DllPath = LepBootstrapDllFullPath(Payload);
+    Status = LoadPeImage(DllPath, &LocalImage, nullptr, 0);
     if (NT_FAILED(Status))
-        goto BROKER_FINISH;
+        goto BROKER_FINISH_NEW;
 
-    RelocPeImage(LocalSelfShadow, LocalSelfShadow, nullptr, SelfShadow);
-    Status = WriteMemory(Process, SelfShadow, LocalSelfShadow, SizeOfImage);
-    BrokerFormat(Log, countof(Log), L"write core shadow status=%08X", Status);
-    BrokerLog(Log);
+    ULONG_PTR ImageSize = ImageGetSizeOfImage(LocalImage);
+    if (ImageSize > LEP_BOOTSTRAP_IMAGE_MAX_SIZE)
+    {
+        Status = STATUS_BUFFER_OVERFLOW;
+        goto BROKER_FINISH_NEW;
+    }
+    ULONG_PTR PayloadOffset = ROUND_UP(ImageSize, 16);
+    Status = AllocVirtualMemoryEx(Process, &RemoteImage, PayloadOffset + Config->PayloadSize);
     if (NT_FAILED(Status))
-        goto BROKER_FINISH;
+        goto BROKER_FINISH_NEW;
 
-    ShadowLoadFirstDll = LookupExportTable(LocalSelfShadow, "LoadFirstDll");
-    if (ShadowLoadFirstDll == nullptr)
+    LdrLoadDllAddress = EATLookupRoutineByHashPNoFix(GetNtdllHandle(), NTDLL_LdrLoadDll);
+    if (LdrLoadDllAddress == nullptr)
     {
         Status = STATUS_ENTRYPOINT_NOT_FOUND;
-        BrokerLog(L"LoadFirstDll export missing");
-        goto BROKER_FINISH;
+        goto BROKER_FINISH_NEW;
     }
-    ShadowLoadFirstDll = PtrAdd(SelfShadow, PtrOffset(ShadowLoadFirstDll, LocalSelfShadow));
-    ZeroMemory(Jump, sizeof(Jump));
+
+    if ((Config->InjectionFlags & LEP_INJECT_PATCH_LDR_LOAD_DLL) != 0)
+    {
+        Status = ReadMemory(Process, LdrLoadDllAddress, Backup, sizeof(Backup));
+        if (NT_FAILED(Status))
+            goto BROKER_FINISH_NEW;
+        Status = ProtectVirtualMemory(LdrLoadDllAddress, sizeof(Backup), PAGE_EXECUTE_READWRITE,
+                                      &LdrLoadDllProtect, Process);
+        if (NT_FAILED(Status))
+            goto BROKER_FINISH_NEW;
+        LdrLoadDllWritable = TRUE;
+    }
+
+    RelocPeImage(LocalImage, LocalImage, nullptr, RemoteImage);
+    PLEP_FIRST_DLL_BOOTSTRAP_DATA BootstrapData = (PLEP_FIRST_DLL_BOOTSTRAP_DATA)
+        LookupExportTable(LocalImage, LEP_FIRST_DLL_BOOTSTRAP_EXPORT);
+    if (BootstrapData == nullptr)
+    {
+        Status = STATUS_ENTRYPOINT_NOT_FOUND;
+        goto BROKER_FINISH_NEW;
+    }
+    ZeroMemory(BootstrapData, sizeof(*BootstrapData));
+    BootstrapData->Magic = LEP_FIRST_DLL_BOOTSTRAP_MAGIC;
+    BootstrapData->InjectionFlags = Config->InjectionFlags;
+    BootstrapData->PayloadOffset = (ULONG)PayloadOffset;
+    BootstrapData->PayloadSize = Config->PayloadSize;
+    if ((Config->InjectionFlags & LEP_INJECT_PATCH_LDR_LOAD_DLL) != 0)
+    {
+        BootstrapData->BackupSize = sizeof(Backup);
+        BootstrapData->OriginalProtect = LdrLoadDllProtect;
+        BootstrapData->LdrLoadDllAddress = LdrLoadDllAddress;
+        CopyMemory(BootstrapData->Backup, Backup, sizeof(Backup));
+    }
+
+    Status = WriteMemory(Process, RemoteImage, LocalImage, ImageSize);
+    if (NT_SUCCESS(Status))
+        Status = WriteMemory(Process, PtrAdd(RemoteImage, PayloadOffset), Payload, Config->PayloadSize);
+    if (NT_FAILED(Status) || (Config->InjectionFlags & LEP_INJECT_PATCH_LDR_LOAD_DLL) == 0)
+        goto BROKER_FINISH_NEW;
+
+    PVOID LocalLoadFirstDll = LookupExportTable(LocalImage, "LoadFirstDll");
+    if (LocalLoadFirstDll == nullptr)
+    {
+        Status = STATUS_ENTRYPOINT_NOT_FOUND;
+        goto BROKER_FINISH_NEW;
+    }
+    PVOID RemoteLoadFirstDll = PtrAdd(RemoteImage, PtrOffset(LocalLoadFirstDll, LocalImage));
+    BYTE Jump[16] = {};
 #if ML_AMD64
     Jump[0] = 0xFF;
     Jump[1] = 0x25;
-    *(PVOID *)&Jump[6] = ShadowLoadFirstDll;
+    *(PVOID*)&Jump[6] = RemoteLoadFirstDll;
 #else
     Jump[0] = JUMP;
-    *(LONG *)&Jump[1] = PtrOffset(ShadowLoadFirstDll, PtrAdd(LdrLoadDllAddress, 5));
+    *(LONG*)&Jump[1] = (LONG)PtrOffset(RemoteLoadFirstDll, PtrAdd(LdrLoadDllAddress, 5));
 #endif
-    Status = WriteProtectMemory(Process, LdrLoadDllAddress, Jump, LDR_LOAD_DLL_BACKUP_SIZE);
-    BrokerFormat(Log, countof(Log), L"install first-LdrLoadDll trampoline status=%08X target=%I64X shadow=%I64X",
-                 Status, (ULONG64)(ULONG_PTR)LdrLoadDllAddress,
-                 (ULONG64)(ULONG_PTR)ShadowLoadFirstDll);
+    Status = WriteMemory(Process, LdrLoadDllAddress, Jump, sizeof(Backup));
+    BrokerFormat(Log, countof(Log), L"metadata injection status=%08X image=%I64X payload=%u",
+                 Status, (ULONG64)(ULONG_PTR)RemoteImage, Config->PayloadSize);
     BrokerLog(Log);
 
-BROKER_FINISH:
-    if (LocalSelfShadow != nullptr)
-        UnloadPeImage(LocalSelfShadow);
-    Config->Result = (ULONG)Status;
-    NtClose(Thread);
-    UnmapViewOfFile(View);
-    NtClose(Mapping);
-    NtClose(Process);
+BROKER_FINISH_NEW:
+    if (Config != nullptr)
+        Config->Result = (ULONG)Status;
+    if (LocalImage != nullptr)
+        UnloadPeImage(LocalImage);
+    if (NT_FAILED(Status) && LdrLoadDllWritable)
+    {
+        ULONG IgnoredProtect;
+        ProtectVirtualMemory(LdrLoadDllAddress, sizeof(Backup), LdrLoadDllProtect,
+                             &IgnoredProtect, Process);
+    }
+    if (NT_FAILED(Status) && RemoteImage != nullptr)
+        Mm::FreeVirtualMemory(RemoteImage, Process);
+    if (View != nullptr)
+        UnmapViewOfFile(View);
+    if (Mapping != nullptr)
+        NtClose(Mapping);
+    if (Process != nullptr)
+        NtClose(Process);
     return Status;
 }
+
 
 void CALLBACK LepBrokerEntry(HWND Window, HINSTANCE Instance, LPSTR CommandLine, int ShowCommand)
 {
@@ -341,85 +444,13 @@ void CALLBACK LepBrokerEntry(HWND Window, HINSTANCE Instance, LPSTR CommandLine,
 #define LEP_CORE_DLL_NAME L"LocaleEmulatorPlus_x86.dll"
 #endif
 
-typedef struct LEP_CREATE_PROCESS2_CONTEXT
-{
-	PLEPB    EnvironmentBlock;
-	PWSTR   DllFullPath;
-	PLDR_MODULE Module;
-} LEP_CREATE_PROCESS2_CONTEXT, *PLE_CREATE_PROCESS2_CONTEXT;
-
-typedef NTSTATUS (*PLEP_PREPARE_CALLBACK)(PML_PROCESS_INFORMATION ProcessInformation, PVOID Context);
-
-static NTSTATUS LepPrepareRemoteLepPeb(PML_PROCESS_INFORMATION ProcessInfo, PVOID Context)
-{
-	PLE_CREATE_PROCESS2_CONTEXT CreateContext;
-	PLEPPEB LEPPEB;
-	NTSTATUS Status;
-	ULONG_PTR ExtraSize;
-	PVOID MaximumAddress;
-	PREGISTRY_REDIRECTION_ENTRY64 Entry64;
-	PLEPB EnvironmentBlock;
-
-	CreateContext = (PLE_CREATE_PROCESS2_CONTEXT)Context;
-	EnvironmentBlock = CreateContext->EnvironmentBlock;
-	LEPPEB = nullptr;
-	Status = STATUS_SUCCESS;
-
-	LOOP_ONCE
-	{
-		if (EnvironmentBlock == nullptr)
-			break;
-
-		ExtraSize = EnvironmentBlock->NumberOfRegistryRedirectionEntries * sizeof(EnvironmentBlock->RegistryReplacement[0]);
-
-		if (ExtraSize != 0)
-		{
-			MaximumAddress = EnvironmentBlock->RegistryReplacement + EnvironmentBlock->NumberOfRegistryRedirectionEntries;
-			FOR_EACH(Entry64, EnvironmentBlock->RegistryReplacement, EnvironmentBlock->NumberOfRegistryRedirectionEntries)
-			{
-				MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd(Entry64->Original.SubKey.Buffer,      EnvironmentBlock),   Entry64->Original.SubKey.MaximumLength));
-				MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd(Entry64->Original.ValueName.Buffer,   EnvironmentBlock),   Entry64->Original.ValueName.MaximumLength));
-				MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd((PVOID)Entry64->Original.Data,        EnvironmentBlock),   Entry64->Original.DataSize));
-
-				MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd(Entry64->Redirected.SubKey.Buffer,    EnvironmentBlock),   Entry64->Redirected.SubKey.MaximumLength));
-				MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd(Entry64->Redirected.ValueName.Buffer, EnvironmentBlock),   Entry64->Redirected.ValueName.MaximumLength));
-				MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd((PVOID)Entry64->Redirected.Data,      EnvironmentBlock),   Entry64->Redirected.DataSize));
-			}
-
-			ExtraSize += PtrOffset(MaximumAddress, EnvironmentBlock);
-		}
-
-		LEPPEB = OpenOrCreateLepPeb(ProcessInfo->dwProcessId, TRUE, ExtraSize);
-		if (LEPPEB == nullptr)
-		{
-			Status = STATUS_NONE_MAPPED;
-			break;
-		}
-
-		CopyMemory(&LEPPEB->LEPB, EnvironmentBlock, FIELD_OFFSET(LEPB, NumberOfRegistryRedirectionEntries) + ExtraSize);
-
-			LEPPEB->LdrLoadDllAddress = ProcessInfo->FirstCallLdrLoadDll;
-			LEPPEB->LdrLoadDllBackupSize = LDR_LOAD_DLL_BACKUP_SIZE;
-			ReadMemory(ProcessInfo->hProcess, LEPPEB->LdrLoadDllAddress, LEPPEB->LdrLoadDllBackup, LDR_LOAD_DLL_BACKUP_SIZE);
-
-		ULONG_PTR Length = (StrLengthW(CreateContext->DllFullPath) + 1) * sizeof(WCHAR);
-		CopyMemory(LEPPEB->LepDllFullPath, CreateContext->DllFullPath, ML_MIN(Length, sizeof(LEPPEB->LepDllFullPath)));
-
-		Length = CreateContext->Module->FullDllName.Length + sizeof(WCHAR) - CreateContext->Module->BaseDllName.Length;
-		Length = ML_MIN(Length, sizeof(LEPPEB->LepDllDirPath));
-		CopyMemory(LEPPEB->LepDllDirPath, CreateContext->Module->FullDllName.Buffer, Length);
-		LEPPEB->LepDllDirPath[Length / sizeof(WCHAR) - 1] = 0;
-	}
-
-	CloseLepPeb(LEPPEB);
-	return Status;
-}
 
 // Inject the core DLL into a freshly created suspended process.  The first
 // loader-side LdrLoadDll call enters the
 // mapped LoadFirstDll trampoline, which restores the original bytes and runs
 // LEP initialization before continuing the loader call.
 static NTSTATUS LepCreateProcessWithHook(
+	PLEPB                   EnvironmentBlock,
 	PCWSTR                  DllPath,
 	PCWSTR                  ApplicationName,
 	PWSTR                   CommandLine,
@@ -430,80 +461,100 @@ static NTSTATUS LepCreateProcessWithHook(
 	LPSECURITY_ATTRIBUTES   ProcessAttributes,
 	LPSECURITY_ATTRIBUTES   ThreadAttributes,
 	PVOID                   Environment,
-	HANDLE                  Token,
-	PLEP_PREPARE_CALLBACK   PrepareCallback,
-	PVOID                   PrepareContext
+	HANDLE                  Token
 )
 {
-	ML_PROCESS_INFORMATION ProcInfo;
-	NTSTATUS Status;
+	PLEP_BOOTSTRAP_PAYLOAD Payload = nullptr;
+	ULONG PayloadSize = 0;
+	NTSTATUS Status = LepCreateBootstrapPayload(EnvironmentBlock, DllPath, &Payload, &PayloadSize);
+	if (NT_FAILED(Status))
+		return Status;
+
+	ML_PROCESS_INFORMATION ProcInfo = {};
 	PVOID LocalImage = nullptr;
 	PVOID RemoteImage = nullptr;
-	PVOID RemoteLoadFirstDll;
-	PVOID LdrLoadDllAddress;
-	BYTE Jump[16];
-	ULONG_PTR ImageSize;
+	PVOID LdrLoadDllAddress = nullptr;
+	ULONG LdrLoadDllProtect = 0;
+	BOOL LdrLoadDllWritable = FALSE;
+	BYTE Backup[LDR_LOAD_DLL_BACKUP_SIZE];
 
 	Status = CreateProcess(ApplicationName, CommandLine, CurrentDirectory,
 		CreationFlags | CREATE_SUSPENDED, StartupInfo, &ProcInfo,
 		ProcessAttributes, ThreadAttributes, Environment, Token);
 	if (NT_FAILED(Status))
+	{
+		FreeMemory(Payload);
 		return Status;
+	}
 
-	// ntdll is loaded before the initial thread can execute.  Same-architecture
-	// processes use the same export address, matching child propagation.
 	LdrLoadDllAddress = EATLookupRoutineByHashPNoFix(GetNtdllHandle(), NTDLL_LdrLoadDll);
 	ProcInfo.FirstCallLdrLoadDll = LdrLoadDllAddress;
-	if (PrepareCallback != nullptr)
+	if (LdrLoadDllAddress == nullptr)
 	{
-		Status = PrepareCallback(&ProcInfo, PrepareContext);
-		if (NT_FAILED(Status))
-			goto FAIL;
+		Status = STATUS_ENTRYPOINT_NOT_FOUND;
+		goto FAIL_NEW;
 	}
 
 	Status = LoadPeImage(DllPath, &LocalImage, nullptr, 0);
 	if (NT_FAILED(Status))
-		goto FAIL;
-
-	ImageSize = ImageGetSizeOfImage(LocalImage);
-	Status = AllocVirtualMemoryEx(ProcInfo.hProcess, &RemoteImage, ImageSize);
+		goto FAIL_NEW;
+	ULONG_PTR ImageSize = ImageGetSizeOfImage(LocalImage);
+	if (ImageSize > LEP_BOOTSTRAP_IMAGE_MAX_SIZE)
+	{
+		Status = STATUS_BUFFER_OVERFLOW;
+		goto FAIL_NEW;
+	}
+	ULONG_PTR PayloadOffset = ROUND_UP(ImageSize, 16);
+	Status = AllocVirtualMemoryEx(ProcInfo.hProcess, &RemoteImage, PayloadOffset + PayloadSize);
 	if (NT_FAILED(Status))
-		goto FAIL;
+		goto FAIL_NEW;
+
+	Status = ReadMemory(ProcInfo.hProcess, LdrLoadDllAddress, Backup, sizeof(Backup));
+	if (NT_FAILED(Status))
+		goto FAIL_NEW;
+	Status = ProtectVirtualMemory(LdrLoadDllAddress, sizeof(Backup), PAGE_EXECUTE_READWRITE,
+		&LdrLoadDllProtect, ProcInfo.hProcess);
+	if (NT_FAILED(Status))
+		goto FAIL_NEW;
+	LdrLoadDllWritable = TRUE;
 
 	RelocPeImage(LocalImage, LocalImage, nullptr, RemoteImage);
-	Status = WriteMemory(ProcInfo.hProcess, RemoteImage, LocalImage, ImageSize);
+	Status = LepFillFirstDllBootstrapData(LocalImage, LdrLoadDllAddress, Backup,
+		LdrLoadDllProtect, LEP_INJECT_FULL, (ULONG)PayloadOffset, PayloadSize);
 	if (NT_FAILED(Status))
-		goto FAIL;
+		goto FAIL_NEW;
+	Status = WriteMemory(ProcInfo.hProcess, RemoteImage, LocalImage, ImageSize);
+	if (NT_SUCCESS(Status))
+		Status = WriteMemory(ProcInfo.hProcess, PtrAdd(RemoteImage, PayloadOffset), Payload, PayloadSize);
+	if (NT_FAILED(Status))
+		goto FAIL_NEW;
 
-	RemoteLoadFirstDll = LookupExportTable(LocalImage, "LoadFirstDll");
-	if (RemoteLoadFirstDll == nullptr)
+	PVOID LocalLoadFirstDll = LookupExportTable(LocalImage, "LoadFirstDll");
+	if (LocalLoadFirstDll == nullptr)
 	{
 		Status = STATUS_ENTRYPOINT_NOT_FOUND;
-		goto FAIL;
+		goto FAIL_NEW;
 	}
-	RemoteLoadFirstDll = PtrAdd(RemoteImage, PtrOffset(RemoteLoadFirstDll, LocalImage));
-
-	ZeroMemory(Jump, sizeof(Jump));
+	PVOID RemoteLoadFirstDll = PtrAdd(RemoteImage, PtrOffset(LocalLoadFirstDll, LocalImage));
+	BYTE Jump[16] = {};
 #if ML_AMD64
 	Jump[0] = 0xFF;
 	Jump[1] = 0x25;
-	*(PVOID *)&Jump[6] = RemoteLoadFirstDll;
+	*(PVOID*)&Jump[6] = RemoteLoadFirstDll;
 #else
 	Jump[0] = JUMP;
-	*(LONG *)&Jump[1] = (LONG)PtrOffset(RemoteLoadFirstDll, PtrAdd(LdrLoadDllAddress, 5));
+	*(LONG*)&Jump[1] = (LONG)PtrOffset(RemoteLoadFirstDll, PtrAdd(LdrLoadDllAddress, 5));
 #endif
-	Status = WriteProtectMemory(ProcInfo.hProcess, LdrLoadDllAddress,
-		Jump, LDR_LOAD_DLL_BACKUP_SIZE);
+	Status = WriteMemory(ProcInfo.hProcess, LdrLoadDllAddress, Jump, sizeof(Backup));
 	if (NT_FAILED(Status))
-		goto FAIL;
+		goto FAIL_NEW;
 
 	UnloadPeImage(LocalImage);
-	LocalImage = nullptr;
-
+	FreeMemory(Payload);
 	if (FLAG_OFF(CreationFlags, CREATE_SUSPENDED))
 		Status = NtResumeProcess(ProcInfo.hProcess);
 	if (NT_FAILED(Status))
-		goto FAIL;
+		goto FAIL_NEW_NO_LOCAL;
 
 	if (ProcessInformation != nullptr)
 		*ProcessInformation = ProcInfo;
@@ -514,9 +565,18 @@ static NTSTATUS LepCreateProcessWithHook(
 	}
 	return STATUS_SUCCESS;
 
-FAIL:
+FAIL_NEW:
+	if (Payload != nullptr)
+		FreeMemory(Payload);
 	if (LocalImage != nullptr)
 		UnloadPeImage(LocalImage);
+FAIL_NEW_NO_LOCAL:
+	if (LdrLoadDllWritable)
+	{
+		ULONG IgnoredProtect;
+		ProtectVirtualMemory(LdrLoadDllAddress, sizeof(Backup), LdrLoadDllProtect,
+			&IgnoredProtect, ProcInfo.hProcess);
+	}
 	if (RemoteImage != nullptr)
 		Mm::FreeVirtualMemory(RemoteImage, ProcInfo.hProcess);
 	NtTerminateProcess(ProcInfo.hProcess, Status);
@@ -524,6 +584,7 @@ FAIL:
 	NtClose(ProcInfo.hThread);
 	return Status;
 }
+
 
 EXTC
 NTSTATUS
@@ -547,7 +608,6 @@ LepCreateProcess2(
 	PLDR_MODULE             Module;
 	NTSTATUS                Status;
 	ML_PROCESS_INFORMATION  ProcessInfo;
-	LEP_CREATE_PROCESS2_CONTEXT CreateContext;
 
 	static WCHAR Dll[] = LEP_CORE_DLL_NAME;
 
@@ -558,11 +618,8 @@ LepCreateProcess2(
 	CopyMemory(DllFullPath, Module->FullDllName.Buffer, Length);
 	CopyStruct(PtrAdd(DllFullPath, Length), Dll, sizeof(Dll));
 
-	CreateContext.EnvironmentBlock = EnvironmentBlock;
-	CreateContext.DllFullPath = DllFullPath;
-	CreateContext.Module = Module;
-
-    Status = LepCreateProcessWithHook(
+	    Status = LepCreateProcessWithHook(
+		EnvironmentBlock,
         DllFullPath,
         ApplicationName,
         CommandLine,
@@ -572,10 +629,8 @@ LepCreateProcess2(
         &ProcessInfo,
         ProcessAttributes,
         ThreadAttributes,
-        Environment,
-        Token,
-        LepPrepareRemoteLepPeb,
-        &CreateContext
+		Environment,
+		Token
     );
 
 	if (NT_FAILED(Status))
@@ -625,7 +680,8 @@ LepCreateProcess(
 	ULONG_PTR               Length;
 	PWSTR                   DllFullPath;
 	PLDR_MODULE             Module;
-	PLEPPEB                  LEPPEB;
+		PLEP_BOOTSTRAP_PAYLOAD   Payload;
+		ULONG                    PayloadSize;
 
 	static WCHAR Dll[] = LEP_CORE_DLL_NAME;
 
@@ -636,71 +692,29 @@ LepCreateProcess(
 	CopyMemory(DllFullPath, Module->FullDllName.Buffer, Length);
 	CopyStruct(PtrAdd(DllFullPath, Length), Dll, sizeof(Dll));
 
-	LEPPEB = nullptr;
-
-	LOOP_ONCE
-	{
-		if (EnvironmentBlock == nullptr)
-		break;
-
-	ULONG_PTR   ExtraSize;
-	PVOID       MaximumAddress;
-	PREGISTRY_REDIRECTION_ENTRY64 Entry64;
-
-	ExtraSize = EnvironmentBlock->NumberOfRegistryRedirectionEntries * sizeof(EnvironmentBlock->RegistryReplacement[0]);
-
-	if (ExtraSize != 0)
-	{
-		MaximumAddress = EnvironmentBlock->RegistryReplacement + EnvironmentBlock->NumberOfRegistryRedirectionEntries;
-		FOR_EACH(Entry64, EnvironmentBlock->RegistryReplacement, EnvironmentBlock->NumberOfRegistryRedirectionEntries)
-		{
-			MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd(Entry64->Original.SubKey.Buffer,      EnvironmentBlock),   Entry64->Original.SubKey.MaximumLength));
-			MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd(Entry64->Original.ValueName.Buffer,   EnvironmentBlock),   Entry64->Original.ValueName.MaximumLength));
-			MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd((PVOID)Entry64->Original.Data,        EnvironmentBlock),   Entry64->Original.DataSize));
-
-			MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd(Entry64->Redirected.SubKey.Buffer,    EnvironmentBlock),   Entry64->Redirected.SubKey.MaximumLength));
-			MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd(Entry64->Redirected.ValueName.Buffer, EnvironmentBlock),   Entry64->Redirected.ValueName.MaximumLength));
-			MaximumAddress = ML_MAX(MaximumAddress, PtrAdd(PtrAdd((PVOID)Entry64->Redirected.Data,      EnvironmentBlock),   Entry64->Redirected.DataSize));
-		}
-
-		ExtraSize += PtrOffset(MaximumAddress, EnvironmentBlock);
-	}
-
-	LEPPEB = OpenOrCreateLepPeb((ULONG_PTR)CurrentTeb()->ClientId.UniqueProcess, TRUE, ExtraSize);
-	if (LEPPEB == nullptr)
-	{
-		Status = STATUS_NONE_MAPPED;
-		break;
-	}
-
-	CopyMemory(&LEPPEB->LEPB, EnvironmentBlock, FIELD_OFFSET(LEPB, NumberOfRegistryRedirectionEntries) + ExtraSize);
-
-	LEPPEB->LdrLoadDllAddress = LookupExportTable(GetNtdllHandle(), NTDLL_LdrLoadDll);
-	LEPPEB->LdrLoadDllBackupSize = LDR_LOAD_DLL_BACKUP_SIZE;
-	CopyMemory(LEPPEB->LdrLoadDllBackup, LEPPEB->LdrLoadDllAddress, LDR_LOAD_DLL_BACKUP_SIZE);
-
-	ULONG_PTR Length = (StrLengthW(DllFullPath) + 1) * sizeof(WCHAR);
-	CopyMemory(LEPPEB->LepDllFullPath, DllFullPath, ML_MIN(Length, sizeof(LEPPEB->LepDllFullPath)));
-
-  Length = Module->FullDllName.Length + sizeof(WCHAR) - Module->BaseDllName.Length;
-
-  Length = ML_MIN(Length, sizeof(LEPPEB->LepDllFullPath));
-  CopyMemory(LEPPEB->LepDllDirPath, Module->FullDllName.Buffer, Length);
-  LEPPEB->LepDllDirPath[Length / sizeof(WCHAR) - 1] = 0;
-	}
+		Payload = nullptr;
+		PayloadSize = 0;
+		Status = LepCreateBootstrapPayload(EnvironmentBlock, DllFullPath, &Payload, &PayloadSize);
+		FAIL_RETURN(Status);
 
 	UNICODE_STRING DllFullPathString;
 	TEB_ACTIVE_FRAME frame(LEP_LOADER_PROCESS);
 
-	frame.Data = (ULONG_PTR)LEPPEB;
+		frame.Data = (ULONG_PTR)Payload;
 	frame.Push();
 
 	RtlInitUnicodeString(&DllFullPathString, DllFullPath);
 
-	Status = LdrLoadDll(nullptr, nullptr, &DllFullPathString, &LepDllHandle);
-	CloseLepPeb(LEPPEB);
-
-	FAIL_RETURN(Status);
+		Status = LdrLoadDll(nullptr, nullptr, &DllFullPathString, &LepDllHandle);
+		if (frame.Data != 0)
+		{
+			FreeMemory((PVOID)frame.Data);
+			frame.Data = 0;
+		}
+		if (NT_FAILED(Status))
+		{
+			return Status;
+		}
 
 	Status = Ps::CreateProcess(
 		ApplicationName,

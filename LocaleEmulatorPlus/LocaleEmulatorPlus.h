@@ -240,11 +240,54 @@ typedef struct
 enum LEP_CHILD_INJECTION_FLAGS
 {
     LEP_INJECT_WRITE_SHADOW       = 0x00000001,
-    LEP_INJECT_CREATE_SHARED_PEB  = 0x00000002,
     LEP_INJECT_PATCH_LDR_LOAD_DLL = 0x00000004,
+    // Diagnostic bootstrap: restore LdrLoadDll, then return without Initialize.
+    LEP_INJECT_RESTORE_ONLY      = 0x00000008,
     LEP_INJECT_FULL = LEP_INJECT_WRITE_SHADOW |
-                      LEP_INJECT_CREATE_SHARED_PEB |
                       LEP_INJECT_PATCH_LDR_LOAD_DLL
+};
+
+#define LEP_FIRST_DLL_BOOTSTRAP_MAGIC TAG4('L1DB')
+#define LEP_FIRST_DLL_BOOTSTRAP_EXPORT "LepFirstDllBootstrapData"
+#define LEP_BOOTSTRAP_PAYLOAD_MAGIC TAG4('LBP1')
+#define LEP_BOOTSTRAP_PAYLOAD_VERSION 1
+#define LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE 0x1000000
+#define LEP_BOOTSTRAP_IMAGE_MAX_SIZE 0x10000000
+
+typedef struct
+{
+    ULONG       Magic;
+    ULONG       InjectionFlags;
+    ULONG       BackupSize;
+    ULONG       OriginalProtect;
+    PVOID       LdrLoadDllAddress;
+    ULONG       PayloadOffset;
+    ULONG       PayloadSize;
+    BYTE        Backup[LDR_LOAD_DLL_BACKUP_SIZE];
+} LEP_FIRST_DLL_BOOTSTRAP_DATA, *PLEP_FIRST_DLL_BOOTSTRAP_DATA;
+
+typedef struct
+{
+    ULONG Magic;
+    ULONG Version;
+    ULONG HeaderSize;
+    ULONG TotalSize;
+    ULONG EnvironmentOffset;
+    ULONG EnvironmentSize;
+    ULONG LepDllFullPathOffset;
+    ULONG LepDllFullPathLength;
+    ULONG LepDllDirPathOffset;
+    ULONG LepDllDirPathLength;
+} LEP_BOOTSTRAP_PAYLOAD, *PLEP_BOOTSTRAP_PAYLOAD;
+
+enum LEP_BOOTSTRAP_STAGE
+{
+    LepBootstrapStageNone = 0,
+    LepBootstrapStageValidateMetadata,
+    LepBootstrapStageRestoreLdrLoadDll,
+    LepBootstrapStageRestoreProtection,
+    LepBootstrapStageInitialize,
+    LepBootstrapStageComplete
 };
 
 #pragma warning(push)
@@ -291,55 +334,103 @@ typedef struct
     ULONG_PTR   OriginalLocaleID;
     CHAR        ScriptNameA[LF_FACESIZE];
     WCHAR       ScriptNameW[LF_FACESIZE];
-
-    HANDLE      Section;
     PVOID       LdrLoadDllAddress;
-    ULONG_PTR   LdrLoadDllBackupSize;
-    ULONG       InjectionFlags;
-    BYTE        LdrLoadDllBackup[16];
-    WCHAR       LepDllFullPath[MAX_NTPATH];
-    WCHAR       LepDllDirPath[MAX_NTPATH];
-    LEPB         LEPB;
+} LEP_RUNTIME_STATE, *PLEP_RUNTIME_STATE;
 
-} LOCALE_EMULATOR_PLUS_PROCESS_ENVIRONMENT_BLOCK, *PLOCALE_EMULATOR_PLUS_PROCESS_ENVIRONMENT_BLOCK, LEPPEB, *PLEPPEB;
-
-inline
-ULONG_PTR
-GetLepPebSectionName(
-    PWSTR       Buffer,
-    ULONG_PTR   ProcessId
-)
+inline BOOL LepPayloadRangeValid(ULONG Offset, ULONG Size, ULONG TotalSize)
 {
-    static const WCHAR Prefix[] = L"Local\\LOCALE_EMULATOR_PLUS_PROCESS_ENVIRONMENT_BLOCK_SECTION_";
-    ULONG_PTR Length;
-    ULONG_PTR Shift;
-    BOOL Started;
+    return Offset <= TotalSize && Size <= TotalSize - Offset;
+}
 
-    CopyMemory(Buffer, Prefix, sizeof(Prefix) - sizeof(WCHAR));
-    Length = CONST_STRLEN(Prefix);
-
-    Started = FALSE;
-    for (Shift = sizeof(ProcessId) * 8; Shift != 0; )
+inline BOOL LepValidateBootstrapPayload(PLEP_BOOTSTRAP_PAYLOAD Payload)
+{
+    if (Payload == nullptr ||
+        Payload->Magic != LEP_BOOTSTRAP_PAYLOAD_MAGIC ||
+        Payload->Version != LEP_BOOTSTRAP_PAYLOAD_VERSION ||
+        Payload->HeaderSize != sizeof(*Payload) ||
+        Payload->TotalSize < Payload->HeaderSize ||
+        Payload->TotalSize > LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE ||
+        Payload->EnvironmentOffset < Payload->HeaderSize ||
+        Payload->LepDllFullPathOffset < Payload->HeaderSize ||
+        Payload->LepDllDirPathOffset < Payload->HeaderSize ||
+        Payload->LepDllFullPathLength > Payload->TotalSize - sizeof(WCHAR) ||
+        Payload->LepDllDirPathLength > Payload->TotalSize - sizeof(WCHAR) ||
+        !LepPayloadRangeValid(Payload->EnvironmentOffset, Payload->EnvironmentSize, Payload->TotalSize) ||
+        Payload->EnvironmentSize < FIELD_OFFSET(LEPB, RegistryReplacement) ||
+        !LepPayloadRangeValid(Payload->LepDllFullPathOffset, Payload->LepDllFullPathLength + sizeof(WCHAR), Payload->TotalSize) ||
+        !LepPayloadRangeValid(Payload->LepDllDirPathOffset, Payload->LepDllDirPathLength + sizeof(WCHAR), Payload->TotalSize) ||
+        (Payload->LepDllFullPathLength & (sizeof(WCHAR) - 1)) != 0 ||
+        (Payload->LepDllDirPathLength & (sizeof(WCHAR) - 1)) != 0)
     {
-        ULONG_PTR Digit;
+        return FALSE;
+    }
 
-        Shift -= 4;
-        Digit = (ProcessId >> Shift) & 0xF;
-        if (Digit != 0 || Started || Shift == 0)
+    PLEPB Environment = (PLEPB)PtrAdd(Payload, Payload->EnvironmentOffset);
+    ULONG64 Count = Environment->NumberOfRegistryRedirectionEntries;
+    ULONG64 Required = FIELD_OFFSET(LEPB, RegistryReplacement) +
+                       Count * sizeof(REGISTRY_REDIRECTION_ENTRY64);
+    if (Count > 0x10000 || Required > Payload->EnvironmentSize)
+        return FALSE;
+
+    auto EnvironmentRangeValid = [Payload] (ULONG64 Offset, ULONG64 Size) -> BOOL
+    {
+        if (Offset == 0 && Size == 0)
+            return TRUE;
+        return Offset <= Payload->EnvironmentSize &&
+               Size <= Payload->EnvironmentSize - Offset;
+    };
+    auto EnvironmentStringValid = [Environment, &EnvironmentRangeValid] (UNICODE_STRING64& String) -> BOOL
+    {
+        ULONG64 Offset = (ULONG64)String.Buffer;
+        if (String.Length > String.MaximumLength || (String.Length & 1) != 0)
+            return FALSE;
+        if (Offset == 0 && String.MaximumLength == 0)
+            return TRUE;
+        if (!EnvironmentRangeValid(Offset, (ULONG64)String.MaximumLength + sizeof(WCHAR)))
+            return FALSE;
+        return *(PWCHAR)PtrAdd(Environment, Offset + String.MaximumLength) == 0;
+    };
+    PREGISTRY_REDIRECTION_ENTRY64 Entry = Environment->RegistryReplacement;
+    for (ULONG64 Index = 0; Index != Count; ++Index, ++Entry)
+    {
+        if (!EnvironmentStringValid(Entry->Original.SubKey) ||
+            !EnvironmentStringValid(Entry->Original.ValueName) ||
+            !EnvironmentRangeValid((ULONG64)Entry->Original.Data, Entry->Original.DataSize) ||
+            !EnvironmentStringValid(Entry->Redirected.SubKey) ||
+            !EnvironmentStringValid(Entry->Redirected.ValueName) ||
+            !EnvironmentRangeValid((ULONG64)Entry->Redirected.Data, Entry->Redirected.DataSize))
         {
-            Started = TRUE;
-            Buffer[Length++] = (WCHAR)(Digit < 10 ? L'0' + Digit : L'A' + Digit - 10);
+            return FALSE;
         }
     }
 
-    Buffer[Length] = 0;
-    return Length;
+    PCWSTR FullPath = (PCWSTR)PtrAdd(Payload, Payload->LepDllFullPathOffset);
+    PCWSTR DirPath = (PCWSTR)PtrAdd(Payload, Payload->LepDllDirPathOffset);
+    return FullPath[Payload->LepDllFullPathLength / sizeof(WCHAR)] == 0 &&
+           DirPath[Payload->LepDllDirPathLength / sizeof(WCHAR)] == 0;
 }
 
-inline NTSTATUS CloseLepPeb(PLEPPEB LEPPEB)
+inline PLEPB LepBootstrapEnvironment(PLEP_BOOTSTRAP_PAYLOAD Payload)
 {
-    return LEPPEB == nullptr ? STATUS_INVALID_PARAMETER : NtUnmapViewOfSection(CurrentProcess, LEPPEB);
+    return LepValidateBootstrapPayload(Payload)
+        ? (PLEPB)PtrAdd(Payload, Payload->EnvironmentOffset)
+        : nullptr;
 }
+
+inline PCWSTR LepBootstrapDllFullPath(PLEP_BOOTSTRAP_PAYLOAD Payload)
+{
+    return LepValidateBootstrapPayload(Payload)
+        ? (PCWSTR)PtrAdd(Payload, Payload->LepDllFullPathOffset)
+        : nullptr;
+}
+
+inline PCWSTR LepBootstrapDllDirPath(PLEP_BOOTSTRAP_PAYLOAD Payload)
+{
+    return LepValidateBootstrapPayload(Payload)
+        ? (PCWSTR)PtrAdd(Payload, Payload->LepDllDirPathOffset)
+        : nullptr;
+}
+
 
 inline ULONG_PTR LepStringLengthW(PCWSTR String)
 {
@@ -351,54 +442,53 @@ inline ULONG_PTR LepStringLengthW(PCWSTR String)
     return Current - String;
 }
 
-inline
-NTSTATUS
-LepOpenDirectoryObject(
-    PHANDLE DirectoryHandle,
-    PWSTR   DirectoryNameBuffer,
-    HANDLE  RootHandle
-)
+inline ULONG LepBootstrapPayloadSize(ULONG EnvironmentSize, PCWSTR FullPath, PCWSTR DirPath)
 {
-    NTSTATUS                     Status;
-    OBJECT_ATTRIBUTES            ObjectAttributes;
-    UNICODE_STRING               DirectoryName;
-
-    DirectoryName.Buffer          = DirectoryNameBuffer;
-    DirectoryName.Length          = LepStringLengthW(DirectoryNameBuffer) * sizeof(WCHAR);
-    DirectoryName.MaximumLength   = DirectoryName.Length;
-
-    InitializeObjectAttributes(&ObjectAttributes, &DirectoryName, OBJ_CASE_INSENSITIVE, RootHandle, nullptr);
-
-    return NtOpenDirectoryObject(DirectoryHandle, DIRECTORY_ALL_ACCESS, &ObjectAttributes);
+    ULONG64 Size = ROUND_UP(sizeof(LEP_BOOTSTRAP_PAYLOAD), 8) + EnvironmentSize;
+    Size = ROUND_UP(Size, sizeof(WCHAR));
+    Size += (LepStringLengthW(FullPath) + 1) * sizeof(WCHAR);
+    Size += (LepStringLengthW(DirPath) + 1) * sizeof(WCHAR);
+    return Size <= LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE ? (ULONG)Size : 0;
 }
 
-inline ULONG_PTR FormatLepBaseNamedObjectsRoot(PWSTR Buffer, ULONG_PTR SessionId)
+inline NTSTATUS LepBuildBootstrapPayload(
+    PLEP_BOOTSTRAP_PAYLOAD Payload,
+    ULONG Capacity,
+    PLEPB Environment,
+    ULONG EnvironmentSize,
+    PCWSTR FullPath,
+    PCWSTR DirPath
+)
 {
-    static const WCHAR Prefix[] = L"\\Sessions\\";
-    static const WCHAR Suffix[] = L"\\BaseNamedObjects";
-    WCHAR Digits[20];
-    ULONG_PTR Length;
-    ULONG_PTR Count;
+    if (Payload == nullptr || Environment == nullptr || FullPath == nullptr || DirPath == nullptr)
+        return STATUS_INVALID_PARAMETER;
 
-    CopyMemory(Buffer, Prefix, sizeof(Prefix) - sizeof(WCHAR));
-    Length = CONST_STRLEN(Prefix);
+    ULONG TotalSize = LepBootstrapPayloadSize(EnvironmentSize, FullPath, DirPath);
+    if (TotalSize == 0 || Capacity < TotalSize)
+        return STATUS_BUFFER_TOO_SMALL;
 
-    Count = 0;
-    do
-    {
-        Digits[Count++] = (WCHAR)(L'0' + SessionId % 10);
-        SessionId /= 10;
-    } while (SessionId != 0);
+    ZeroMemory(Payload, TotalSize);
+    Payload->Magic = LEP_BOOTSTRAP_PAYLOAD_MAGIC;
+    Payload->Version = LEP_BOOTSTRAP_PAYLOAD_VERSION;
+    Payload->HeaderSize = sizeof(*Payload);
+    Payload->TotalSize = TotalSize;
 
-    do
-    {
-        Buffer[Length++] = Digits[--Count];
-    } while (Count != 0);
+    ULONG Offset = ROUND_UP(sizeof(*Payload), 8);
+    Payload->EnvironmentOffset = Offset;
+    Payload->EnvironmentSize = EnvironmentSize;
+    CopyMemory(PtrAdd(Payload, Offset), Environment, EnvironmentSize);
+    Offset = ROUND_UP(Offset + EnvironmentSize, sizeof(WCHAR));
 
-    CopyMemory(Buffer + Length, Suffix, sizeof(Suffix));
-    Length += CONST_STRLEN(Suffix);
+    Payload->LepDllFullPathOffset = Offset;
+    Payload->LepDllFullPathLength = (ULONG)(LepStringLengthW(FullPath) * sizeof(WCHAR));
+    CopyMemory(PtrAdd(Payload, Offset), FullPath, Payload->LepDllFullPathLength + sizeof(WCHAR));
+    Offset += Payload->LepDllFullPathLength + sizeof(WCHAR);
 
-    return Length;
+    Payload->LepDllDirPathOffset = Offset;
+    Payload->LepDllDirPathLength = (ULONG)(LepStringLengthW(DirPath) * sizeof(WCHAR));
+    CopyMemory(PtrAdd(Payload, Offset), DirPath, Payload->LepDllDirPathLength + sizeof(WCHAR));
+
+    return LepValidateBootstrapPayload(Payload) ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
 }
 
 inline ULONG_PTR FormatLepUIntDecimal(PWSTR Buffer, ULONG_PTR Value)
@@ -455,210 +545,46 @@ inline ULONG_PTR FormatLepUIntHex4(PWSTR Buffer, ULONG_PTR Value)
     return 4;
 }
 
-inline
-BOOL
-LepFindSectionObject(
-    PHANDLE         SectionHandle,
-    PUNICODE_STRING SectionName,
-    ULONG           Depth,
-    HANDLE          RootHandle
-)
-{
-    NTSTATUS                     Status;
-    OBJECT_ATTRIBUTES            ObjectAttributes;
-    PDIRECTORY_BASIC_INFORMATION Buffer;
-    ULONG                        BufferSize;
-    ULONG                        Context;
-    ULONG                        RetSize;
-    HANDLE                       SubDirHandle;
-
-    if (Depth == 0)
-    {
-        InitializeObjectAttributes(&ObjectAttributes, SectionName, 0, RootHandle, nullptr);
-        Status = NtOpenSection(SectionHandle, SECTION_ALL_ACCESS, &ObjectAttributes);
-        if (NT_FAILED(Status))
-            return FALSE;
-        return TRUE;
-    }
-    else
-    {
-        BufferSize = 0x400;
-        // XXX: Use _alloca instead of AllocStack for memory continuity
-        // XXX: Also do not use AllocateMemory
-        Buffer = (PDIRECTORY_BASIC_INFORMATION) _alloca(BufferSize);
-        do
-        {
-            Buffer = (PDIRECTORY_BASIC_INFORMATION) _alloca(BufferSize);
-            BufferSize *= 2;
-            Status = NtQueryDirectoryObject(RootHandle, (PVOID)Buffer, BufferSize, FALSE, TRUE, &Context, &RetSize);
-        } while (Status == STATUS_MORE_ENTRIES || Status == STATUS_BUFFER_TOO_SMALL);
-        if (!NT_SUCCESS(Status))
-            return FALSE;
-        while ((Buffer->ObjectName.Length != 0) && (Buffer->ObjectTypeName.Length != 0))
-        {
-            if (memcmp(Buffer->ObjectTypeName.Buffer, L"Directory", Buffer->ObjectTypeName.Length))
-            {
-                ++Buffer;
-                continue;
-            }
-            InitializeObjectAttributes(&ObjectAttributes, &Buffer->ObjectName, OBJ_CASE_INSENSITIVE, RootHandle, nullptr);
-            Status = NtOpenDirectoryObject(&SubDirHandle, DIRECTORY_ALL_ACCESS, &ObjectAttributes);
-            if (NT_FAILED(Status))
-            {
-                ++Buffer;
-                continue;
-            }
-            if(LepFindSectionObject(SectionHandle, SectionName, Depth-1, SubDirHandle)) {
-                NtClose(SubDirHandle);
-                return TRUE;
-            }
-            NtClose(SubDirHandle);
-            ++Buffer;
-        }
-    }
-    return FALSE;
-}
-
-inline
-PLEPPEB
-NTAPI
-OpenOrCreateLepPeb(
-    ULONG_PTR   ProcessId   = CurrentPid(),
-    BOOL        Create      = FALSE,
-    ULONG_PTR   ExtraSize   = 0
-)
-{
-    NTSTATUS            Status;
-    WCHAR               RootNameBuffer[0x80];
-    WCHAR               SectionNameBuffer[0x80];
-    OBJECT_ATTRIBUTES   ObjectAttributes;
-    UNICODE_STRING      SectionName;
-    HANDLE              SectionHandle, RootHandle;
-    PLEPPEB              LEPPEB;
-    ULONG_PTR           ViewSize, SessionId;
-    LARGE_INTEGER       MaximumSize;
-#if LEP_DIAG_INIT
-    BOOL                DiagVerbose = !IsLepLoader() || Create;
+// Diagnostic build: keep initialization (including NLS/PEB changes) and
+// NtCreateUserProcess propagation, but install no other runtime hooks.
+// Build both architectures with the same value; this is not a payload flag.
+#ifndef LEP_DIAG_PROCESS_ONLY
+#define LEP_DIAG_PROCESS_ONLY 0
 #endif
 
-    // ExceptionBox(L"OpenOrCreateLepPeb");
+// Second isolation pass: prepare tables/config as before, but never apply
+// the emulated NLS tables/globals/PEB pointers to the current process.
+#ifndef LEP_DIAG_SKIP_NLS_APPLY
+#define LEP_DIAG_SKIP_NLS_APPLY 0
+#endif
 
-    LEP_DIAG_HEADER_IF(DiagVerbose, L"OpenOrCreateLepPeb entry");
-    SessionId = GetSessionId(ProcessId);
-    LEP_DIAG_HEADER_IF(DiagVerbose, SessionId == INVALID_SESSION_ID ? L"GetSessionId invalid" : L"GetSessionId ok");
-    if (SessionId == INVALID_SESSION_ID)
-        return nullptr;
+#if LEP_DIAG_SKIP_NLS_APPLY && !LEP_DIAG_PROCESS_ONLY
+#error LEP_DIAG_SKIP_NLS_APPLY requires LEP_DIAG_PROCESS_ONLY
+#endif
 
-    LEP_DIAG_HEADER_IF(DiagVerbose, L"before section root format");
-    FormatLepBaseNamedObjectsRoot(RootNameBuffer, SessionId);
-    LEP_DIAG_HEADER_IF(DiagVerbose, L"section root format ok");
+// Third isolation pass: stop propagation at the chat browser -> child edge.
+// Keep the same process creation/suspension path as the second pass.
+#ifndef LEP_DIAG_SKIP_CHAT_CHILD_INJECTION
+#define LEP_DIAG_SKIP_CHAT_CHILD_INJECTION 0
+#endif
+#if LEP_DIAG_SKIP_CHAT_CHILD_INJECTION && (!LEP_DIAG_PROCESS_ONLY || !LEP_DIAG_SKIP_NLS_APPLY)
+#error LEP_DIAG_SKIP_CHAT_CHILD_INJECTION requires the no-NLS-apply diagnostic mode
+#endif
 
-    LEP_DIAG_HEADER_IF(DiagVerbose, L"before LepOpenDirectoryObject(BaseNamedObjects)");
-    Status = LepOpenDirectoryObject(&RootHandle, RootNameBuffer, nullptr);
-    LEP_DIAG_HEADER_IF(DiagVerbose, NT_FAILED(Status) ? L"LepOpenDirectoryObject(BaseNamedObjects) failed" : L"LepOpenDirectoryObject(BaseNamedObjects) ok");
-    if (NT_FAILED(Status))
-        return FALSE;
+#ifndef LEP_DIAG_CHAT_CHILD_RESTORE_ONLY
+#define LEP_DIAG_CHAT_CHILD_RESTORE_ONLY 0
+#endif
+#if LEP_DIAG_CHAT_CHILD_RESTORE_ONLY && (!LEP_DIAG_PROCESS_ONLY || !LEP_DIAG_SKIP_NLS_APPLY || LEP_DIAG_SKIP_CHAT_CHILD_INJECTION)
+#error Chat restore-only requires no-NLS-apply mode and child injection enabled
+#endif
 
-    LEP_DIAG_HEADER_IF(DiagVerbose, L"before GetLepPebSectionName");
-    SectionName.Length          = (USHORT) GetLepPebSectionName(SectionNameBuffer, ProcessId) * sizeof(WCHAR);
-    SectionName.MaximumLength   = sizeof(SectionNameBuffer);
-    SectionName.Buffer          = SectionNameBuffer;
-    LEP_DIAG_HEADER_IF(DiagVerbose, L"GetLepPebSectionName ok");
-
-    InitializeObjectAttributes(&ObjectAttributes, &SectionName, 0, RootHandle, nullptr);
-
-    LEP_DIAG_HEADER_IF(DiagVerbose, L"before NtOpenSection");
-    Status = NtOpenSection(&SectionHandle, SECTION_ALL_ACCESS, &ObjectAttributes);
-    LEP_DIAG_HEADER_IF(DiagVerbose, NT_FAILED(Status) ? L"NtOpenSection failed" : L"NtOpenSection ok");
-    if (NT_FAILED(Status))
-    {
-        if (Create)
-        {
-            LEP_DIAG_HEADER_IF(DiagVerbose, L"before NtCreateSection");
-            MaximumSize.QuadPart = sizeof(*LEPPEB) + ExtraSize;
-            Status = NtCreateSection(
-                        &SectionHandle,
-                        SECTION_ALL_ACCESS,
-                        &ObjectAttributes,
-                        &MaximumSize,
-                        PAGE_READWRITE,
-                        SEC_COMMIT,
-                        nullptr
-                    );
-            LEP_DIAG_HEADER_IF(DiagVerbose, NT_FAILED(Status) ? L"NtCreateSection failed" : L"NtCreateSection ok");
-            if (NT_FAILED(Status))
-            {
-                NtClose(RootHandle);
-                return nullptr;
-            }
-        }
-        else
-        {
-            NtClose(RootHandle);
-            LEP_DIAG_HEADER_IF(DiagVerbose, L"before LepOpenDirectoryObject(Sandbox)");
-            Status = LepOpenDirectoryObject(&RootHandle, L"\\Sandbox", nullptr);
-            LEP_DIAG_HEADER_IF(DiagVerbose, NT_FAILED(Status) ? L"LepOpenDirectoryObject(Sandbox) failed" : L"LepOpenDirectoryObject(Sandbox) ok");
-            if (NT_FAILED(Status))
-                return FALSE;
-            LEP_DIAG_HEADER_IF(DiagVerbose, L"before LepFindSectionObject");
-            if (!LepFindSectionObject(&SectionHandle, &SectionName, 6, RootHandle))
-            {
-                LEP_DIAG_HEADER_IF(DiagVerbose, L"LepFindSectionObject failed");
-                NtClose(RootHandle);
-                return nullptr;
-            }
-            LEP_DIAG_HEADER_IF(DiagVerbose, L"LepFindSectionObject ok");
-        }
-    }
-    NtClose(RootHandle);
-
-    ViewSize = 0;
-    LEPPEB = nullptr;
-    LEP_DIAG_HEADER_IF(DiagVerbose, L"before NtMapViewOfSection");
-    Status = NtMapViewOfSection(
-                SectionHandle,
-                CurrentProcess,
-                (PVOID *)&LEPPEB,
-                0,
-                sizeof(*LEPPEB),
-                nullptr,
-                &ViewSize,
-                ViewShare,
-                0,
-                PAGE_READWRITE
-            );
-    LEP_DIAG_HEADER_IF(DiagVerbose, NT_FAILED(Status) ? L"NtMapViewOfSection failed" : L"NtMapViewOfSection ok");
-
-    if (NT_FAILED(Status))
-    {
-        NtClose(SectionHandle);
-        return nullptr;
-    }
-
-    if (Create) LOOP_ONCE
-    {
-        HANDLE ProcessHandle;
-
-        ZeroMemory(LEPPEB, ViewSize);
-
-        Status = PidToHandleEx(&ProcessHandle, ProcessId);
-        FAIL_BREAK(Status);
-
-        Status = NtDuplicateObject(CurrentProcess, SectionHandle, ProcessHandle, &LEPPEB->Section, 0, 0, DUPLICATE_SAME_ACCESS);
-        NtClose(ProcessHandle);
-        FAIL_BREAK(Status);
-    }
-
-    NtClose(SectionHandle);
-    if (NT_FAILED(Status))
-    {
-        CloseLepPeb(LEPPEB);
-        return nullptr;
-    }
-
-    LEP_DIAG_HEADER_IF(DiagVerbose, L"OpenOrCreateLepPeb return");
-    return LEPPEB;
-}
+// Write the chat child's shadow image and metadata payload without executing it.
+#ifndef LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH
+#define LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH 0
+#endif
+#if LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH && (!LEP_DIAG_PROCESS_ONLY || !LEP_DIAG_SKIP_NLS_APPLY || LEP_DIAG_SKIP_CHAT_CHILD_INJECTION || LEP_DIAG_CHAT_CHILD_RESTORE_ONLY)
+#error Chat no-Ldr-patch requires no-NLS-apply mode and no other chat injection diagnostic
+#endif
 
 #ifndef ENABLE_LOG
 #define ENABLE_LOG 1
@@ -666,14 +592,13 @@ OpenOrCreateLepPeb(
 
 #if ENABLE_LOG
 
-inline VOID InitLog(NtFileDisk &LogFile)
+inline VOID InitLog(NtFileDisk &LogFile, PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload = nullptr)
 {
     WCHAR LogFilePath[MAX_NTPATH];
     WCHAR NtLogFilePath[MAX_NTPATH + 4];
     UNICODE_STRING SelfPath;
     UNICODE_STRING NtLogFileName;
     PLDR_MODULE Self, Target;
-    PLEPPEB LEPPEB = nullptr;
     NTSTATUS Status;
     ULONG_PTR Offset;
     ULONG_PTR Length;
@@ -695,13 +620,13 @@ inline VOID InitLog(NtFileDisk &LogFile)
     }
     else
     {
-        LEPPEB = OpenOrCreateLepPeb();
-        if (LEPPEB == nullptr)
+        PCWSTR Directory = LepBootstrapDllDirPath(BootstrapPayload);
+        if (Directory == nullptr)
         {
             LogFile = 0;
             return;
         }
-        RtlInitUnicodeString(&SelfPath, LEPPEB->LepDllDirPath);
+        RtlInitUnicodeString(&SelfPath, Directory);
     }
 
     Offset = 0;
@@ -732,11 +657,6 @@ inline VOID InitLog(NtFileDisk &LogFile)
     static const WCHAR LogSuffix[] = L".log.txt";
     Length = ML_MIN(sizeof(LogSuffix), sizeof(LogFilePath) - Offset * sizeof(WCHAR));
     CopyMemory(&LogFilePath[Offset], LogSuffix, Length);
-
-    if (LEPPEB != nullptr)
-    {
-        CloseLepPeb(LEPPEB);
-    }
 
     static const WCHAR DosDevicesPrefix[] = L"\\??\\";
     CopyMemory(NtLogFilePath, DosDevicesPrefix, sizeof(DosDevicesPrefix) - sizeof(WCHAR));
@@ -791,7 +711,9 @@ protected:
     BOOLEAN Wow64 : 1;
     BOOLEAN HasWin32U : 1; //windows 10.0.14295 or higher
 
-    LEPPEB LEPPEB;
+    LEP_RUNTIME_STATE RuntimeState;
+    PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload;
+    BOOLEAN OwnBootstrapPayload : 1;
 
     ml::GrowableArray<REGISTRY_REDIRECTION_ENTRY> RegistryRedirectionEntry;
     ml::HashTableT<TEXT_METRIC_INTERNAL> TextMetricCache;
@@ -870,8 +792,10 @@ public:
         {
             RtlFreeUnicodeString(&Ntdll.CodePageKey);
             RtlFreeUnicodeString(&Ntdll.LanguageKey);
+#if !LEP_DIAG_PROCESS_ONLY
             RtlDeleteCriticalSection(&Gdi32.GdiLock);
             RtlDeleteCriticalSection(&Ntdll.NtLock);
+#endif
         }
 
         struct
@@ -913,14 +837,30 @@ public:
         UnInitialize();
     }
 
-    PLEPPEB GetLepPeb()
+    PLEP_RUNTIME_STATE GetRuntimeState()
     {
-        return &LEPPEB;
+        return &RuntimeState;
     }
 
     PLEPB GetLepb()
     {
-        return &LEPPEB.LEPB;
+        return BootstrapPayload == nullptr
+            ? nullptr
+            : (PLEPB)PtrAdd(BootstrapPayload, BootstrapPayload->EnvironmentOffset);
+    }
+
+    PCWSTR GetLepDllFullPath()
+    {
+        return BootstrapPayload == nullptr
+            ? nullptr
+            : (PCWSTR)PtrAdd(BootstrapPayload, BootstrapPayload->LepDllFullPathOffset);
+    }
+
+    PCWSTR GetLepDllDirPath()
+    {
+        return BootstrapPayload == nullptr
+            ? nullptr
+            : (PCWSTR)PtrAdd(BootstrapPayload, BootstrapPayload->LepDllDirPathOffset);
     }
 
     VOID InitFontCharsetInfo()
@@ -929,7 +869,7 @@ public:
         LOGFONTW lf;
 
         DC = HookStub.StubGetDC == nullptr ? ::GetDC(nullptr) : this->GetDC(nullptr);
-        GetLepPeb()->OriginalCharset = GetTextCharset(DC);
+        GetRuntimeState()->OriginalCharset = GetTextCharset(DC);
 
         lf.lfCharSet = GetLepb()->DefaultCharset;
         lf.lfFaceName[0] = 0;
@@ -939,8 +879,8 @@ public:
                 LepGlobalData *GlobalData = (LepGlobalData *)Param;
                 LPENUMLOGFONTEXW elf = (LPENUMLOGFONTEXW)lf;
 
-                CopyStruct(GlobalData->GetLepPeb()->ScriptNameW, elf->elfScript, sizeof(elf->elfScript));
-                UnicodeToAnsi(GlobalData->GetLepPeb()->ScriptNameA, countof(GlobalData->GetLepPeb()->ScriptNameA), GlobalData->GetLepPeb()->ScriptNameW);
+                CopyStruct(GlobalData->GetRuntimeState()->ScriptNameW, elf->elfScript, sizeof(elf->elfScript));
+                UnicodeToAnsi(GlobalData->GetRuntimeState()->ScriptNameA, countof(GlobalData->GetRuntimeState()->ScriptNameA), GlobalData->GetRuntimeState()->ScriptNameW);
 
                 return FALSE;
             };
@@ -957,10 +897,11 @@ public:
         ReleaseDC(nullptr, DC);
     }
 
-    NTSTATUS Initialize();
+    NTSTATUS Initialize(PLEP_BOOTSTRAP_PAYLOAD Payload, BOOL OwnPayload);
     NTSTATUS UnInitialize();
-    NTSTATUS InitRegistryRedirection(PREGISTRY_REDIRECTION_ENTRY64 Entry64, ULONG_PTR Count, PVOID BaseAddress);
+    NTSTATUS InitRegistryRedirection(PREGISTRY_REDIRECTION_ENTRY64 Entry64, ULONG_PTR Count, PVOID BaseAddress, ULONG_PTR BaseSize = 0);
     NTSTATUS InitDefaultRegistryRedirection();
+    NTSTATUS BuildBootstrapPayload(PCWSTR FullPath, PLEP_BOOTSTRAP_PAYLOAD* Payload, PULONG PayloadSize);
 
     VOID DllNotification(ULONG NotificationReason, PCLDR_DLL_NOTIFICATION_DATA NotificationData);
     VOID HookModule(PVOID DllBase, PCUNICODE_STRING DllName, BOOL DllLoad);
@@ -988,7 +929,7 @@ public:
     NTSTATUS HackUserDefaultLCID2(PVOID Kernel32);
     NTSTATUS HackAnsiOemCodeHashNodes();
     NTSTATUS InjectSelfToChildProcess(HANDLE Process, PCLIENT_ID Cid, ULONG InjectionFlags = LEP_INJECT_FULL);
-    NTSTATUS InjectCrossArchitecture(ULONG_PTR ExtraSize, BOOL CurrentWow64, PCLIENT_ID Cid, BOOL TargetWow64, ULONG InjectionFlags);
+    NTSTATUS InjectCrossArchitecture(BOOL CurrentWow64, PCLIENT_ID Cid, BOOL TargetWow64, ULONG InjectionFlags);
 
     /************************************************************************
       helper func
@@ -1218,5 +1159,20 @@ ForceInline PLepGlobalData LepGetGlobalData()
 }
 
 VOID LepSyncNtdllNlsGlobals(USHORT AnsiCodePage, BOOLEAN AnsiDbcsCodePage, BOOLEAN OemDbcsCodePage);
+
+// The custom Print formatter does not support %.*ws. Write counted UTF-16
+// directly, without assuming a terminating NUL or allocating in the hook.
+inline VOID LepLogUnicodeString(PCWSTR Label, const UNICODE_STRING& Value)
+{
+#if ENABLE_LOG
+    PLepGlobalData Data = LepGetGlobalData();
+    if (Data == nullptr || !Data->LogFile)
+        return;
+    WriteLog(L"%ws", Label);
+    if (Value.Buffer != nullptr && Value.Length != 0)
+        Data->LogFile.Write(Value.Buffer, Value.Length);
+    Data->LogFile.Write((PVOID)L"\r\n", 2 * sizeof(WCHAR));
+#endif
+}
 
 #endif // _LocaleEmulatorPlus_H_cd444a0d_c7f9_44b2_aac8_8107e9a07ca2_

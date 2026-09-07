@@ -406,7 +406,7 @@ NTSTATUS LepGlobalData::AdjustFontDataInternal(PADJUST_FONT_DATA AdjustData)
                 Table,
                 TableSize,
                 Gdi::TT_NAME_ID_FACENAME,
-                this->GetLepPeb()->OriginalLocaleID,
+                this->GetRuntimeState()->OriginalLocaleID,
                 &FaceName
             );
 
@@ -605,7 +605,7 @@ INT NTAPI LepEnumFontCallbackW(CONST LOGFONTW *lf, CONST TEXTMETRICW *TextMetric
         if (EnumParam->Charset == DEFAULT_CHARSET &&
             (lf->lfCharSet == ANSI_CHARSET ||
              lf->lfCharSet == DEFAULT_CHARSET ||
-             lf->lfCharSet == EnumParam->GlobalData->GetLepPeb()->OriginalCharset))
+             lf->lfCharSet == EnumParam->GlobalData->GetRuntimeState()->OriginalCharset))
         {
             EnumLogFontEx.elfLogFont.lfCharSet = EnumParam->GlobalData->GetLepb()->DefaultCharset;
         }
@@ -675,7 +675,7 @@ INT NTAPI LepEnumFontCallbackW(CONST LOGFONTW *lf, CONST TEXTMETRICW *TextMetric
 
             if (lf->lfCharSet != ANSI_CHARSET &&
                 lf->lfCharSet != DEFAULT_CHARSET &&
-                lf->lfCharSet != EnumParam->GlobalData->GetLepPeb()->OriginalCharset)
+                lf->lfCharSet != EnumParam->GlobalData->GetRuntimeState()->OriginalCharset)
             {
                 break;
             }
