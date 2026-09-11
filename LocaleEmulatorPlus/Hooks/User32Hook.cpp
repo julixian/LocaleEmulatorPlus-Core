@@ -909,7 +909,7 @@ LRESULT NTAPI WindowProcW(HWND Window, UINT Message, WPARAM wParam, LPARAM lPara
 
     PrevProc = (WNDPROC)GlobalData->GetWindowDataA(Window);
 
-    if (Message == WM_SETTEXT && IsWindowClass(Window, L"#32770"))
+    if ((Message == WM_NCCREATE || Message == WM_SETTEXT) && IsWindowClass(Window, L"#32770"))
         return DefWindowProcW(Window, Message, wParam, lParam);
 
     if (IsEditTextPositionMessage(Message) && IsEditControl(Window))
