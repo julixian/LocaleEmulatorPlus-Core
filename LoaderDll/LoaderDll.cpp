@@ -39,8 +39,10 @@ static VOID BrokerLog(PCWSTR Text)
 
     if (g_BrokerLog == INVALID_HANDLE_VALUE)
     {
-        Length = GetTempPathW(countof(Path), Path);
-        if (Length == 0 || Length >= countof(Path) - 48)
+        if (!LepGetModuleLogDirectory(Path, countof(Path)))
+            return;
+        Length = StrLengthW(Path);
+        if (Length >= countof(Path) - 48)
             return;
 
         Length += BrokerFormat(Path + Length, countof(Path) - Length,

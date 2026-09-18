@@ -17972,6 +17972,30 @@ NtCreateKey(
 NATIVE_API
 NTSTATUS
 NTAPI
+NtEnumerateKey(
+    IN  HANDLE                  KeyHandle,
+    IN  ULONG                   Index,
+    IN  KEY_INFORMATION_CLASS   KeyInformationClass,
+    OUT PVOID                   KeyInformation,
+    IN  ULONG                   Length,
+    OUT PULONG                  ResultLength
+);
+
+NATIVE_API
+NTSTATUS
+NTAPI
+NtEnumerateValueKey(
+    IN  HANDLE                          KeyHandle,
+    IN  ULONG                           Index,
+    IN  KEY_VALUE_INFORMATION_CLASS     KeyValueInformationClass,
+    OUT PVOID                           KeyValueInformation,
+    IN  ULONG                           Length,
+    OUT PULONG                          ResultLength
+);
+
+NATIVE_API
+NTSTATUS
+NTAPI
 ZwCreateKey(
     OUT PHANDLE             KeyHandle,
     IN  ACCESS_MASK         DesiredAccess,
@@ -24342,6 +24366,10 @@ IsValidImage(
 #if !defined(_MY_STATIC_LIB_)
 
 EXTC IMAGE_DOS_HEADER __ImageBase;
+
+#if ENABLE_LOG
+BOOL LepGetModuleLogDirectory(PWSTR Path, ULONG Capacity);
+#endif
 
 #endif // _MY_STATIC_LIB_
 

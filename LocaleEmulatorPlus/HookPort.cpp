@@ -759,6 +759,120 @@ namespace
             });
     }
 
+    NTSTATUS NTAPI HpNtClose(HANDLE Handle)
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtClose);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtClose);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtClose, Original, Handle);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS HANDLE);
+                return ((FILTER)Callback)(Info, FltInfo, Handle);
+            });
+    }
+
+    NTSTATUS NTAPI HpNtOpenKey(
+        PHANDLE KeyHandle,
+        ACCESS_MASK DesiredAccess,
+        POBJECT_ATTRIBUTES ObjectAttributes
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtOpenKey);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtOpenKey);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtOpenKey, Original, KeyHandle, DesiredAccess, ObjectAttributes);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
+                return ((FILTER)Callback)(Info, FltInfo, KeyHandle, DesiredAccess, ObjectAttributes);
+            });
+    }
+
+    NTSTATUS NTAPI HpNtEnumerateKey(
+        HANDLE KeyHandle,
+        ULONG Index,
+        KEY_INFORMATION_CLASS KeyInformationClass,
+        PVOID KeyInformation,
+        ULONG Length,
+        PULONG ResultLength
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtEnumerateKey);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtEnumerateKey);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtEnumerateKey, Original, KeyHandle, Index, KeyInformationClass, KeyInformation, Length, ResultLength);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS HANDLE, ULONG, KEY_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+                return ((FILTER)Callback)(Info, FltInfo, KeyHandle, Index, KeyInformationClass, KeyInformation, Length, ResultLength);
+            });
+    }
+
+    NTSTATUS NTAPI HpNtEnumerateValueKey(
+        HANDLE                      KeyHandle,
+        ULONG                       Index,
+        KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
+        PVOID                       KeyValueInformation,
+        ULONG                       Length,
+        PULONG                      ResultLength
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtEnumerateValueKey);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtEnumerateValueKey);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtEnumerateValueKey, Original, KeyHandle, Index, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS HANDLE, ULONG, KEY_VALUE_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+                return ((FILTER)Callback)(Info, FltInfo, KeyHandle, Index, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+            });
+    }
+
+    NTSTATUS NTAPI HpNtQueryKey(
+        HANDLE KeyHandle,
+        KEY_INFORMATION_CLASS KeyInformationClass,
+        PVOID KeyInformation,
+        ULONG Length,
+        PULONG ResultLength
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryKey);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryKey);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtQueryKey, Original, KeyHandle, KeyInformationClass, KeyInformation, Length, ResultLength);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS HANDLE, KEY_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+                return ((FILTER)Callback)(Info, FltInfo, KeyHandle, KeyInformationClass, KeyInformation, Length, ResultLength);
+            });
+    }
+
     NTSTATUS NTAPI HpNtQuerySystemInformation(
         SYSTEM_INFORMATION_CLASS SystemInformationClass,
         PVOID                    SystemInformation,
@@ -804,6 +918,30 @@ namespace
             {
                 typedef NTSTATUS (HPCALL *FILTER)(HPARGS HANDLE, PUNICODE_STRING, KEY_VALUE_INFORMATION_CLASS, PVOID, ULONG, PULONG);
                 return ((FILTER)Callback)(Info, FltInfo, KeyHandle, ValueName, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+            });
+    }
+
+    NTSTATUS NTAPI HpNtQueryLicenseValue(
+        PUNICODE_STRING Name,
+        PULONG Type,
+        PVOID Buffer,
+        ULONG Length,
+        PULONG DataLength
+    )
+    {
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryLicenseValue);
+        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryLicenseValue);
+
+        auto CallOriginal = [&]() -> NTSTATUS
+        {
+            return CallFuncPtr(NtQueryLicenseValue, Original, Name, Type, Buffer, Length, DataLength);
+        };
+
+        return DispatchTypedFilter(SysCall, CallOriginal,
+            [&] (PVOID Callback, PSYSCALL_INFO Info, PSYSCALL_FILTER_INFO FltInfo) -> NTSTATUS
+            {
+                typedef NTSTATUS (HPCALL *FILTER)(HPARGS PUNICODE_STRING, PULONG, PVOID, ULONG, PULONG);
+                return ((FILTER)Callback)(Info, FltInfo, Name, Type, Buffer, Length, DataLength);
             });
     }
 
@@ -1192,8 +1330,14 @@ namespace
         switch (RoutineHash)
         {
             case NTDLL_NtCreateUserProcess:       return HpNtCreateUserProcess;
+            case NTDLL_NtClose:                   return HpNtClose;
+            case NTDLL_NtOpenKey:                 return HpNtOpenKey;
+            case NTDLL_NtEnumerateKey:            return HpNtEnumerateKey;
+            case NTDLL_NtEnumerateValueKey:       return HpNtEnumerateValueKey;
+            case NTDLL_NtQueryKey:                return HpNtQueryKey;
             case NTDLL_NtQuerySystemInformation:  return HpNtQuerySystemInformation;
             case NTDLL_NtQueryValueKey:           return HpNtQueryValueKey;
+            case NTDLL_NtQueryLicenseValue:       return HpNtQueryLicenseValue;
             case NTDLL_NtInitializeNlsFiles:      return HpNtInitializeNlsFiles;
             case NTDLL_NtQueryDefaultLocale:      return HpNtQueryDefaultLocale;
             case NTDLL_NtQueryDefaultUILanguage:  return HpNtQueryDefaultUILanguage;

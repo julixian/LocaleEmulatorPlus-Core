@@ -25,6 +25,52 @@ LANGID WINAPI LepGetUserDefaultUILanguage()
     return (LANGID)LepGetGlobalData()->GetLepb()->LocaleID;
 }
 
+HANDLE WINAPI LepCreateActCtxW(PCACTCTXW ActCtx)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+    ACTCTXW Local = {};
+
+    SEH_TRY
+    {
+        if (ActCtx != nullptr)
+            Local = *ActCtx;
+    }
+    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+
+    HANDLE Result = GlobalData->HookStub.StubCreateActCtxW(ActCtx);
+    ULONG Error = RtlGetLastWin32Error();
+
+    if (Result == INVALID_HANDLE_VALUE)
+    {
+        WriteLog(
+            L"CreateActCtxW failed flags=%08X source=%ws module=%p resource=%p lang=%04X error=%u",
+            Local.dwFlags,
+            Local.lpSource != nullptr ? Local.lpSource : L"(null)",
+            Local.hModule,
+            Local.lpResourceName,
+            Local.wLangId,
+            Error
+        );
+    }
+    else
+    {
+        WriteLog(
+            L"CreateActCtxW success flags=%08X source=%ws module=%p resource=%p lang=%04X handle=%p",
+            Local.dwFlags,
+            Local.lpSource != nullptr ? Local.lpSource : L"(null)",
+            Local.hModule,
+            Local.lpResourceName,
+            Local.wLangId,
+            Result
+        );
+    }
+
+    RtlSetLastWin32Error(Error);
+    return Result;
+}
+
 NTSTATUS LepGlobalData::HackUserDefaultLCID(PVOID Kernel32)
 {
     LCID        Lcid;
@@ -161,6 +207,82 @@ static PVOID FindGetNamedLocaleHashNode(PVOID GetNLSVersionEx)
 #endif
 
     return FirstCall;
+}
+
+typedef VOID (FASTCALL *PSETUP_SYSTEM_LOCALE_HASH_NODE)(ULONG ForceRefresh);
+
+static PVOID FindFirstDirectCallTarget(PVOID Routine)
+{
+    PVOID CallTarget = nullptr;
+
+    WalkOpCodeT(Routine, 0x30,
+        WalkOpCodeM(Buffer, OpLength, Ret)
+        {
+            UNREFERENCED_PARAMETER(OpLength);
+            UNREFERENCED_PARAMETER(Ret);
+
+            if (Buffer[0] != CALL)
+                return STATUS_NOT_FOUND;
+
+            CallTarget = GetCallDestination(Buffer);
+            return STATUS_SUCCESS;
+        }
+    );
+
+    return CallTarget;
+}
+
+static NTSTATUS LepRefreshSystemDefaultLocaleCache(PVOID Kernel32)
+{
+    PLDR_MODULE Kernel;
+    PVOID GetSystemDefaultLCIDAddress;
+    PVOID GetSystemDefaultLangIDAddress;
+    PVOID SetupSystemLocaleHashNode;
+    PVOID SetupSystemLocaleHashNodeFromLangId;
+    API_POINTER(GetSystemDefaultLCID) GetSystemDefaultLCID;
+    LCID LocaleId;
+
+    Kernel = FindLdrModuleByName(&USTR(L"KERNELBASE.dll"));
+    if (Kernel == nullptr)
+        Kernel = FindLdrModuleByHandle(Kernel32);
+    if (Kernel == nullptr)
+        return STATUS_DLL_NOT_FOUND;
+
+    GetSystemDefaultLCIDAddress = LookupExportTable(Kernel->DllBase, KERNEL32_GetSystemDefaultLCID);
+    GetSystemDefaultLangIDAddress = LookupExportTable(Kernel->DllBase, KERNEL32_GetSystemDefaultLangID);
+    if (GetSystemDefaultLCIDAddress == nullptr || GetSystemDefaultLangIDAddress == nullptr)
+        return STATUS_PROCEDURE_NOT_FOUND;
+
+    // Both public APIs are separate tiny readers of the same gpSysLocHashN
+    // cache.  Their lazy paths call the same private refresh routine.  Using
+    // both exports avoids a fixed RVA and rejects a coincidental first CALL
+    // introduced by a different system-DLL build.
+    SetupSystemLocaleHashNode = FindFirstDirectCallTarget(GetSystemDefaultLCIDAddress);
+    SetupSystemLocaleHashNodeFromLangId = FindFirstDirectCallTarget(GetSystemDefaultLangIDAddress);
+    if (SetupSystemLocaleHashNode == nullptr ||
+        SetupSystemLocaleHashNode != SetupSystemLocaleHashNodeFromLangId ||
+        !IN_RANGE(
+            (ULONG_PTR)Kernel->DllBase,
+            (ULONG_PTR)SetupSystemLocaleHashNode,
+            (ULONG_PTR)PtrAdd(Kernel->DllBase, Kernel->SizeOfImage)
+        ))
+    {
+        return STATUS_PROCEDURE_NOT_FOUND;
+    }
+
+    // KernelBase caches the system locale in gSystemLocale/gpSysLocHashN
+    // before LEP is injected.  The force path re-queries
+    // NtQueryDefaultLocale(FALSE) and rebuilds that native cache through the
+    // already-installed ntdll filter.
+    ((PSETUP_SYSTEM_LOCALE_HASH_NODE)SetupSystemLocaleHashNode)(TRUE);
+
+    *(PVOID *)&GetSystemDefaultLCID = GetSystemDefaultLCIDAddress;
+    LocaleId = GetSystemDefaultLCID();
+    WriteLog(L"system locale cache refresh: setup=%p locale=%04X",
+        SetupSystemLocaleHashNode, LocaleId);
+
+    return LocaleId == LepGetGlobalData()->GetLepb()->LocaleID ?
+        STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
 }
 
 NTSTATUS LepGlobalData::HackUserDefaultLCID2(PVOID Kernel32)
@@ -697,12 +819,38 @@ NTSTATUS LepGlobalData::HookKernel32Routines(PVOID Kernel32)
 {
     PVOID GetCurrentNlsCache;
     PLDR_MODULE Kernel;
+    PLDR_MODULE HookedModule;
     NTSTATUS Status;
 
     LepNlsDiag(L"HookKernel32Routines entry Kernel32=%p", Kernel32);
 
     Status = this->HackUserDefaultLCID2(Kernel32);
     LepNlsDiag(L"HackUserDefaultLCID2 status=%08X", Status);
+
+    HookedModule = FindLdrModuleByHandle(Kernel32);
+    if (HookedModule != nullptr &&
+        RtlEqualUnicodeString(&HookedModule->BaseDllName, &USTR(L"KERNELBASE.dll"), TRUE))
+    {
+        Status = LepRefreshSystemDefaultLocaleCache(Kernel32);
+        WriteLog(L"refresh system locale cache: %08X", Status);
+
+        if (GetLepb()->HookUILanguageApi == 2 && HookStub.StubCreateActCtxW == nullptr)
+        {
+            PVOID CreateActCtxW = GetRoutineAddress(Kernel32, "CreateActCtxW");
+            if (CreateActCtxW != nullptr)
+            {
+                Mp::PATCH_MEMORY_DATA Patch = Mp::FunctionJumpVa(
+                    CreateActCtxW,
+                    LepCreateActCtxW,
+                    &HookStub.StubCreateActCtxW,
+                    LEP_FUNCTION_JUMP_OP
+                );
+                Status = Mp::PatchMemory(&Patch, 1);
+                WriteLog(L"hook CreateActCtxW diagnostic: %08X", Status);
+                FAIL_RETURN(Status);
+            }
+        }
+    }
 
     Status = this->HackAnsiOemCodeHashNodes();
     LepNlsDiag(L"HackAnsiOemCodeHashNodes status=%08X", Status);
@@ -711,7 +859,7 @@ NTSTATUS LepGlobalData::HookKernel32Routines(PVOID Kernel32)
 
     Kernel = FindLdrModuleByHandle(Kernel32);
     if (Kernel != nullptr &&
-        GetLepb()->HookUILanguageApi != 0 &&
+        GetLepb()->HookUILanguageApi == 1 &&
         RtlEqualUnicodeString(&Kernel->BaseDllName, &USTR(L"KERNEL32.dll"), TRUE))
     {
         PVOID GetSystemDefaultUILanguage;
@@ -742,6 +890,7 @@ NTSTATUS LepGlobalData::UnHookKernel32Routines()
 {
     Mp::RestoreMemory(HookStub.StubGetSystemDefaultUILanguage);
     Mp::RestoreMemory(HookStub.StubGetUserDefaultUILanguage);
+    Mp::RestoreMemory(HookStub.StubCreateActCtxW);
 
     return 0;
 }

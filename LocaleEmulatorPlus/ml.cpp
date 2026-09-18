@@ -860,6 +860,33 @@ Nt_GetProcessUserName(
 */
 #if ENABLE_LOG
 
+BOOL LepGetModuleLogDirectory(PWSTR Path, ULONG Capacity)
+{
+    ULONG Length;
+
+    if (Path == nullptr || Capacity < 8)
+        return FALSE;
+
+    Length = GetModuleFileNameW((HMODULE)&__ImageBase, Path, Capacity);
+    if (Length == 0 || Length >= Capacity)
+        return FALSE;
+
+    while (Length != 0 && Path[Length - 1] != L'\\' && Path[Length - 1] != L'/')
+        --Length;
+
+    static const WCHAR DirectoryName[] = L"Log";
+    if (Length == 0 || Length + CONST_STRLEN(DirectoryName) + 2 > Capacity)
+        return FALSE;
+
+    CopyMemory(Path + Length, DirectoryName, sizeof(DirectoryName));
+    CreateDirectoryW(Path, nullptr);
+
+    Length += CONST_STRLEN(DirectoryName);
+    Path[Length++] = L'\\';
+    Path[Length] = 0;
+    return TRUE;
+}
+
 static VOID LepInjectDiagAppendRaw(PCWSTR Text)
 {
     HANDLE File;
@@ -872,8 +899,10 @@ static VOID LepInjectDiagAppendRaw(PCWSTR Text)
     static const WCHAR DiagName[] = L"LocaleEmulatorPlus-inject-x86-%u.log";
 #endif
 
-    Length = GetTempPathW(countof(Path), Path);
-    if (Length == 0 || Length >= countof(Path) - 64)
+    if (!LepGetModuleLogDirectory(Path, countof(Path)))
+        return;
+    Length = StrLengthW(Path);
+    if (Length >= countof(Path) - 64)
         return;
     Length += FormatStringW(Path + Length, DiagName, (ULONG)GetCurrentProcessId());
 

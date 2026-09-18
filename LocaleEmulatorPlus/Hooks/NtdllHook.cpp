@@ -415,6 +415,590 @@ NTSTATUS QueryRegKeyFullPath(HANDLE Key, PUNICODE_STRING KeyFullPath)
     return Status;
 }
 
+static const WCHAR LepMuiLanguagesKeyPath[] =
+    L"\\Registry\\Machine\\System\\CurrentControlSet\\Control\\MUI\\UILanguages";
+static const WCHAR LepMuiSystemKeyPrefix[] =
+    L"\\Registry\\Machine\\System\\";
+static const WCHAR LepMuiLanguagesKeySuffix[] =
+    L"\\Control\\MUI\\UILanguages";
+static const WCHAR LepNlsLanguageKeyPath[] =
+    L"\\Registry\\Machine\\System\\CurrentControlSet\\Control\\NLS\\Language";
+static const WCHAR LepNlsLanguageKeySuffix[] =
+    L"\\Control\\NLS\\Language";
+
+typedef BOOLEAN (NTAPI *PRTL_LCID_TO_CULTURE_NAME)(LCID LocaleId, PUNICODE_STRING CultureName);
+
+static NTSTATUS LepReadHostInstallLanguageFallback(
+    PWSTR Buffer,
+    ULONG BufferCount,
+    PUSHORT BufferLength
+)
+{
+    BYTE ValueBuffer[FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data) +
+                     LOCALE_NAME_MAX_LENGTH * 4 * sizeof(WCHAR)];
+    PKEY_VALUE_PARTIAL_INFORMATION Information =
+        (PKEY_VALUE_PARTIAL_INFORMATION)ValueBuffer;
+    UNICODE_STRING KeyPath;
+    UNICODE_STRING ValueName;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    HANDLE KeyHandle = nullptr;
+    ULONG ResultLength = 0;
+    NTSTATUS Status;
+
+    if (Buffer == nullptr || BufferLength == nullptr || BufferCount < 2)
+        return STATUS_INVALID_PARAMETER;
+
+    Buffer[0] = 0;
+    *BufferLength = 0;
+    RtlInitUnicodeString(&KeyPath, LepNlsLanguageKeyPath);
+    InitializeObjectAttributes(
+        &ObjectAttributes,
+        &KeyPath,
+        OBJ_CASE_INSENSITIVE,
+        nullptr,
+        nullptr
+    );
+    Status = NtOpenKey(&KeyHandle, KEY_QUERY_VALUE, &ObjectAttributes);
+    if (NT_FAILED(Status))
+        return Status;
+
+    RtlInitUnicodeString(&ValueName, L"InstallLanguageFallback");
+    Status = NtQueryValueKey(
+        KeyHandle,
+        &ValueName,
+        KeyValuePartialInformation,
+        Information,
+        sizeof(ValueBuffer),
+        &ResultLength
+    );
+    NtClose(KeyHandle);
+    if (NT_FAILED(Status))
+        return Status;
+    if (Information->Type != REG_SZ && Information->Type != REG_MULTI_SZ)
+        return STATUS_OBJECT_TYPE_MISMATCH;
+
+    ULONG CharacterCount = Information->DataLength / sizeof(WCHAR);
+    PWSTR Source = (PWSTR)Information->Data;
+    ULONG Length = 0;
+    while (Length < CharacterCount && Source[Length] != 0)
+        ++Length;
+    if (Length + 1 > BufferCount)
+        return STATUS_BUFFER_TOO_SMALL;
+
+    CopyMemory(Buffer, Source, Length * sizeof(WCHAR));
+    Buffer[Length] = 0;
+    *BufferLength = (USHORT)(Length * sizeof(WCHAR));
+    return STATUS_SUCCESS;
+}
+
+static BOOLEAN LepInitializeMuiCultureName(
+    PRTL_LCID_TO_CULTURE_NAME LcidToCultureName,
+    LCID LocaleId,
+    PWSTR Buffer,
+    ULONG BufferSize,
+    PUSHORT NameLength
+)
+{
+    UNICODE_STRING CultureName;
+
+    CultureName.Buffer = Buffer;
+    CultureName.Length = 0;
+    CultureName.MaximumLength = (USHORT)BufferSize;
+    if (!LcidToCultureName(LocaleId, &CultureName) ||
+        CultureName.Length + sizeof(WCHAR) > CultureName.MaximumLength)
+    {
+        return FALSE;
+    }
+
+    CultureName.Buffer[CultureName.Length / sizeof(WCHAR)] = 0;
+    *NameLength = CultureName.Length;
+    return TRUE;
+}
+
+static NTSTATUS LepInitializeVirtualMuiLanguage(PLepGlobalData GlobalData, PVOID Ntdll)
+{
+    PRTL_LCID_TO_CULTURE_NAME LcidToCultureName;
+    LANGID HostLanguageId;
+    NTSTATUS Status;
+    ULONG_PTR Offset;
+
+    *(PVOID *)&LcidToCultureName = LookupExportTable(Ntdll, NTDLL_RtlLCIDToCultureName);
+    if (LcidToCultureName == nullptr)
+        return STATUS_PROCEDURE_NOT_FOUND;
+
+    if (!LepInitializeMuiCultureName(
+            LcidToCultureName,
+            GlobalData->GetLepb()->LocaleID,
+            GlobalData->HookRoutineData.Ntdll.MuiLanguageName,
+            sizeof(GlobalData->HookRoutineData.Ntdll.MuiLanguageName),
+            &GlobalData->HookRoutineData.Ntdll.MuiLanguageNameLength
+        ))
+        return STATUS_NOT_SUPPORTED;
+
+    Status = NtQueryInstallUILanguage(&HostLanguageId);
+    FAIL_RETURN(Status);
+    if (!LepInitializeMuiCultureName(
+            LcidToCultureName,
+            HostLanguageId,
+            GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName,
+            sizeof(GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName),
+            &GlobalData->HookRoutineData.Ntdll.MuiHostLanguageNameLength
+        ))
+        return STATUS_NOT_SUPPORTED;
+
+    // Preserve the host installation's own fallback tail.  The synthetic
+    // target is layered above the actually installed UI language so shell
+    // components never select resources that are absent from this machine:
+    // target -> host install language -> host install fallback.
+    Status = LepReadHostInstallLanguageFallback(
+        GlobalData->HookRoutineData.Ntdll.MuiHostFallback,
+        countof(GlobalData->HookRoutineData.Ntdll.MuiHostFallback),
+        &GlobalData->HookRoutineData.Ntdll.MuiHostFallbackLength
+    );
+    if (NT_FAILED(Status))
+    {
+        GlobalData->HookRoutineData.Ntdll.MuiHostFallback[0] = 0;
+        GlobalData->HookRoutineData.Ntdll.MuiHostFallbackLength = 0;
+    }
+
+    Offset = 0;
+    ULONG_PTR HostNameCount =
+        GlobalData->HookRoutineData.Ntdll.MuiHostLanguageNameLength / sizeof(WCHAR);
+    ULONG_PTR HostFallbackCount =
+        GlobalData->HookRoutineData.Ntdll.MuiHostFallbackLength / sizeof(WCHAR);
+    CopyMemory(
+        GlobalData->HookRoutineData.Ntdll.MuiInstallFallback,
+        GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName,
+        GlobalData->HookRoutineData.Ntdll.MuiHostLanguageNameLength
+    );
+    Offset += HostNameCount;
+    if (HostFallbackCount != 0)
+    {
+        GlobalData->HookRoutineData.Ntdll.MuiInstallFallback[Offset++] = L',';
+        GlobalData->HookRoutineData.Ntdll.MuiInstallFallback[Offset++] = L' ';
+        CopyMemory(
+            GlobalData->HookRoutineData.Ntdll.MuiInstallFallback + Offset,
+            GlobalData->HookRoutineData.Ntdll.MuiHostFallback,
+            GlobalData->HookRoutineData.Ntdll.MuiHostFallbackLength
+        );
+        Offset += HostFallbackCount;
+    }
+    GlobalData->HookRoutineData.Ntdll.MuiInstallFallback[Offset] = 0;
+    GlobalData->HookRoutineData.Ntdll.MuiInstallFallbackLength =
+        (USHORT)(Offset * sizeof(WCHAR));
+
+    WriteLog(L"virtual MUI installed language: %ws (%04X), host=%ws (%04X), chain=%ws",
+        GlobalData->HookRoutineData.Ntdll.MuiLanguageName,
+        GlobalData->GetLepb()->LocaleID,
+        GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName,
+        HostLanguageId,
+        GlobalData->HookRoutineData.Ntdll.MuiInstallFallback);
+    return STATUS_SUCCESS;
+}
+
+static VOID LepGetVirtualMuiLanguageName(PLepGlobalData GlobalData, PUNICODE_STRING LanguageName)
+{
+    LanguageName->Buffer = GlobalData->HookRoutineData.Ntdll.MuiLanguageName;
+    LanguageName->Length = GlobalData->HookRoutineData.Ntdll.MuiLanguageNameLength;
+    LanguageName->MaximumLength = sizeof(GlobalData->HookRoutineData.Ntdll.MuiLanguageName);
+}
+
+static BOOLEAN LepBuildVirtualMuiKeyPath(
+    PLepGlobalData GlobalData,
+    PWSTR Buffer,
+    ULONG BufferCount,
+    PUNICODE_STRING KeyPath
+)
+{
+    ULONG_PTR ParentLength = CONST_STRLEN(LepMuiLanguagesKeyPath);
+    ULONG_PTR LanguageLength = GlobalData->HookRoutineData.Ntdll.MuiLanguageNameLength / sizeof(WCHAR);
+
+    if (ParentLength + 1 + LanguageLength + 1 > BufferCount)
+        return FALSE;
+
+    CopyMemory(Buffer, LepMuiLanguagesKeyPath, ParentLength * sizeof(WCHAR));
+    Buffer[ParentLength] = L'\\';
+    CopyMemory(
+        Buffer + ParentLength + 1,
+        GlobalData->HookRoutineData.Ntdll.MuiLanguageName,
+        LanguageLength * sizeof(WCHAR)
+    );
+    Buffer[ParentLength + 1 + LanguageLength] = 0;
+    RtlInitUnicodeString(KeyPath, Buffer);
+    return TRUE;
+}
+
+static BOOLEAN LepIsMuiLanguagesKeyHandle(HANDLE KeyHandle)
+{
+    UNICODE_STRING KeyPath;
+    UNICODE_STRING MuiLanguagesPath;
+    UNICODE_STRING SystemKeyPrefix;
+    UNICODE_STRING LanguagesKeySuffix;
+    NTSTATUS Status = QueryRegKeyFullPath(KeyHandle, &KeyPath);
+
+    if (NT_FAILED(Status))
+        return FALSE;
+
+    RtlInitUnicodeString(&MuiLanguagesPath, LepMuiLanguagesKeyPath);
+    BOOLEAN Match = RtlEqualUnicodeString(&KeyPath, &MuiLanguagesPath, TRUE);
+    if (!Match)
+    {
+        // NtQueryKey canonicalizes CurrentControlSet to ControlSet00x.  The
+        // native MUI loader opens the literal CurrentControlSet path, so both
+        // spellings must identify the same parent key.
+        RtlInitUnicodeString(&SystemKeyPrefix, LepMuiSystemKeyPrefix);
+        RtlInitUnicodeString(&LanguagesKeySuffix, LepMuiLanguagesKeySuffix);
+        if (KeyPath.Length >= SystemKeyPrefix.Length + LanguagesKeySuffix.Length)
+        {
+            UNICODE_STRING Prefix =
+            {
+                SystemKeyPrefix.Length,
+                SystemKeyPrefix.Length,
+                KeyPath.Buffer
+            };
+            UNICODE_STRING Suffix =
+            {
+                LanguagesKeySuffix.Length,
+                LanguagesKeySuffix.Length,
+                KeyPath.Buffer + (KeyPath.Length - LanguagesKeySuffix.Length) / sizeof(WCHAR)
+            };
+            Match = RtlEqualUnicodeString(&Prefix, &SystemKeyPrefix, TRUE) &&
+                    RtlEqualUnicodeString(&Suffix, &LanguagesKeySuffix, TRUE);
+        }
+    }
+    RtlFreeUnicodeString(&KeyPath);
+    return Match;
+}
+
+static BOOLEAN LepIsNlsLanguageKeyHandle(HANDLE KeyHandle)
+{
+    UNICODE_STRING KeyPath;
+    UNICODE_STRING NlsLanguagePath;
+    UNICODE_STRING SystemKeyPrefix;
+    UNICODE_STRING NlsLanguageSuffix;
+    NTSTATUS Status = QueryRegKeyFullPath(KeyHandle, &KeyPath);
+
+    if (NT_FAILED(Status))
+        return FALSE;
+
+    RtlInitUnicodeString(&NlsLanguagePath, LepNlsLanguageKeyPath);
+    BOOLEAN Match = RtlEqualUnicodeString(&KeyPath, &NlsLanguagePath, TRUE);
+    if (!Match)
+    {
+        RtlInitUnicodeString(&SystemKeyPrefix, LepMuiSystemKeyPrefix);
+        RtlInitUnicodeString(&NlsLanguageSuffix, LepNlsLanguageKeySuffix);
+        if (KeyPath.Length >= SystemKeyPrefix.Length + NlsLanguageSuffix.Length)
+        {
+            UNICODE_STRING Prefix =
+            {
+                SystemKeyPrefix.Length,
+                SystemKeyPrefix.Length,
+                KeyPath.Buffer
+            };
+            UNICODE_STRING Suffix =
+            {
+                NlsLanguageSuffix.Length,
+                NlsLanguageSuffix.Length,
+                KeyPath.Buffer + (KeyPath.Length - NlsLanguageSuffix.Length) / sizeof(WCHAR)
+            };
+            Match = RtlEqualUnicodeString(&Prefix, &SystemKeyPrefix, TRUE) &&
+                    RtlEqualUnicodeString(&Suffix, &NlsLanguageSuffix, TRUE);
+        }
+    }
+    RtlFreeUnicodeString(&KeyPath);
+    return Match;
+}
+
+static BOOLEAN LepIsVirtualMuiKeyHandle(PLepGlobalData GlobalData, HANDLE KeyHandle)
+{
+    if (KeyHandle == nullptr)
+        return FALSE;
+
+    for (ULONG_PTR Index = 0; Index != countof(GlobalData->HookRoutineData.Ntdll.VirtualMuiKeyHandles); ++Index)
+    {
+        PVOID Current = _InterlockedCompareExchangePointer(
+            (PVOID volatile *)&GlobalData->HookRoutineData.Ntdll.VirtualMuiKeyHandles[Index],
+            nullptr,
+            nullptr
+        );
+        if (Current == KeyHandle)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOLEAN LepAddVirtualMuiKeyHandle(PLepGlobalData GlobalData, HANDLE KeyHandle)
+{
+    if (KeyHandle == nullptr)
+        return FALSE;
+
+    for (ULONG_PTR Index = 0; Index != countof(GlobalData->HookRoutineData.Ntdll.VirtualMuiKeyHandles); ++Index)
+    {
+        if (_InterlockedCompareExchangePointer(
+                (PVOID volatile *)&GlobalData->HookRoutineData.Ntdll.VirtualMuiKeyHandles[Index],
+                KeyHandle,
+                nullptr
+            ) == nullptr)
+        {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+static BOOLEAN LepRemoveVirtualMuiKeyHandle(PLepGlobalData GlobalData, HANDLE KeyHandle)
+{
+    if (KeyHandle == nullptr)
+        return FALSE;
+
+    for (ULONG_PTR Index = 0; Index != countof(GlobalData->HookRoutineData.Ntdll.VirtualMuiKeyHandles); ++Index)
+    {
+        if (_InterlockedCompareExchangePointer(
+                (PVOID volatile *)&GlobalData->HookRoutineData.Ntdll.VirtualMuiKeyHandles[Index],
+                nullptr,
+                KeyHandle
+            ) == KeyHandle)
+        {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+static BOOLEAN LepIsVirtualMuiOpenRequest(
+    PLepGlobalData GlobalData,
+    POBJECT_ATTRIBUTES ObjectAttributes
+)
+{
+    OBJECT_ATTRIBUTES LocalAttributes;
+    UNICODE_STRING ObjectName;
+    UNICODE_STRING LanguageName;
+    WCHAR FullPathBuffer[256];
+    UNICODE_STRING FullPath;
+
+    SEH_TRY
+    {
+        if (ObjectAttributes == nullptr || ObjectAttributes->ObjectName == nullptr)
+            return FALSE;
+
+        LocalAttributes = *ObjectAttributes;
+        ObjectName = *ObjectAttributes->ObjectName;
+        if (NT_FAILED(RtlValidateUnicodeString(0, &ObjectName)))
+            return FALSE;
+
+        LepGetVirtualMuiLanguageName(GlobalData, &LanguageName);
+        if (LocalAttributes.RootDirectory != nullptr)
+        {
+            return RtlEqualUnicodeString(&ObjectName, &LanguageName, TRUE) &&
+                   LepIsMuiLanguagesKeyHandle(LocalAttributes.RootDirectory);
+        }
+
+        if (!LepBuildVirtualMuiKeyPath(GlobalData, FullPathBuffer, countof(FullPathBuffer), &FullPath))
+            return FALSE;
+
+        return RtlEqualUnicodeString(&ObjectName, &FullPath, TRUE);
+    }
+    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        return FALSE;
+    }
+}
+
+static NTSTATUS LepWriteVirtualKeyValue(
+    PCUNICODE_STRING ValueName,
+    ULONG DataType,
+    LPCVOID Data,
+    ULONG DataLength,
+    KEY_VALUE_INFORMATION_CLASS InformationClass,
+    PVOID KeyValueInformation,
+    ULONG Length,
+    PULONG ResultLength
+)
+{
+    ULONG RequiredLength;
+    ULONG MinimumLength;
+
+    switch (InformationClass)
+    {
+        case KeyValueBasicInformation:
+            MinimumLength = FIELD_OFFSET(KEY_VALUE_BASIC_INFORMATION, Name);
+            RequiredLength = MinimumLength + ValueName->Length;
+            break;
+
+        case KeyValueFullInformation:
+        case KeyValueFullInformationAlign64:
+        {
+            ULONG Alignment = InformationClass == KeyValueFullInformationAlign64 ? sizeof(ULONG64) : sizeof(ULONG);
+            MinimumLength = FIELD_OFFSET(KEY_VALUE_FULL_INFORMATION, Name);
+            RequiredLength = ROUND_UP(MinimumLength + ValueName->Length, Alignment) + DataLength;
+            break;
+        }
+
+        case KeyValuePartialInformation:
+            MinimumLength = FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data);
+            RequiredLength = MinimumLength + DataLength;
+            break;
+
+        case KeyValuePartialInformationAlign64:
+            MinimumLength = FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION_ALIGN64, Data);
+            RequiredLength = MinimumLength + DataLength;
+            break;
+
+        default:
+            return STATUS_INVALID_INFO_CLASS;
+    }
+
+    if (ResultLength != nullptr)
+        *ResultLength = RequiredLength;
+    if (Length < MinimumLength)
+        return STATUS_BUFFER_TOO_SMALL;
+    if (KeyValueInformation == nullptr)
+        return STATUS_ACCESS_VIOLATION;
+    if (Length < RequiredLength)
+        return STATUS_BUFFER_OVERFLOW;
+
+    ZeroMemory(KeyValueInformation, RequiredLength);
+    switch (InformationClass)
+    {
+        case KeyValueBasicInformation:
+        {
+            PKEY_VALUE_BASIC_INFORMATION Information =
+                (PKEY_VALUE_BASIC_INFORMATION)KeyValueInformation;
+            Information->Type = DataType;
+            Information->NameLength = ValueName->Length;
+            CopyMemory(Information->Name, ValueName->Buffer, ValueName->Length);
+            break;
+        }
+
+        case KeyValueFullInformation:
+        case KeyValueFullInformationAlign64:
+        {
+            PKEY_VALUE_FULL_INFORMATION Information =
+                (PKEY_VALUE_FULL_INFORMATION)KeyValueInformation;
+            ULONG Alignment = InformationClass == KeyValueFullInformationAlign64 ? sizeof(ULONG64) : sizeof(ULONG);
+            Information->Type = DataType;
+            Information->NameLength = ValueName->Length;
+            Information->DataOffset = ROUND_UP(
+                FIELD_OFFSET(KEY_VALUE_FULL_INFORMATION, Name) + ValueName->Length,
+                Alignment
+            );
+            Information->DataLength = DataLength;
+            CopyMemory(Information->Name, ValueName->Buffer, ValueName->Length);
+            CopyMemory(PtrAdd(Information, Information->DataOffset), Data, DataLength);
+            break;
+        }
+
+        case KeyValuePartialInformation:
+        {
+            PKEY_VALUE_PARTIAL_INFORMATION Information =
+                (PKEY_VALUE_PARTIAL_INFORMATION)KeyValueInformation;
+            Information->Type = DataType;
+            Information->DataLength = DataLength;
+            CopyMemory(Information->Data, Data, DataLength);
+            break;
+        }
+
+        case KeyValuePartialInformationAlign64:
+        {
+            PKEY_VALUE_PARTIAL_INFORMATION_ALIGN64 Information =
+                (PKEY_VALUE_PARTIAL_INFORMATION_ALIGN64)KeyValueInformation;
+            Information->Type = DataType;
+            Information->DataLength = DataLength;
+            CopyMemory(Information->Data, Data, DataLength);
+            break;
+        }
+    }
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS LepQueryVirtualMuiKeyValue(
+    PLepGlobalData GlobalData,
+    PUNICODE_STRING ValueName,
+    KEY_VALUE_INFORMATION_CLASS InformationClass,
+    PVOID KeyValueInformation,
+    ULONG Length,
+    PULONG ResultLength
+)
+{
+    ULONG LanguageType = 0x92;
+    ULONG LocaleId = GlobalData->GetLepb()->LocaleID;
+    UNICODE_STRING HostLanguageName;
+
+    HostLanguageName.Buffer = GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName;
+    HostLanguageName.Length = GlobalData->HookRoutineData.Ntdll.MuiHostLanguageNameLength;
+    HostLanguageName.MaximumLength = sizeof(GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName);
+
+    if (RtlEqualUnicodeString(ValueName, PUSTR(L"Type"), TRUE))
+    {
+        return LepWriteVirtualKeyValue(
+            ValueName, REG_DWORD, &LanguageType, sizeof(LanguageType),
+            InformationClass, KeyValueInformation, Length, ResultLength
+        );
+    }
+
+    if (RtlEqualUnicodeString(ValueName, PUSTR(L"LCID"), TRUE))
+    {
+        return LepWriteVirtualKeyValue(
+            ValueName, REG_DWORD, &LocaleId, sizeof(LocaleId),
+            InformationClass, KeyValueInformation, Length, ResultLength
+        );
+    }
+
+    if (RtlEqualUnicodeString(ValueName, PUSTR(L"DefaultFallback"), TRUE))
+    {
+        return LepWriteVirtualKeyValue(
+            ValueName,
+            REG_SZ,
+            HostLanguageName.Buffer,
+            HostLanguageName.Length + sizeof(WCHAR),
+            InformationClass, KeyValueInformation, Length, ResultLength
+        );
+    }
+
+    if (RtlEqualUnicodeString(ValueName, &HostLanguageName, TRUE))
+    {
+        return LepWriteVirtualKeyValue(
+            ValueName,
+            REG_MULTI_SZ,
+            GlobalData->HookRoutineData.Ntdll.MuiHostFallback,
+            GlobalData->HookRoutineData.Ntdll.MuiHostFallbackLength + 2 * sizeof(WCHAR),
+            InformationClass, KeyValueInformation, Length, ResultLength
+        );
+    }
+
+    if (ResultLength != nullptr)
+        *ResultLength = 0;
+    return STATUS_OBJECT_NAME_NOT_FOUND;
+}
+
+static NTSTATUS LepQueryVirtualInstallLanguageFallback(
+    PLepGlobalData GlobalData,
+    PUNICODE_STRING ValueName,
+    KEY_VALUE_INFORMATION_CLASS InformationClass,
+    PVOID KeyValueInformation,
+    ULONG Length,
+    PULONG ResultLength
+)
+{
+    return LepWriteVirtualKeyValue(
+        ValueName,
+        // RtlpLoadInstallLanguageFallback requires REG_SZ and parses at
+        // most two culture names separated by a comma.  REG_MULTI_SZ is
+        // rejected before the fallback text is examined.
+        REG_SZ,
+        GlobalData->HookRoutineData.Ntdll.MuiInstallFallback,
+        GlobalData->HookRoutineData.Ntdll.MuiInstallFallbackLength + sizeof(WCHAR),
+        InformationClass,
+        KeyValueInformation,
+        Length,
+        ResultLength
+    );
+}
+
 static PCWSTR LepBootstrapStageName(ULONG Stage)
 {
     switch (Stage)
@@ -450,8 +1034,8 @@ static VOID LepWriteBootstrapFailureLog(ULONG Stage, NTSTATUS Status, PCUNICODE_
     Length = ML_MIN(StrLengthW(Directory), countof(DosPath) - 1);
     CopyMemory(DosPath, Directory, Length * sizeof(WCHAR));
     Offset = Length;
-    if (Offset != 0 && DosPath[Offset - 1] != L'\\')
-        DosPath[Offset++] = L'\\';
+    if (!LepAppendLogDirectory(DosPath, countof(DosPath), &Offset))
+        return;
 
     static const WCHAR Prefix[] = L"LEP-bootstrap-";
     Length = ML_MIN(CONST_STRLEN(Prefix), countof(DosPath) - Offset - 1);
@@ -1049,6 +1633,262 @@ LepNtTerminateThread(
 }
 
 NTSTATUS
+HPCALL
+LepNtClose(
+    HPARGS
+    HANDLE Handle
+)
+{
+    PLepGlobalData GlobalData = (PLepGlobalData)HpGetFilterContext();
+
+    if (LepRemoveVirtualMuiKeyHandle(GlobalData, Handle))
+        WriteLog(L"virtual MUI key close: %p", Handle);
+
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+HPCALL
+LepNtOpenKey(
+    HPARGS
+    PHANDLE KeyHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes
+)
+{
+    PLepGlobalData GlobalData = (PLepGlobalData)HpGetFilterContext();
+    UNICODE_STRING ParentPath;
+    OBJECT_ATTRIBUTES ParentAttributes;
+    NTSTATUS Status;
+
+    if (!LepIsVirtualMuiOpenRequest(GlobalData, ObjectAttributes))
+        return STATUS_SUCCESS;
+
+    HpSetFilterAction(BlockSystemCall);
+    RtlInitUnicodeString(&ParentPath, LepMuiLanguagesKeyPath);
+    InitializeObjectAttributes(
+        &ParentAttributes,
+        &ParentPath,
+        OBJ_CASE_INSENSITIVE,
+        nullptr,
+        nullptr
+    );
+    Status = HpCallSysCall(NtOpenKey, KeyHandle, DesiredAccess, &ParentAttributes);
+    if (NT_FAILED(Status))
+        return Status;
+
+    if (!LepAddVirtualMuiKeyHandle(GlobalData, *KeyHandle))
+    {
+        NtClose(*KeyHandle);
+        *KeyHandle = nullptr;
+        return STATUS_NO_MEMORY;
+    }
+
+    WriteLog(L"virtual MUI key open: %ws handle=%p",
+        GlobalData->HookRoutineData.Ntdll.MuiLanguageName, *KeyHandle);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+HPCALL
+LepNtEnumerateKey(
+    HPARGS
+    HANDLE KeyHandle,
+    ULONG Index,
+    KEY_INFORMATION_CLASS KeyInformationClass,
+    PVOID KeyInformation,
+    ULONG Length,
+    PULONG ResultLength
+)
+{
+    PLepGlobalData GlobalData = (PLepGlobalData)HpGetFilterContext();
+    ULONG NameLength;
+    ULONG RequiredLength;
+    ULONG MinimumLength;
+
+    if (!LepIsMuiLanguagesKeyHandle(KeyHandle))
+        return STATUS_SUCCESS;
+
+    HpSetFilterAction(BlockSystemCall);
+    if (Index != 0)
+    {
+        // Present the synthetic target language in addition to the languages
+        // installed on the host.  Hiding the host entries leaves fallback
+        // names (for example ja-JP -> zh-CN -> en-US) dangling in ntdll's MUI
+        // cache and can make activation-context resource lookup fail for every
+        // system module.
+        NTSTATUS Status = HpCallSysCall(
+            NtEnumerateKey,
+            KeyHandle,
+            Index - 1,
+            KeyInformationClass,
+            KeyInformation,
+            Length,
+            ResultLength
+        );
+        WriteLog(L"virtual MUI host language enumerate: virtual-index=%u host-index=%u status=%08X",
+            Index, Index - 1, Status);
+        return Status;
+    }
+    if (KeyInformationClass != KeyBasicInformation)
+        return STATUS_INVALID_INFO_CLASS;
+
+    NameLength = GlobalData->HookRoutineData.Ntdll.MuiLanguageNameLength;
+    MinimumLength = FIELD_OFFSET(KEY_BASIC_INFORMATION, Name);
+    RequiredLength = MinimumLength + NameLength;
+    if (ResultLength != nullptr)
+        *ResultLength = RequiredLength;
+    if (Length < MinimumLength)
+        return STATUS_BUFFER_TOO_SMALL;
+    if (KeyInformation == nullptr)
+        return STATUS_ACCESS_VIOLATION;
+    if (Length < RequiredLength)
+        return STATUS_BUFFER_OVERFLOW;
+
+    PKEY_BASIC_INFORMATION Information = (PKEY_BASIC_INFORMATION)KeyInformation;
+    ZeroMemory(Information, RequiredLength);
+    Information->NameLength = NameLength;
+    CopyMemory(
+        Information->Name,
+        GlobalData->HookRoutineData.Ntdll.MuiLanguageName,
+        NameLength
+    );
+    WriteLog(L"virtual MUI language enumerate: index=%u name=%ws",
+        Index, GlobalData->HookRoutineData.Ntdll.MuiLanguageName);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+HPCALL
+LepNtQueryKey(
+    HPARGS
+    HANDLE KeyHandle,
+    KEY_INFORMATION_CLASS KeyInformationClass,
+    PVOID KeyInformation,
+    ULONG Length,
+    PULONG ResultLength
+)
+{
+    PLepGlobalData GlobalData = (PLepGlobalData)HpGetFilterContext();
+    WCHAR FullPathBuffer[256];
+    UNICODE_STRING FullPath;
+    ULONG RequiredLength;
+    ULONG MinimumLength;
+
+    if (!LepIsVirtualMuiKeyHandle(GlobalData, KeyHandle))
+        return STATUS_SUCCESS;
+
+    HpSetFilterAction(BlockSystemCall);
+    if (!LepBuildVirtualMuiKeyPath(GlobalData, FullPathBuffer, countof(FullPathBuffer), &FullPath))
+        return STATUS_NAME_TOO_LONG;
+
+    if (KeyInformationClass == KeyNameInformation)
+    {
+        MinimumLength = FIELD_OFFSET(KEY_NAME_INFORMATION, Name);
+        RequiredLength = MinimumLength + FullPath.Length;
+        if (ResultLength != nullptr)
+            *ResultLength = RequiredLength;
+        if (Length < MinimumLength)
+            return STATUS_BUFFER_TOO_SMALL;
+        if (KeyInformation == nullptr)
+            return STATUS_ACCESS_VIOLATION;
+        if (Length < RequiredLength)
+            return STATUS_BUFFER_OVERFLOW;
+
+        PKEY_NAME_INFORMATION Information = (PKEY_NAME_INFORMATION)KeyInformation;
+        Information->NameLength = FullPath.Length;
+        CopyMemory(Information->Name, FullPath.Buffer, FullPath.Length);
+        return STATUS_SUCCESS;
+    }
+
+    if (KeyInformationClass == KeyBasicInformation)
+    {
+        ULONG NameLength = GlobalData->HookRoutineData.Ntdll.MuiLanguageNameLength;
+        MinimumLength = FIELD_OFFSET(KEY_BASIC_INFORMATION, Name);
+        RequiredLength = MinimumLength + NameLength;
+        if (ResultLength != nullptr)
+            *ResultLength = RequiredLength;
+        if (Length < MinimumLength)
+            return STATUS_BUFFER_TOO_SMALL;
+        if (KeyInformation == nullptr)
+            return STATUS_ACCESS_VIOLATION;
+        if (Length < RequiredLength)
+            return STATUS_BUFFER_OVERFLOW;
+
+        PKEY_BASIC_INFORMATION Information = (PKEY_BASIC_INFORMATION)KeyInformation;
+        ZeroMemory(Information, RequiredLength);
+        Information->NameLength = NameLength;
+        CopyMemory(
+            Information->Name,
+            GlobalData->HookRoutineData.Ntdll.MuiLanguageName,
+            NameLength
+        );
+        return STATUS_SUCCESS;
+    }
+
+    return STATUS_INVALID_INFO_CLASS;
+}
+
+NTSTATUS
+HPCALL
+LepNtEnumerateValueKey(
+    HPARGS
+    HANDLE                      KeyHandle,
+    ULONG                       Index,
+    KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
+    PVOID                       KeyValueInformation,
+    ULONG                       Length,
+    PULONG                      ResultLength
+)
+{
+    PLepGlobalData GlobalData = (PLepGlobalData)HpGetFilterContext();
+    UNICODE_STRING ValueName;
+    NTSTATUS Status;
+
+    if (!LepIsVirtualMuiKeyHandle(GlobalData, KeyHandle))
+        return STATUS_SUCCESS;
+
+    HpSetFilterAction(BlockSystemCall);
+    switch (Index)
+    {
+        case 0:
+            RtlInitUnicodeString(&ValueName, L"DefaultFallback");
+            break;
+
+        case 1:
+            ValueName.Buffer = GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName;
+            ValueName.Length = GlobalData->HookRoutineData.Ntdll.MuiHostLanguageNameLength;
+            ValueName.MaximumLength = sizeof(GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName);
+            break;
+
+        case 2:
+            RtlInitUnicodeString(&ValueName, L"LCID");
+            break;
+
+        case 3:
+            RtlInitUnicodeString(&ValueName, L"Type");
+            break;
+
+        default:
+            if (ResultLength != nullptr)
+                *ResultLength = 0;
+            return STATUS_NO_MORE_ENTRIES;
+    }
+
+    Status = LepQueryVirtualMuiKeyValue(
+        GlobalData,
+        &ValueName,
+        KeyValueInformationClass,
+        KeyValueInformation,
+        Length,
+        ResultLength
+    );
+    WriteLog(L"virtual MUI value enumerate: index=%u name=%ws status=%08X",
+        Index, ValueName.Buffer, Status);
+    return Status;
+}
+
+NTSTATUS
 LepGlobalData::
 LookupRegistryRedirectionEntry(
     HANDLE                          KeyHandle,
@@ -1121,6 +1961,41 @@ LepNtQueryValueKey(
         return 0;
 
     GlobalData = (PLepGlobalData)HpGetFilterContext();
+
+    if (GlobalData->GetLepb()->HookUILanguageApi == 2 &&
+        LepIsVirtualMuiKeyHandle(GlobalData, KeyHandle))
+    {
+        HpSetFilterAction(BlockSystemCall);
+        Status = LepQueryVirtualMuiKeyValue(
+            GlobalData,
+            ValueName,
+            KeyValueInformationClass,
+            KeyValueInformation,
+            Length,
+            ResultLength
+        );
+        WriteLog(L"virtual MUI value %ws: %08X", ValueName->Buffer, Status);
+        return Status;
+    }
+
+    if (GlobalData->GetLepb()->HookUILanguageApi == 2 &&
+        RtlEqualUnicodeString(ValueName, PUSTR(L"InstallLanguageFallback"), TRUE) &&
+        LepIsNlsLanguageKeyHandle(KeyHandle))
+    {
+        HpSetFilterAction(BlockSystemCall);
+        Status = LepQueryVirtualInstallLanguageFallback(
+            GlobalData,
+            ValueName,
+            KeyValueInformationClass,
+            KeyValueInformation,
+            Length,
+            ResultLength
+        );
+        WriteLog(L"virtual MUI install fallback %ws: %08X",
+            GlobalData->HookRoutineData.Ntdll.MuiInstallFallback,
+            Status);
+        return Status;
+    }
     
     WriteLog(L"lookup %ws", ValueName->Buffer);
 
@@ -1269,6 +2144,71 @@ REDIRECT_ONLY:
 
 NTSTATUS
 HPCALL
+LepNtQueryLicenseValue(
+    HPARGS
+    PUNICODE_STRING Name,
+    PULONG Type,
+    PVOID Buffer,
+    ULONG Length,
+    PULONG DataLength
+)
+{
+    PLepGlobalData GlobalData = (PLepGlobalData)HpGetFilterContext();
+    UNICODE_STRING MuiLanguageAllowed;
+    ULONG RequiredLength;
+
+    RtlInitUnicodeString(&MuiLanguageAllowed, L"Kernel-MUI-Language-Allowed");
+    SEH_TRY
+    {
+        if (Name == nullptr ||
+            NT_FAILED(RtlValidateUnicodeString(0, Name)) ||
+            !RtlEqualUnicodeString(Name, &MuiLanguageAllowed, TRUE))
+        {
+            return STATUS_SUCCESS;
+        }
+    }
+    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        // Let the real system call validate malformed caller pointers.
+        return STATUS_SUCCESS;
+    }
+
+    HpSetFilterAction(BlockSystemCall);
+    RequiredLength = GlobalData->HookRoutineData.Ntdll.MuiLanguageNameLength + sizeof(WCHAR);
+
+    SEH_TRY
+    {
+        if (DataLength == nullptr)
+            return STATUS_INVALID_PARAMETER;
+
+        *DataLength = RequiredLength;
+        if (Type != nullptr)
+            *Type = REG_SZ;
+
+        if (Length < RequiredLength)
+            return STATUS_BUFFER_TOO_SMALL;
+        if (Buffer == nullptr)
+            return STATUS_ACCESS_VIOLATION;
+
+        CopyMemory(
+            Buffer,
+            GlobalData->HookRoutineData.Ntdll.MuiLanguageName,
+            GlobalData->HookRoutineData.Ntdll.MuiLanguageNameLength
+        );
+        ((PWSTR)Buffer)[GlobalData->HookRoutineData.Ntdll.MuiLanguageNameLength / sizeof(WCHAR)] = 0;
+    }
+    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        return GetExceptionCode();
+    }
+
+    WriteLog(L"virtual MUI licensed language: %ws",
+        GlobalData->HookRoutineData.Ntdll.MuiLanguageName);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+HPCALL
 LepNtQueryDefaultLocale(
     HPARGS
     BOOLEAN UserProfile,
@@ -1352,7 +2292,41 @@ LepLdrResSearchResource(
     NTSTATUS Status;
     PLepGlobalData GlobalData = LepGetGlobalData();
 
+    ULONG_PTR Type = 0;
+    ULONG_PTR Name = 0;
+    ULONG_PTR Language = 0;
+    BOOLEAN LogManifest = FALSE;
+
+    SEH_TRY
+    {
+        if (ResourceIdPath != nullptr && ResourceIdPathLength != 0)
+        {
+            Type = ResourceIdPath[0];
+            if (ResourceIdPathLength > 1)
+                Name = ResourceIdPath[1];
+            if (ResourceIdPathLength > 2)
+                Language = ResourceIdPath[2];
+            LogManifest = Type == (ULONG_PTR)RT_MANIFEST;
+        }
+    }
+    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        LogManifest = FALSE;
+    }
+
     Status = GlobalData->HookStub.StubLdrResSearchResource(DllHandle, ResourceIdPath, ResourceIdPathLength, Flags, Resource, Size, Reserve1, Reserve2);
+    if (LogManifest)
+    {
+        WriteLog(L"LdrResSearchResource manifest: module=%p depth=%u name=%p lang=%p flags=%08X status=%08X resource=%p size=%u",
+            DllHandle,
+            ResourceIdPathLength,
+            Name,
+            Language,
+            Flags,
+            Status,
+            Resource != nullptr ? *Resource : nullptr,
+            Size != nullptr ? *Size : 0);
+    }
     FAIL_RETURN(Status);
 
     if (ResourceIdPathLength != 3)
@@ -1367,6 +2341,175 @@ LepLdrResSearchResource(
     ReplaceMUIVersionLocaleInfo(*Resource, *Size);
 
     return Status;
+}
+
+NTSTATUS
+NTAPI
+LepRtlGetThreadPreferredUILanguages(
+    ULONG Flags,
+    PULONG NumberOfLanguages,
+    PWSTR LanguagesBuffer,
+    PULONG BufferLength
+)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+
+    NTSTATUS Status = GlobalData->HookStub.StubRtlGetThreadPreferredUILanguages(
+        Flags,
+        NumberOfLanguages,
+        LanguagesBuffer,
+        BufferLength
+    );
+
+    // Calls without MUI_LANGUAGE_ID/MUI_LANGUAGE_NAME are also used by
+    // KernelBase to make ntdll initialize its private per-thread MUI cache.
+    // Returning synthetic success there is unsafe: the caller subsequently
+    // reads the cache pointer from the TEB, which our public buffer fallback
+    // cannot initialize.  Only synthesize ordinary language-list queries.
+    if (Status == STATUS_OBJECT_NAME_NOT_FOUND &&
+        (Flags & (MUI_LANGUAGE_ID | MUI_LANGUAGE_NAME)) != 0 &&
+        NumberOfLanguages != nullptr &&
+        BufferLength != nullptr)
+    {
+        PCWSTR LanguageNames[3];
+        ULONG LanguageCount = 0;
+        UNICODE_STRING Candidate;
+
+        LanguageNames[LanguageCount++] = GlobalData->HookRoutineData.Ntdll.MuiLanguageName;
+
+        RtlInitUnicodeString(&Candidate, GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName);
+        UNICODE_STRING Target;
+        RtlInitUnicodeString(&Target, LanguageNames[0]);
+        if (Candidate.Length != 0 && !RtlEqualUnicodeString(&Candidate, &Target, TRUE))
+            LanguageNames[LanguageCount++] = GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName;
+
+        if (GlobalData->HookRoutineData.Ntdll.MuiHostFallbackLength != 0)
+        {
+            RtlInitUnicodeString(&Candidate, GlobalData->HookRoutineData.Ntdll.MuiHostFallback);
+            BOOLEAN Duplicate = FALSE;
+            for (ULONG Index = 0; Index < LanguageCount; ++Index)
+            {
+                UNICODE_STRING Existing;
+                RtlInitUnicodeString(&Existing, LanguageNames[Index]);
+                if (RtlEqualUnicodeString(&Candidate, &Existing, TRUE))
+                {
+                    Duplicate = TRUE;
+                    break;
+                }
+            }
+            if (!Duplicate)
+                LanguageNames[LanguageCount++] = GlobalData->HookRoutineData.Ntdll.MuiHostFallback;
+        }
+
+        BOOLEAN ReturnLanguageIds = (Flags & MUI_LANGUAGE_ID) != 0;
+        WCHAR LanguageIds[3][5];
+        ULONG RequiredLength = 1;
+        for (ULONG Index = 0; Index < LanguageCount; ++Index)
+        {
+            if (ReturnLanguageIds)
+            {
+                LCID LocaleId = 0;
+                UNICODE_STRING LanguageName;
+                typedef BOOLEAN (NTAPI *PRTL_CULTURE_NAME_TO_LCID)(PUNICODE_STRING, PLCID);
+                PRTL_CULTURE_NAME_TO_LCID CultureNameToLcid;
+                *(PVOID *)&CultureNameToLcid = LookupExportTable(
+                    GetNtdllHandle(),
+                    NTDLL_RtlCultureNameToLCID
+                );
+                RtlInitUnicodeString(&LanguageName, LanguageNames[Index]);
+                if (CultureNameToLcid == nullptr || !CultureNameToLcid(&LanguageName, &LocaleId))
+                    return Status;
+
+                static const WCHAR HexDigits[] = L"0123456789ABCDEF";
+                LANGID LanguageId = LANGIDFROMLCID(LocaleId);
+                LanguageIds[Index][0] = HexDigits[(LanguageId >> 12) & 0xF];
+                LanguageIds[Index][1] = HexDigits[(LanguageId >> 8) & 0xF];
+                LanguageIds[Index][2] = HexDigits[(LanguageId >> 4) & 0xF];
+                LanguageIds[Index][3] = HexDigits[LanguageId & 0xF];
+                LanguageIds[Index][4] = 0;
+                RequiredLength += countof(LanguageIds[Index]);
+            }
+            else
+            {
+                RequiredLength += (ULONG)StrLengthW(LanguageNames[Index]) + 1;
+            }
+        }
+
+        ULONG Capacity = *BufferLength;
+        *NumberOfLanguages = LanguageCount;
+        *BufferLength = RequiredLength;
+        if (LanguagesBuffer == nullptr || Capacity < RequiredLength)
+        {
+            Status = STATUS_BUFFER_TOO_SMALL;
+        }
+        else
+        {
+            ULONG Offset = 0;
+            for (ULONG Index = 0; Index < LanguageCount; ++Index)
+            {
+                PCWSTR Source = ReturnLanguageIds ? LanguageIds[Index] : LanguageNames[Index];
+                ULONG Length = (ULONG)StrLengthW(Source);
+                CopyMemory(LanguagesBuffer + Offset, Source, Length * sizeof(WCHAR));
+                Offset += Length;
+                LanguagesBuffer[Offset++] = 0;
+            }
+            LanguagesBuffer[Offset] = 0;
+            Status = STATUS_SUCCESS;
+            WriteLog(L"RtlGetThreadPreferredUILanguages virtual fallback: flags=%08X count=%u length=%u",
+                Flags, LanguageCount, RequiredLength);
+        }
+    }
+
+    SEH_TRY
+    {
+        ULONG Count = NumberOfLanguages != nullptr ? *NumberOfLanguages : 0;
+        ULONG Length = BufferLength != nullptr ? *BufferLength : 0;
+        WriteLog(L"RtlGetThreadPreferredUILanguages: flags=%08X status=%08X count=%u length=%u buffer=%p",
+            Flags, Status, Count, Length, LanguagesBuffer);
+
+        if (NT_SUCCESS(Status) && LanguagesBuffer != nullptr && Length != 0)
+        {
+            ULONG Offset = 0;
+            for (ULONG Index = 0; Index < Count && Index < 16 && Offset < Length; ++Index)
+            {
+                WCHAR Language[LOCALE_NAME_MAX_LENGTH];
+                ULONG LanguageLength = 0;
+                while (Offset + LanguageLength < Length &&
+                       LanguagesBuffer[Offset + LanguageLength] != 0 &&
+                       LanguageLength + 1 < countof(Language))
+                {
+                    Language[LanguageLength] = LanguagesBuffer[Offset + LanguageLength];
+                    ++LanguageLength;
+                }
+                Language[LanguageLength] = 0;
+                WriteLog(L"RtlGetThreadPreferredUILanguages[%u]=%ws", Index, Language);
+                Offset += LanguageLength + 1;
+            }
+        }
+    }
+    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        WriteLog(L"RtlGetThreadPreferredUILanguages: diagnostic buffer exception");
+    }
+
+    return Status;
+}
+
+NTSTATUS
+NTAPI
+LepRtlGetThreadPreferredUILanguagesPassthrough(
+    ULONG Flags,
+    PULONG NumberOfLanguages,
+    PWSTR LanguagesBuffer,
+    PULONG BufferLength
+)
+{
+    return LepGetGlobalData()->HookStub.StubRtlGetThreadPreferredUILanguages(
+        Flags,
+        NumberOfLanguages,
+        LanguagesBuffer,
+        BufferLength
+    );
 }
 
 LONG NTAPI LepKnownExceptionFilter(PEXCEPTION_POINTERS ExceptionPointers)
@@ -1435,7 +2578,13 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
     if (IsLepLoader())
         return STATUS_SUCCESS;
 
-    if (this->RegistryRedirectionEntry.GetSize() != 0)
+    if (GetLepb()->HookUILanguageApi == 2)
+    {
+        Status = LepInitializeVirtualMuiLanguage(this, Ntdll);
+        FAIL_RETURN(Status);
+    }
+
+    if (this->RegistryRedirectionEntry.GetSize() != 0 || GetLepb()->HookUILanguageApi == 2)
     {
 #if ML_AMD64 && defined(LEP_X64_CRASH_PROBE)
         if (LEP_X64_CRASH_PROBE == 2)
@@ -1448,6 +2597,18 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
     ADD_FILTER_(NtInitializeNlsFiles,       LepNtInitializeNlsFiles,     this);
     ADD_FILTER_(NtQueryDefaultLocale,       LepNtQueryDefaultLocale,     this);
     ADD_FILTER_(NtQueryDefaultUILanguage,   LepNtQueryDefaultUILanguage, this);
+    if (GetLepb()->HookUILanguageApi == 2)
+    {
+        Status = ADD_FILTER_(NtQueryLicenseValue, LepNtQueryLicenseValue, this);
+        WriteLog(L"hook NtQueryLicenseValue: %08X", Status);
+        FAIL_RETURN(Status);
+        ADD_FILTER_(NtClose,                  LepNtClose,                  this);
+        ADD_FILTER_(NtOpenKey,                LepNtOpenKey,                this);
+        ADD_FILTER_(NtEnumerateKey,           LepNtEnumerateKey,           this);
+        ADD_FILTER_(NtEnumerateValueKey,      LepNtEnumerateValueKey,      this);
+        ADD_FILTER_(NtQueryKey,               LepNtQueryKey,               this);
+        ADD_FILTER_(NtQueryInstallUILanguage, LepNtQueryInstallUILanguage, this);
+    }
 #if ML_AMD64
     ADD_FILTER_(NtContinue,                 LepNtContinue,               this);
 #endif
@@ -1489,6 +2650,7 @@ NTSTATUS LepGlobalData::UnHookNtdllRoutines()
 #if LEP_ENABLE_CUSTOM_CP_TO_UNICODE_HOOK
     Mp::RestoreMemory(HookStub.StubRtlCustomCPToUnicodeN);
 #endif
+    Mp::RestoreMemory(HookStub.StubLdrResSearchResource);
 
     return 0;
 }

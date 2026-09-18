@@ -40,6 +40,12 @@ typedef LepGlobalData* PLepGlobalData;
 
 typedef ULONG (NTAPI *PLEP_QUERY_FONT_ASSOC_STATUS)();
 typedef LANGID (WINAPI *PLEP_GET_DEFAULT_UI_LANGUAGE)();
+typedef NTSTATUS (NTAPI *PLEP_GET_THREAD_PREFERRED_UI_LANGUAGES)(
+    ULONG Flags,
+    PULONG NumberOfLanguages,
+    PWSTR LanguagesBuffer,
+    PULONG BufferLength
+);
 
 VOID LepNlsDiag(PCWSTR Format, ...);
 VOID LepSyncUser32ClientCodePage();
@@ -592,6 +598,53 @@ inline ULONG_PTR FormatLepUIntHex4(PWSTR Buffer, ULONG_PTR Value)
 
 #if ENABLE_LOG
 
+inline BOOLEAN LepAppendLogDirectory(PWSTR Path, ULONG_PTR Capacity, PULONG_PTR Offset)
+{
+    WCHAR NtDirectoryPath[MAX_NTPATH + 4];
+    HANDLE DirectoryHandle;
+    NTSTATUS Status;
+    ULONG_PTR Length;
+
+    if (*Offset != 0 && Path[*Offset - 1] != L'\\')
+    {
+        if (*Offset + 1 >= Capacity)
+            return FALSE;
+        Path[(*Offset)++] = L'\\';
+    }
+
+    static const WCHAR LogDirectory[] = L"Log";
+    if (*Offset + CONST_STRLEN(LogDirectory) + 2 > Capacity)
+        return FALSE;
+
+    CopyMemory(&Path[*Offset], LogDirectory, sizeof(LogDirectory) - sizeof(WCHAR));
+    *Offset += CONST_STRLEN(LogDirectory);
+    Path[*Offset] = 0;
+
+    static const WCHAR DosDevicesPrefix[] = L"\\??\\";
+    CopyMemory(NtDirectoryPath, DosDevicesPrefix, sizeof(DosDevicesPrefix) - sizeof(WCHAR));
+    Length = ML_MIN((*Offset + 1) * sizeof(WCHAR),
+                    sizeof(NtDirectoryPath) - sizeof(DosDevicesPrefix) + sizeof(WCHAR));
+    CopyMemory(&NtDirectoryPath[countof(DosDevicesPrefix) - 1], Path, Length);
+
+    Status = NtFileDisk::CreateDirectory(
+        &DirectoryHandle,
+        NtDirectoryPath,
+        NFD_NOT_RESOLVE_PATH,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        GENERIC_READ,
+        FILE_OPEN_IF,
+        FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_DIRECTORY,
+        FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT
+    );
+    if (NT_FAILED(Status))
+        return FALSE;
+
+    NtClose(DirectoryHandle);
+    Path[(*Offset)++] = L'\\';
+    Path[*Offset] = 0;
+    return TRUE;
+}
+
 inline VOID InitLog(NtFileDisk &LogFile, PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload = nullptr)
 {
     WCHAR LogFilePath[MAX_NTPATH];
@@ -634,8 +687,11 @@ inline VOID InitLog(NtFileDisk &LogFile, PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload
     CopyMemory(LogFilePath, SelfPath.Buffer, Length);
     Offset += Length / sizeof(WCHAR);
 
-    if (Offset != 0 && LogFilePath[Offset - 1] != L'\\')
-        LogFilePath[Offset++] = L'\\';
+    if (!LepAppendLogDirectory(LogFilePath, countof(LogFilePath), &Offset))
+    {
+        LogFile = 0;
+        return;
+    }
 
     Length = ML_MIN(Target->BaseDllName.Length, sizeof(LogFilePath) - (Offset + 1) * sizeof(WCHAR));
     CopyMemory(&LogFilePath[Offset], Target->BaseDllName.Buffer, Length);
@@ -741,9 +797,11 @@ public:
         API_POINTER(RtlKnownExceptionFilter)    StubRtlKnownExceptionFilter;
         API_POINTER(NtContinue)                 StubLdrInitNtContinue;
         API_POINTER(LdrResSearchResource)       StubLdrResSearchResource;
+        PLEP_GET_THREAD_PREFERRED_UI_LANGUAGES  StubRtlGetThreadPreferredUILanguages;
         API_POINTER(RtlCustomCPToUnicodeN)      StubRtlCustomCPToUnicodeN;
         PLEP_GET_DEFAULT_UI_LANGUAGE     StubGetSystemDefaultUILanguage;
         PLEP_GET_DEFAULT_UI_LANGUAGE     StubGetUserDefaultUILanguage;
+        API_POINTER(CreateActCtxW)        StubCreateActCtxW;
 
         API_POINTER(NtUserMessageCall)          StubNtUserMessageCall;
         API_POINTER(NtUserDefSetText)           StubNtUserDefSetText;
@@ -804,6 +862,19 @@ public:
             UNICODE_STRING LanguageKey;
 
             RTL_CRITICAL_SECTION NtLock;
+
+            // Mode 2 exposes a synthetic MUI\UILanguages\<target> key.  The
+            // kernel handles below are duplicate handles to the real parent
+            // key; the native registry filters give them child-key semantics.
+            WCHAR  MuiLanguageName[LOCALE_NAME_MAX_LENGTH];
+            USHORT MuiLanguageNameLength;
+            WCHAR  MuiHostLanguageName[LOCALE_NAME_MAX_LENGTH];
+            USHORT MuiHostLanguageNameLength;
+            WCHAR  MuiHostFallback[LOCALE_NAME_MAX_LENGTH * 2];
+            USHORT MuiHostFallbackLength;
+            WCHAR  MuiInstallFallback[LOCALE_NAME_MAX_LENGTH * 4];
+            USHORT MuiInstallFallbackLength;
+            HANDLE VirtualMuiKeyHandles[32];
 
         } Ntdll;
 
@@ -911,6 +982,7 @@ public:
 
     NTSTATUS HookGdi32Routines(PVOID Gdi32);
     NTSTATUS UnHookGdi32Routines();
+
 
     NTSTATUS HookNtdllRoutines(PVOID Ntdll);
     NTSTATUS UnHookNtdllRoutines();
