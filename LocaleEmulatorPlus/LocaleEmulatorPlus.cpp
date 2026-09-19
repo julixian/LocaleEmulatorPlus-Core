@@ -244,30 +244,13 @@ NTSTATUS LepGlobalData::Initialize(PLEP_BOOTSTRAP_PAYLOAD Payload, BOOL OwnPaylo
     LOOP_ONCE
     {
         PLEPB Environment = GetLepb();
-        WriteLog(L"init stage bootstrap payload size=%u environment=%u count=%p",
+        WriteLog(L"init stage bootstrap payload size=%u environment=%u registryMode=%u",
                  Payload->TotalSize, Payload->EnvironmentSize,
-                 Environment->NumberOfRegistryRedirectionEntries);
-        if (Environment->NumberOfRegistryRedirectionEntries != 0)
-        {
-            PREGISTRY_REDIRECTION_ENTRY64 Entry64 = &Environment->RegistryReplacement[0];
-            WriteLog(L"init entry0 subkey=%p/%u value=%p/%u redir=%p/%u base=%p",
-                Entry64->Original.SubKey.Buffer, Entry64->Original.SubKey.Length,
-                Entry64->Original.ValueName.Buffer, Entry64->Original.ValueName.Length,
-                Entry64->Redirected.SubKey.Buffer, Entry64->Redirected.SubKey.Length,
-                Environment);
-        }
-        Status = this->InitRegistryRedirection(Environment->RegistryReplacement,
-                                               Environment->NumberOfRegistryRedirectionEntries,
-                                               Environment, Payload->EnvironmentSize);
-        WriteLog(L"init stage InitRegistryRedirection payload end status=%08X entries=%p", Status, this->RegistryRedirectionEntry.GetSize());
-        if (NT_FAILED(Status) && Status != STATUS_NO_MORE_ENTRIES)
-            return Status;
-        if (this->RegistryRedirectionEntry.GetSize() == 0)
-        {
-            WriteLog(L"init stage InitDefaultRegistryRedirection begin");
-            Status = this->InitDefaultRegistryRedirection();
-            WriteLog(L"init stage InitDefaultRegistryRedirection end status=%08X", Status);
-        }
+                 Environment->RegistryRedirectionMode);
+        Status = this->InitRegistryRedirectionMode(Environment->RegistryRedirectionMode);
+        WriteLog(L"init stage InitRegistryRedirectionMode end status=%08X entries=%p",
+                 Status, this->RegistryRedirectionEntry.GetSize());
+        FAIL_RETURN(Status);
 #if ML_AMD64 && defined(LEP_X64_CRASH_PROBE)
         if (LEP_X64_CRASH_PROBE == 20 && this->RegistryRedirectionEntry.GetSize() == 0)
             return STATUS_DLL_INIT_FAILED;
@@ -455,7 +438,7 @@ NTSTATUS LepGlobalData::Initialize(PLEP_BOOTSTRAP_PAYLOAD Payload, BOOL OwnPaylo
     return Status;
 }
 
-NTSTATUS LepGlobalData::InitRegistryRedirection(PREGISTRY_REDIRECTION_ENTRY64 Entry64, ULONG_PTR Count, PVOID BaseAddress, ULONG_PTR BaseSize)
+NTSTATUS LepGlobalData::InitRegistryRedirection(PREGISTRY_REDIRECTION_CONFIG Config, ULONG_PTR Count)
 {
     NTSTATUS    Status;
     PREGISTRY_REDIRECTION_ENTRY Entry;
@@ -463,61 +446,23 @@ NTSTATUS LepGlobalData::InitRegistryRedirection(PREGISTRY_REDIRECTION_ENTRY64 En
     if (Count == 0)
         return STATUS_NO_MORE_ENTRIES;
 
-#pragma push_macro("USTR64ToUSTR")
-#undef USTR64ToUSTR
-#define USTR64ToUSTR(ustr64) UNICODE_STRING({ ustr64.Length, ustr64.MaximumLength, PtrAdd(ustr64.Buffer, BaseAddress) });
-
     REGISTRY_REDIRECTION_ENTRY LocalEntry;
 
-    FOR_EACH(Entry64, Entry64, Count)
+    FOR_EACH(Config, Config, Count)
     {
         ULONG_PTR       LastIndex;
         HANDLE          OriginalKey, RedirectedKey;
         UNICODE_STRING  KeyFullPath;
 
-        auto ValidSerializedString = [BaseSize] (UNICODE_STRING64& String) -> BOOL
-        {
-            ULONG64 Offset = (ULONG64)String.Buffer;
-            ULONG64 Length = String.MaximumLength;
-            if (String.Length > String.MaximumLength || (String.Length & 1) != 0)
-                return FALSE;
-            if (BaseSize == 0)
-                return TRUE;
-            return (Offset == 0 && Length == 0) ||
-                   (Offset <= BaseSize && Length <= BaseSize - Offset);
-        };
-
-        auto ValidSerializedData = [BaseSize] (PVOID64 Data, ULONG64 Size) -> BOOL
-        {
-            ULONG64 Offset = (ULONG64)Data;
-            if (BaseSize == 0)
-                return TRUE;
-            return (Offset == 0 && Size == 0) ||
-                   (Offset <= BaseSize && Size <= BaseSize - Offset);
-        };
-
-        if (!ValidSerializedString(Entry64->Original.SubKey) ||
-            !ValidSerializedString(Entry64->Original.ValueName) ||
-            !ValidSerializedString(Entry64->Redirected.SubKey) ||
-            !ValidSerializedString(Entry64->Redirected.ValueName) ||
-            !ValidSerializedData(Entry64->Original.Data, Entry64->Original.DataSize) ||
-            !ValidSerializedData(Entry64->Redirected.Data, Entry64->Redirected.DataSize))
-        {
-            WriteLog(L"InitRegistryRedirection invalid serialized entry offset subkey=%p value=%p redir=%p/%p",
-                Entry64->Original.SubKey.Buffer, Entry64->Original.ValueName.Buffer,
-                Entry64->Redirected.SubKey.Buffer, Entry64->Redirected.ValueName.Buffer);
-            return STATUS_INVALID_PARAMETER;
-        }
-
         OriginalKey     = nullptr;
         RedirectedKey   = nullptr;
 
-        Status = Reg::OpenKey(&OriginalKey, (HANDLE)Entry64->Original.Root, KEY_QUERY_VALUE, PtrAdd(Entry64->Original.SubKey.Buffer, BaseAddress));
+        Status = Reg::OpenKey(&OriginalKey, Config->Original.Root, KEY_QUERY_VALUE, Config->Original.SubKey);
         FAIL_CONTINUE(Status);
 
-        if (Entry64->Redirected.Root != NULL)
+        if (Config->Redirected.Root != NULL)
         {
-            Status = Reg::OpenKey(&RedirectedKey, (HANDLE)Entry64->Redirected.Root, KEY_QUERY_VALUE, PtrAdd(Entry64->Redirected.SubKey.Buffer, BaseAddress));
+            Status = Reg::OpenKey(&RedirectedKey, Config->Redirected.Root, KEY_QUERY_VALUE, Config->Redirected.SubKey);
             if (NT_FAILED(Status))
             {
                 Reg::CloseKeyHandle(OriginalKey);
@@ -555,23 +500,23 @@ NTSTATUS LepGlobalData::InitRegistryRedirection(PREGISTRY_REDIRECTION_ENTRY64 En
             RtlFreeUnicodeString(&KeyFullPath);
         }
 
-        Entry->Original.Root        = (HKEY)Entry64->Original.Root;
-        Entry->Original.SubKey      = USTR64ToUSTR(Entry64->Original.SubKey);
-        Entry->Original.ValueName   = USTR64ToUSTR(Entry64->Original.ValueName);
-        Entry->Original.DataType    = Entry64->Original.DataType;
+        Entry->Original.Root        = Config->Original.Root;
+        Entry->Original.SubKey      = Config->Original.SubKey;
+        Entry->Original.ValueName   = Config->Original.ValueName;
+        Entry->Original.DataType    = Config->Original.DataType;
         Entry->Original.Data        = nullptr;
         Entry->Original.DataSize    = 0;
 
-        Entry->Redirected.Root      = (HKEY)Entry64->Redirected.Root;
-        Entry->Redirected.SubKey    = USTR64ToUSTR(Entry64->Redirected.SubKey);
-        Entry->Redirected.ValueName = USTR64ToUSTR(Entry64->Redirected.ValueName);
-        Entry->Redirected.DataType  = Entry64->Redirected.DataType;
+        Entry->Redirected.Root      = Config->Redirected.Root;
+        Entry->Redirected.SubKey    = Config->Redirected.SubKey;
+        Entry->Redirected.ValueName = Config->Redirected.ValueName;
+        Entry->Redirected.DataType  = Config->Redirected.DataType;
         Entry->Redirected.Data      = nullptr;
         Entry->Redirected.DataSize  = 0;
 
-        if (Entry64->Redirected.Data != nullptr && Entry64->Redirected.DataSize != 0)
+        if (Config->Redirected.Data != nullptr && Config->Redirected.DataSize != 0)
         {
-            Entry->Redirected.DataSize = (ULONG_PTR)Entry64->Redirected.DataSize;
+            Entry->Redirected.DataSize = Config->Redirected.DataSize;
             Entry->Redirected.Data = AllocateMemoryP(Entry->Redirected.DataSize);
             if (Entry->Redirected.Data == nullptr)
             {
@@ -579,41 +524,114 @@ NTSTATUS LepGlobalData::InitRegistryRedirection(PREGISTRY_REDIRECTION_ENTRY64 En
                 continue;
             }
 
-            CopyMemory(Entry->Redirected.Data, PtrAdd(Entry64->Redirected.Data, BaseAddress), Entry->Redirected.DataSize);
+            CopyMemory(Entry->Redirected.Data, Config->Redirected.Data, Entry->Redirected.DataSize);
         }
     }
-
-#pragma pop_macro("USTR64ToUSTR")
 
     return STATUS_SUCCESS;
 }
 
-NTSTATUS LepGlobalData::InitDefaultRegistryRedirection()
+NTSTATUS LepGlobalData::InitRegistryRedirectionMode(ULONG Mode)
 {
     ULONG_PTR DefaultACPLength, DefaultLCIDLength, DefaultOEMCPLength;
     WCHAR DefaultACP[0x20], DefaultOEMCP[0x20], DefaultLCID[0x20];
+
+    if (Mode > LEP_REGISTRY_REDIRECTION_MODE_MAX)
+        return STATUS_INVALID_PARAMETER;
 
     DefaultACPLength    = (FormatLepUIntDecimal(DefaultACP, GetLepb()->AnsiCodePage) + 1) * sizeof(WCHAR);
     DefaultOEMCPLength  = (FormatLepUIntDecimal(DefaultOEMCP, GetLepb()->OemCodePage) + 1) * sizeof(WCHAR);
     DefaultLCIDLength   = (FormatLepUIntDecimal(DefaultLCID, GetLepb()->LocaleID) + 1) * sizeof(WCHAR);
 
-    REGISTRY_REDIRECTION_ENTRY64 Entries[] =
+    REGISTRY_REDIRECTION_CONFIG DefaultEntries[] =
     {
         {
-            { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_CODEPAGE), USTR64(REGKEY_ACP), REG_SZ, },
-            { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_CODEPAGE), USTR64(REGKEY_ACP), REG_SZ, DefaultACP, DefaultACPLength },
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, REGKEY_ACP, REG_SZ, },
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, REGKEY_ACP, REG_SZ, DefaultACP, DefaultACPLength },
         },
         {
-            { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_CODEPAGE), USTR64(REGKEY_OEMCP), REG_SZ, },
-            { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_CODEPAGE), USTR64(REGKEY_OEMCP), REG_SZ, DefaultOEMCP, DefaultOEMCPLength },
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, REGKEY_OEMCP, REG_SZ, },
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, REGKEY_OEMCP, REG_SZ, DefaultOEMCP, DefaultOEMCPLength },
         },
         {
-            { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_LANGUAGE), USTR64(REGKEY_DEFAULT_LANGUAGE), REG_SZ, },
-            { (ULONG64)HKEY_LOCAL_MACHINE, USTR64(REGPATH_LANGUAGE), USTR64(REGKEY_DEFAULT_LANGUAGE), REG_SZ, DefaultLCID, DefaultLCIDLength },
+            { HKEY_LOCAL_MACHINE, REGPATH_LANGUAGE, REGKEY_DEFAULT_LANGUAGE, REG_SZ, },
+            { HKEY_LOCAL_MACHINE, REGPATH_LANGUAGE, REGKEY_DEFAULT_LANGUAGE, REG_SZ, DefaultLCID, DefaultLCIDLength },
         },
     };
 
-    return InitRegistryRedirection(Entries, countof(Entries), nullptr);
+    REGISTRY_REDIRECTION_CONFIG ExtendedEntries[] =
+    {
+        {
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, L"InstallLanguage", REG_SZ, },
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, L"InstallLanguage", REG_SZ, DefaultLCID, DefaultLCIDLength },
+        },
+        {
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, L"Default", REG_SZ, },
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, L"Default", REG_SZ, DefaultLCID, DefaultLCIDLength },
+        },
+        {
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, REGKEY_OEMCP, REG_SZ, },
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, REGKEY_OEMCP, REG_SZ, DefaultOEMCP, DefaultOEMCPLength },
+        },
+        {
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, REGKEY_ACP, REG_SZ, },
+            { HKEY_LOCAL_MACHINE, REGPATH_CODEPAGE, REGKEY_ACP, REG_SZ, DefaultACP, DefaultACPLength },
+        },
+    };
+
+    return Mode == 0
+        ? InitRegistryRedirection(DefaultEntries, countof(DefaultEntries))
+        : InitRegistryRedirection(ExtendedEntries, countof(ExtendedEntries));
+}
+
+NTSTATUS LepGlobalData::InitAdvancedRegistryRedirection(PCWSTR LocaleName, USHORT LocaleNameLength)
+{
+    static const WCHAR Hex[] = L"0123456789ABCDEF";
+    WCHAR LocaleHex[9];
+    WCHAR PreferredLanguages[LOCALE_NAME_MAX_LENGTH + 2];
+    ULONG LocaleNameCharacters = LocaleNameLength / sizeof(WCHAR);
+
+    if (LocaleName == nullptr ||
+        (LocaleNameLength & (sizeof(WCHAR) - 1)) != 0 ||
+        LocaleNameCharacters == 0 ||
+        LocaleNameCharacters >= LOCALE_NAME_MAX_LENGTH)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    ULONG LocaleId = GetLepb()->LocaleID;
+    for (ULONG Index = 0; Index != 8; ++Index)
+        LocaleHex[Index] = Hex[(LocaleId >> ((7 - Index) * 4)) & 0xF];
+    LocaleHex[8] = 0;
+
+    CopyMemory(PreferredLanguages, LocaleName, LocaleNameLength);
+    PreferredLanguages[LocaleNameCharacters] = 0;
+    PreferredLanguages[LocaleNameCharacters + 1] = 0;
+
+    ULONG LocaleHexSize = sizeof(LocaleHex);
+    ULONG LocaleNameSize = LocaleNameLength + sizeof(WCHAR);
+    ULONG PreferredLanguagesSize = LocaleNameLength + sizeof(WCHAR) * 2;
+    REGISTRY_REDIRECTION_CONFIG Entries[] =
+    {
+        {
+            { HKEY_CURRENT_USER, L"Control Panel\\International", L"Locale", REG_SZ, },
+            { HKEY_CURRENT_USER, L"Control Panel\\International", L"Locale", REG_SZ, LocaleHex, LocaleHexSize },
+        },
+        {
+            { HKEY_CURRENT_USER, L"Control Panel\\International", L"LocaleName", REG_SZ, },
+            { HKEY_CURRENT_USER, L"Control Panel\\International", L"LocaleName", REG_SZ, LocaleName, LocaleNameSize },
+        },
+        {
+            { HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"PreferredUILanguages", REG_MULTI_SZ, },
+            { HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"PreferredUILanguages", REG_MULTI_SZ, PreferredLanguages, PreferredLanguagesSize },
+        },
+        {
+            { HKEY_CURRENT_USER, L"Control Panel\\Desktop\\MuiCached", L"MachinePreferredUILanguages", REG_MULTI_SZ, },
+            { HKEY_CURRENT_USER, L"Control Panel\\Desktop\\MuiCached", L"MachinePreferredUILanguages", REG_MULTI_SZ, PreferredLanguages, PreferredLanguagesSize },
+        },
+    };
+
+    return InitRegistryRedirection(Entries, countof(Entries));
 }
 
 typedef struct

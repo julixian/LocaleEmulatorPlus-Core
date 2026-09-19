@@ -207,35 +207,41 @@ typedef struct TEXT_METRIC_INTERNAL
 
 typedef struct
 {
-    ULONG64             Root;
-    UNICODE_STRING64    SubKey;
-    UNICODE_STRING64    ValueName;
-    ULONG               DataType;
-    PVOID64             Data;
-    ULONG64             DataSize;
+    HKEY        Root;
+    PCWSTR      SubKey;
+    PCWSTR      ValueName;
+    ULONG       DataType;
+    LPCVOID     Data;
+    ULONG_PTR   DataSize;
 
-} REGISTRY_ENTRY64;
-
-typedef struct
-{
-    REGISTRY_ENTRY64 Original;
-    REGISTRY_ENTRY64 Redirected;
-
-} REGISTRY_REDIRECTION_ENTRY64, *PREGISTRY_REDIRECTION_ENTRY64;
+} REGISTRY_ENTRY_CONFIG;
 
 typedef struct
 {
+    REGISTRY_ENTRY_CONFIG Original;
+    REGISTRY_ENTRY_CONFIG Redirected;
+
+} REGISTRY_REDIRECTION_CONFIG, *PREGISTRY_REDIRECTION_CONFIG;
+
+typedef struct
+{
+    ULONG                           Size;
+    ULONG                           Version;
     ULONG                           AnsiCodePage;
     ULONG                           OemCodePage;
     ULONG                           LocaleID;
     ULONG                           DefaultCharset;
-    ULONG                           HookUILanguageApi;
-    WCHAR                           DefaultFaceName[LF_FACESIZE];
+    ULONG                           RegistryRedirectionMode;
+    ULONG                           HookUILanguageMode;
     RTL_TIME_ZONE_INFORMATION       Timezone;
-    ULONG64                         NumberOfRegistryRedirectionEntries;
-    REGISTRY_REDIRECTION_ENTRY64    RegistryReplacement[1];
 
 } LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK, *PLOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK, LEPB, *PLEPB;
+
+#define LEP_ENVIRONMENT_VERSION 2
+#define LEP_UI_LANGUAGE_MODE_MAX 2
+#define LEP_REGISTRY_REDIRECTION_MODE_MAX 2
+
+static_assert(sizeof(LEPB) == 204, "LEPB ABI v2 size mismatch");
 
 #if ML_AMD64
 #define LDR_LOAD_DLL_BACKUP_SIZE 14
@@ -256,7 +262,7 @@ enum LEP_CHILD_INJECTION_FLAGS
 #define LEP_FIRST_DLL_BOOTSTRAP_MAGIC TAG4('L1DB')
 #define LEP_FIRST_DLL_BOOTSTRAP_EXPORT "LepFirstDllBootstrapData"
 #define LEP_BOOTSTRAP_PAYLOAD_MAGIC TAG4('LBP1')
-#define LEP_BOOTSTRAP_PAYLOAD_VERSION 1
+#define LEP_BOOTSTRAP_PAYLOAD_VERSION 2
 #define LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE 0x1000000
 #define LEP_BOOTSTRAP_IMAGE_MAX_SIZE 0x10000000
 
@@ -348,6 +354,15 @@ inline BOOL LepPayloadRangeValid(ULONG Offset, ULONG Size, ULONG TotalSize)
     return Offset <= TotalSize && Size <= TotalSize - Offset;
 }
 
+inline BOOL LepValidateEnvironment(PLEPB Environment)
+{
+    return Environment != nullptr &&
+           Environment->Size == sizeof(*Environment) &&
+           Environment->Version == LEP_ENVIRONMENT_VERSION &&
+           Environment->RegistryRedirectionMode <= LEP_REGISTRY_REDIRECTION_MODE_MAX &&
+           Environment->HookUILanguageMode <= LEP_UI_LANGUAGE_MODE_MAX;
+}
+
 inline BOOL LepValidateBootstrapPayload(PLEP_BOOTSTRAP_PAYLOAD Payload)
 {
     if (Payload == nullptr ||
@@ -362,7 +377,7 @@ inline BOOL LepValidateBootstrapPayload(PLEP_BOOTSTRAP_PAYLOAD Payload)
         Payload->LepDllFullPathLength > Payload->TotalSize - sizeof(WCHAR) ||
         Payload->LepDllDirPathLength > Payload->TotalSize - sizeof(WCHAR) ||
         !LepPayloadRangeValid(Payload->EnvironmentOffset, Payload->EnvironmentSize, Payload->TotalSize) ||
-        Payload->EnvironmentSize < FIELD_OFFSET(LEPB, RegistryReplacement) ||
+        Payload->EnvironmentSize != sizeof(LEPB) ||
         !LepPayloadRangeValid(Payload->LepDllFullPathOffset, Payload->LepDllFullPathLength + sizeof(WCHAR), Payload->TotalSize) ||
         !LepPayloadRangeValid(Payload->LepDllDirPathOffset, Payload->LepDllDirPathLength + sizeof(WCHAR), Payload->TotalSize) ||
         (Payload->LepDllFullPathLength & (sizeof(WCHAR) - 1)) != 0 ||
@@ -372,43 +387,8 @@ inline BOOL LepValidateBootstrapPayload(PLEP_BOOTSTRAP_PAYLOAD Payload)
     }
 
     PLEPB Environment = (PLEPB)PtrAdd(Payload, Payload->EnvironmentOffset);
-    ULONG64 Count = Environment->NumberOfRegistryRedirectionEntries;
-    ULONG64 Required = FIELD_OFFSET(LEPB, RegistryReplacement) +
-                       Count * sizeof(REGISTRY_REDIRECTION_ENTRY64);
-    if (Count > 0x10000 || Required > Payload->EnvironmentSize)
+    if (!LepValidateEnvironment(Environment))
         return FALSE;
-
-    auto EnvironmentRangeValid = [Payload] (ULONG64 Offset, ULONG64 Size) -> BOOL
-    {
-        if (Offset == 0 && Size == 0)
-            return TRUE;
-        return Offset <= Payload->EnvironmentSize &&
-               Size <= Payload->EnvironmentSize - Offset;
-    };
-    auto EnvironmentStringValid = [Environment, &EnvironmentRangeValid] (UNICODE_STRING64& String) -> BOOL
-    {
-        ULONG64 Offset = (ULONG64)String.Buffer;
-        if (String.Length > String.MaximumLength || (String.Length & 1) != 0)
-            return FALSE;
-        if (Offset == 0 && String.MaximumLength == 0)
-            return TRUE;
-        if (!EnvironmentRangeValid(Offset, (ULONG64)String.MaximumLength + sizeof(WCHAR)))
-            return FALSE;
-        return *(PWCHAR)PtrAdd(Environment, Offset + String.MaximumLength) == 0;
-    };
-    PREGISTRY_REDIRECTION_ENTRY64 Entry = Environment->RegistryReplacement;
-    for (ULONG64 Index = 0; Index != Count; ++Index, ++Entry)
-    {
-        if (!EnvironmentStringValid(Entry->Original.SubKey) ||
-            !EnvironmentStringValid(Entry->Original.ValueName) ||
-            !EnvironmentRangeValid((ULONG64)Entry->Original.Data, Entry->Original.DataSize) ||
-            !EnvironmentStringValid(Entry->Redirected.SubKey) ||
-            !EnvironmentStringValid(Entry->Redirected.ValueName) ||
-            !EnvironmentRangeValid((ULONG64)Entry->Redirected.Data, Entry->Redirected.DataSize))
-        {
-            return FALSE;
-        }
-    }
 
     PCWSTR FullPath = (PCWSTR)PtrAdd(Payload, Payload->LepDllFullPathOffset);
     PCWSTR DirPath = (PCWSTR)PtrAdd(Payload, Payload->LepDllDirPathOffset);
@@ -797,12 +777,12 @@ public:
         API_POINTER(RtlKnownExceptionFilter)    StubRtlKnownExceptionFilter;
         API_POINTER(NtContinue)                 StubLdrInitNtContinue;
         API_POINTER(LdrResSearchResource)       StubLdrResSearchResource;
+        API_POINTER(LdrFindResource_U)          StubLdrFindResource;
+        API_POINTER(LdrFindResourceEx_U)        StubLdrFindResourceEx;
         PLEP_GET_THREAD_PREFERRED_UI_LANGUAGES  StubRtlGetThreadPreferredUILanguages;
         API_POINTER(RtlCustomCPToUnicodeN)      StubRtlCustomCPToUnicodeN;
-        PLEP_GET_DEFAULT_UI_LANGUAGE     StubGetSystemDefaultUILanguage;
-        PLEP_GET_DEFAULT_UI_LANGUAGE     StubGetUserDefaultUILanguage;
-        API_POINTER(CreateActCtxW)        StubCreateActCtxW;
-
+        PLEP_GET_DEFAULT_UI_LANGUAGE            StubGetSystemDefaultUILanguage;
+        PLEP_GET_DEFAULT_UI_LANGUAGE            StubGetUserDefaultUILanguage;
         API_POINTER(NtUserMessageCall)          StubNtUserMessageCall;
         API_POINTER(NtUserDefSetText)           StubNtUserDefSetText;
         API_POINTER(SetWindowLongA)             StubSetWindowLongA;
@@ -970,8 +950,9 @@ public:
 
     NTSTATUS Initialize(PLEP_BOOTSTRAP_PAYLOAD Payload, BOOL OwnPayload);
     NTSTATUS UnInitialize();
-    NTSTATUS InitRegistryRedirection(PREGISTRY_REDIRECTION_ENTRY64 Entry64, ULONG_PTR Count, PVOID BaseAddress, ULONG_PTR BaseSize = 0);
-    NTSTATUS InitDefaultRegistryRedirection();
+    NTSTATUS InitRegistryRedirection(PREGISTRY_REDIRECTION_CONFIG Config, ULONG_PTR Count);
+    NTSTATUS InitRegistryRedirectionMode(ULONG Mode);
+    NTSTATUS InitAdvancedRegistryRedirection(PCWSTR LocaleName, USHORT LocaleNameLength);
     NTSTATUS BuildBootstrapPayload(PCWSTR FullPath, PLEP_BOOTSTRAP_PAYLOAD* Payload, PULONG PayloadSize);
 
     VOID DllNotification(ULONG NotificationReason, PCLDR_DLL_NOTIFICATION_DATA NotificationData);

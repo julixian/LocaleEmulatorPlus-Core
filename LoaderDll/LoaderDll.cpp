@@ -144,87 +144,14 @@ static NTSTATUS LepCreateBootstrapPayload(
 {
     if (Environment == nullptr || DllPath == nullptr || Payload == nullptr || PayloadSize == nullptr)
         return STATUS_INVALID_PARAMETER;
-
-    ULONG64 Count = Environment->NumberOfRegistryRedirectionEntries;
-    ULONG64 EnvironmentSize64 = FIELD_OFFSET(LEPB, RegistryReplacement) +
-                                Count * sizeof(REGISTRY_REDIRECTION_ENTRY64);
-    if (Count > 0x10000 || EnvironmentSize64 > LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE)
+    if (!LepValidateEnvironment(Environment))
         return STATUS_INVALID_PARAMETER;
-    PREGISTRY_REDIRECTION_ENTRY64 SourceEntry = Environment->RegistryReplacement;
-    for (ULONG64 Index = 0; Index != Count; ++Index, ++SourceEntry)
-    {
-        if (SourceEntry->Original.SubKey.Length > SourceEntry->Original.SubKey.MaximumLength ||
-            SourceEntry->Original.ValueName.Length > SourceEntry->Original.ValueName.MaximumLength ||
-            SourceEntry->Redirected.SubKey.Length > SourceEntry->Redirected.SubKey.MaximumLength ||
-            SourceEntry->Redirected.ValueName.Length > SourceEntry->Redirected.ValueName.MaximumLength ||
-            (SourceEntry->Original.SubKey.Length != 0 && SourceEntry->Original.SubKey.Buffer == 0) ||
-            (SourceEntry->Original.ValueName.Length != 0 && SourceEntry->Original.ValueName.Buffer == 0) ||
-            (SourceEntry->Redirected.SubKey.Length != 0 && SourceEntry->Redirected.SubKey.Buffer == 0) ||
-            (SourceEntry->Redirected.ValueName.Length != 0 && SourceEntry->Redirected.ValueName.Buffer == 0) ||
-            (SourceEntry->Redirected.DataSize != 0 && SourceEntry->Redirected.Data == nullptr))
-        {
-            return STATUS_INVALID_PARAMETER;
-        }
-        EnvironmentSize64 += SourceEntry->Original.SubKey.Length + sizeof(WCHAR);
-        EnvironmentSize64 += SourceEntry->Original.ValueName.Length + sizeof(WCHAR);
-        EnvironmentSize64 += SourceEntry->Redirected.SubKey.Length + sizeof(WCHAR);
-        EnvironmentSize64 += SourceEntry->Redirected.ValueName.Length + sizeof(WCHAR);
-        EnvironmentSize64 += SourceEntry->Redirected.DataSize;
-        if (EnvironmentSize64 > LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE)
-            return STATUS_BUFFER_OVERFLOW;
-    }
-
-    ULONG EnvironmentSize = (ULONG)EnvironmentSize64;
-    // LoaderDll has no entry point, so its private MemoryAllocator heap is not
-    // initialized on this path.  Use the process heap for all bootstrap
-    // construction storage.
-    PLEPB CanonicalEnvironment = (PLEPB)AllocateMemory(EnvironmentSize);
-    if (CanonicalEnvironment == nullptr)
-        return STATUS_NO_MEMORY;
-    ZeroMemory(CanonicalEnvironment, EnvironmentSize);
-    CopyMemory(CanonicalEnvironment, Environment, FIELD_OFFSET(LEPB, NumberOfRegistryRedirectionEntries));
-    CanonicalEnvironment->NumberOfRegistryRedirectionEntries = Count;
-
-    PREGISTRY_REDIRECTION_ENTRY64 DestinationEntry = CanonicalEnvironment->RegistryReplacement;
-    PBYTE EnvironmentBuffer = (PBYTE)(DestinationEntry + Count);
-    auto CopyString = [&] (UNICODE_STRING64& Destination, UNICODE_STRING64& Source)
-    {
-        Destination.Length = Source.Length;
-        Destination.MaximumLength = Source.Length;
-        Destination.Dummy = PtrOffset(EnvironmentBuffer, CanonicalEnvironment);
-        if (Source.Length != 0)
-            CopyMemory(EnvironmentBuffer, PtrAdd(Environment, (ULONG_PTR)Source.Buffer), Source.Length);
-        EnvironmentBuffer += Source.Length;
-        *(PWCHAR)EnvironmentBuffer = 0;
-        EnvironmentBuffer += sizeof(WCHAR);
-    };
-    SourceEntry = Environment->RegistryReplacement;
-    for (ULONG64 Index = 0; Index != Count; ++Index, ++SourceEntry, ++DestinationEntry)
-    {
-        DestinationEntry->Original.Root = SourceEntry->Original.Root;
-        DestinationEntry->Original.DataType = SourceEntry->Original.DataType;
-        CopyString(DestinationEntry->Original.SubKey, SourceEntry->Original.SubKey);
-        CopyString(DestinationEntry->Original.ValueName, SourceEntry->Original.ValueName);
-
-        DestinationEntry->Redirected.Root = SourceEntry->Redirected.Root;
-        DestinationEntry->Redirected.DataType = SourceEntry->Redirected.DataType;
-        CopyString(DestinationEntry->Redirected.SubKey, SourceEntry->Redirected.SubKey);
-        CopyString(DestinationEntry->Redirected.ValueName, SourceEntry->Redirected.ValueName);
-        if (SourceEntry->Redirected.Data != nullptr && SourceEntry->Redirected.DataSize != 0)
-        {
-            DestinationEntry->Redirected.Data = (PVOID64)PtrOffset(EnvironmentBuffer, CanonicalEnvironment);
-            DestinationEntry->Redirected.DataSize = SourceEntry->Redirected.DataSize;
-            CopyMemory(EnvironmentBuffer, PtrAdd(Environment, (ULONG_PTR)SourceEntry->Redirected.Data),
-                       SourceEntry->Redirected.DataSize);
-            EnvironmentBuffer += SourceEntry->Redirected.DataSize;
-        }
-    }
+    ULONG EnvironmentSize = sizeof(LEPB);
 
     WCHAR DirPath[MAX_NTPATH];
     ULONG_PTR Length = StrLengthW(DllPath);
     if (Length + 1 > countof(DirPath))
     {
-        FreeMemory(CanonicalEnvironment);
         return STATUS_NAME_TOO_LONG;
     }
     CopyMemory(DirPath, DllPath, (Length + 1) * sizeof(WCHAR));
@@ -240,19 +167,16 @@ static NTSTATUS LepCreateBootstrapPayload(
     ULONG Required = LepBootstrapPayloadSize(EnvironmentSize, DllPath, DirPath);
     if (Required == 0)
     {
-        FreeMemory(CanonicalEnvironment);
         return STATUS_BUFFER_OVERFLOW;
     }
     PLEP_BOOTSTRAP_PAYLOAD LocalPayload = (PLEP_BOOTSTRAP_PAYLOAD)AllocateMemory(Required);
     if (LocalPayload == nullptr)
     {
-        FreeMemory(CanonicalEnvironment);
         return STATUS_NO_MEMORY;
     }
 
-    NTSTATUS Status = LepBuildBootstrapPayload(LocalPayload, Required, CanonicalEnvironment, EnvironmentSize,
+    NTSTATUS Status = LepBuildBootstrapPayload(LocalPayload, Required, Environment, EnvironmentSize,
                                       DllPath, DirPath);
-    FreeMemory(CanonicalEnvironment);
     if (NT_FAILED(Status))
     {
         FreeMemory(LocalPayload);

@@ -892,7 +892,6 @@ LepNtGdiHfontCreateWorker(
         enumlfex->elfEnumLogfontEx.elfLogFont.lfCharSet = GlobalData->GetLepb()->DefaultCharset;
 
         //if (GdiGetCodePage == NULL)
-        //CopyStruct(enumlfex->elfEnumLogfontEx.elfLogFont.lfFaceName, GlobalData->GetLepb()->DefaultFaceName, LF_FACESIZE);
         //AllocConsole();
         //PrintConsoleW(L"%s\n", enumlfex.elfEnumLogfontEx.elfLogFont.lfFaceName);
 

@@ -87,77 +87,15 @@ NTSTATUS LepGlobalData::BuildBootstrapPayload(
     if (FullPath == nullptr || Payload == nullptr || PayloadSize == nullptr)
         return STATUS_INVALID_PARAMETER;
 
-    ULONG_PTR EntryCount = this->RegistryRedirectionEntry.GetSize();
-    ULONG64 EnvironmentSize64 = FIELD_OFFSET(LEPB, RegistryReplacement) +
-                                EntryCount * sizeof(REGISTRY_REDIRECTION_ENTRY64);
-    PREGISTRY_REDIRECTION_ENTRY Entry;
-    FOR_EACH_VEC(Entry, this->RegistryRedirectionEntry)
-    {
-        if (Entry->Original.SubKey.GetSize() > USHRT_MAX ||
-            Entry->Original.ValueName.GetSize() > USHRT_MAX ||
-            Entry->Redirected.SubKey.GetSize() > USHRT_MAX ||
-            Entry->Redirected.ValueName.GetSize() > USHRT_MAX)
-        {
-            return STATUS_NAME_TOO_LONG;
-        }
-        EnvironmentSize64 += Entry->Original.SubKey.GetSize() + sizeof(WCHAR);
-        EnvironmentSize64 += Entry->Original.ValueName.GetSize() + sizeof(WCHAR);
-        EnvironmentSize64 += Entry->Redirected.SubKey.GetSize() + sizeof(WCHAR);
-        EnvironmentSize64 += Entry->Redirected.ValueName.GetSize() + sizeof(WCHAR);
-        EnvironmentSize64 += Entry->Redirected.DataSize;
-    }
-    if (EntryCount > 0x10000 || EnvironmentSize64 > LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE)
-        return STATUS_BUFFER_OVERFLOW;
-
-    ULONG EnvironmentSize = (ULONG)EnvironmentSize64;
-    PLEPB Environment = (PLEPB)AllocateMemoryP(EnvironmentSize);
-    if (Environment == nullptr)
-        return STATUS_NO_MEMORY;
-    ZeroMemory(Environment, EnvironmentSize);
-
-    CopyMemory(Environment, GetLepb(), FIELD_OFFSET(LEPB, NumberOfRegistryRedirectionEntries));
-    Environment->NumberOfRegistryRedirectionEntries = EntryCount;
-    PREGISTRY_REDIRECTION_ENTRY64 Entry64 = Environment->RegistryReplacement;
-    PBYTE Buffer = (PBYTE)(Entry64 + EntryCount);
-
-    auto StringToUnicode64 = [&] (UNICODE_STRING64& Ustr64, ml::String& String)
-    {
-        ULONG Length = (ULONG)String.GetSize();
-        Ustr64.Length = (USHORT)Length;
-        Ustr64.MaximumLength = (USHORT)Length;
-        Ustr64.Dummy = PtrOffset(Buffer, Environment);
-        CopyMemory(Buffer, (PWSTR)String, Length);
-        Buffer += Length;
-        *(PWCHAR)Buffer = 0;
-        Buffer += sizeof(WCHAR);
-    };
-
-    FOR_EACH_VEC(Entry, this->RegistryRedirectionEntry)
-    {
-        Entry64->Original.Root = (ULONG64)Entry->Original.Root;
-        Entry64->Original.DataType = (ULONG)Entry->Original.DataType;
-        StringToUnicode64(Entry64->Original.SubKey, Entry->Original.SubKey);
-        StringToUnicode64(Entry64->Original.ValueName, Entry->Original.ValueName);
-
-        Entry64->Redirected.Root = (ULONG64)Entry->Redirected.Root;
-        Entry64->Redirected.DataType = (ULONG)Entry->Redirected.DataType;
-        StringToUnicode64(Entry64->Redirected.SubKey, Entry->Redirected.SubKey);
-        StringToUnicode64(Entry64->Redirected.ValueName, Entry->Redirected.ValueName);
-        if (Entry->Redirected.Data != nullptr && Entry->Redirected.DataSize != 0)
-        {
-            Entry64->Redirected.Data = (PVOID64)PtrOffset(Buffer, Environment);
-            Entry64->Redirected.DataSize = Entry->Redirected.DataSize;
-            CopyMemory(Buffer, Entry->Redirected.Data, Entry->Redirected.DataSize);
-            Buffer += Entry->Redirected.DataSize;
-        }
-        ++Entry64;
-    }
+    ULONG EnvironmentSize = sizeof(LEPB);
+    PLEPB Environment = GetLepb();
+    if (!LepValidateEnvironment(Environment))
+        return STATUS_INVALID_PARAMETER;
 
     WCHAR DirPath[MAX_NTPATH];
     ULONG_PTR FullPathLength = StrLengthW(FullPath);
     if (FullPathLength + 1 > countof(DirPath))
     {
-        FreeMemoryP(Environment);
         return STATUS_NAME_TOO_LONG;
     }
     CopyMemory(DirPath, FullPath, (FullPathLength + 1) * sizeof(WCHAR));
@@ -173,19 +111,16 @@ NTSTATUS LepGlobalData::BuildBootstrapPayload(
     ULONG Required = LepBootstrapPayloadSize(EnvironmentSize, FullPath, DirPath);
     if (Required == 0)
     {
-        FreeMemoryP(Environment);
         return STATUS_BUFFER_OVERFLOW;
     }
     PLEP_BOOTSTRAP_PAYLOAD LocalPayload = (PLEP_BOOTSTRAP_PAYLOAD)AllocateMemoryP(Required);
     if (LocalPayload == nullptr)
     {
-        FreeMemoryP(Environment);
         return STATUS_NO_MEMORY;
     }
 
     NTSTATUS Status = LepBuildBootstrapPayload(LocalPayload, Required, Environment,
                                                EnvironmentSize, FullPath, DirPath);
-    FreeMemoryP(Environment);
     if (NT_FAILED(Status))
     {
         FreeMemoryP(LocalPayload);
@@ -513,6 +448,31 @@ static BOOLEAN LepInitializeMuiCultureName(
     CultureName.Buffer[CultureName.Length / sizeof(WCHAR)] = 0;
     *NameLength = CultureName.Length;
     return TRUE;
+}
+
+static NTSTATUS LepInitializeAdvancedRegistryRedirection(PLepGlobalData GlobalData, PVOID Ntdll)
+{
+    PRTL_LCID_TO_CULTURE_NAME LcidToCultureName;
+    WCHAR LocaleName[LOCALE_NAME_MAX_LENGTH];
+    USHORT LocaleNameLength;
+
+    *(PVOID *)&LcidToCultureName = LookupExportTable(Ntdll, NTDLL_RtlLCIDToCultureName);
+    if (LcidToCultureName == nullptr)
+        return STATUS_PROCEDURE_NOT_FOUND;
+    if (!LepInitializeMuiCultureName(
+            LcidToCultureName,
+            GlobalData->GetLepb()->LocaleID,
+            LocaleName,
+            sizeof(LocaleName),
+            &LocaleNameLength))
+    {
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    NTSTATUS Status = GlobalData->InitAdvancedRegistryRedirection(LocaleName, LocaleNameLength);
+    WriteLog(L"advanced registry redirection: locale=%ws status=%08X",
+             LocaleName, Status);
+    return Status;
 }
 
 static NTSTATUS LepInitializeVirtualMuiLanguage(PLepGlobalData GlobalData, PVOID Ntdll)
@@ -1115,7 +1075,7 @@ NoInline PVOID FASTCALL LoadSelfAsFirstDll(PVOID ReturnAddress, NTSTATUS* Bootst
 
     *BootstrapStage = LepBootstrapStageRestoreLdrLoadDll;
     // The parent leaves this page writable. Restore it with ordinary CPU
-    // stores before parsing the variable-length payload or initializing LEP.
+    // stores before validating the fixed-size payload or initializing LEP.
     for (ULONG Index = 0; Index != LepFirstDllBootstrapData.BackupSize; ++Index)
     {
         ((volatile BYTE*)LepFirstDllBootstrapData.LdrLoadDllAddress)[Index] =
@@ -1962,7 +1922,7 @@ LepNtQueryValueKey(
 
     GlobalData = (PLepGlobalData)HpGetFilterContext();
 
-    if (GlobalData->GetLepb()->HookUILanguageApi == 2 &&
+    if (GlobalData->GetLepb()->HookUILanguageMode == 2 &&
         LepIsVirtualMuiKeyHandle(GlobalData, KeyHandle))
     {
         HpSetFilterAction(BlockSystemCall);
@@ -1978,7 +1938,7 @@ LepNtQueryValueKey(
         return Status;
     }
 
-    if (GlobalData->GetLepb()->HookUILanguageApi == 2 &&
+    if (GlobalData->GetLepb()->HookUILanguageMode == 2 &&
         RtlEqualUnicodeString(ValueName, PUSTR(L"InstallLanguageFallback"), TRUE) &&
         LepIsNlsLanguageKeyHandle(KeyHandle))
     {
@@ -1997,125 +1957,44 @@ LepNtQueryValueKey(
         return Status;
     }
     
-    WriteLog(L"lookup %ws", ValueName->Buffer);
-
     Status = GlobalData->LookupRegistryRedirectionEntry(KeyHandle, ValueName, &Entry);
-
-    WriteLog(L"lookup %ws: %p", ValueName->Buffer, Status);
-
     FAIL_RETURN(Status);
 
     HpSetFilterAction(BlockSystemCall);
 
     if (Entry->Redirected.Data != nullptr)
     {
-        union
+        if (Entry->Redirected.DataSize > ULONG_MAX)
+            return STATUS_INVALID_BUFFER_SIZE;
+
+        UNICODE_STRING RedirectedValueName = Entry->Redirected.ValueName;
+        Status = LepWriteVirtualKeyValue(
+            &RedirectedValueName,
+            (ULONG)Entry->Redirected.DataType,
+            Entry->Redirected.Data,
+            (ULONG)Entry->Redirected.DataSize,
+            KeyValueInformationClass,
+            KeyValueInformation,
+            Length,
+            ResultLength
+        );
+
+        static volatile LONG SyntheticValueTraceCount = 0;
+        LONG TraceIndex = _InterlockedIncrement(&SyntheticValueTraceCount);
+        if (TraceIndex <= 256)
         {
-            PVOID                                   Information;
-            PKEY_VALUE_BASIC_INFORMATION            BasicInformation;
-            PKEY_VALUE_FULL_INFORMATION             FullInformation;
-            PKEY_VALUE_PARTIAL_INFORMATION          PartialInformation;
-            PKEY_VALUE_PARTIAL_INFORMATION_ALIGN64  PartialInformationAlign64;
-        };
-
-        ULONG_PTR   Alignment, DataLength, DataOffset, RequiredLength, MinimumSize;
-        PVOID       LocalBuffer;
-
-        Alignment       = sizeof(ULONG_PTR);
-        DataOffset      = 0;
-        DataLength      = Entry->Redirected.DataSize;
-        RequiredLength  = 0;
-        Information     = nullptr;
-
-        switch (KeyValueInformationClass)
-        {
-            default:
-                return STATUS_INVALID_PARAMETER;
-
-            case KeyValueBasicInformation:
-                goto REDIRECT_ONLY;
-
-            case KeyValueFullInformationAlign64:
-                Alignment = sizeof(ULONG64);
-                NO_BREAK;
-
-            case KeyValueFullInformation:
-                Alignment = sizeof(ULONG64);
-
-                MinimumSize     = FIELD_OFFSET(KEY_VALUE_FULL_INFORMATION, Name);
-                RequiredLength  = MinimumSize + Entry->Redirected.ValueName.GetSize();
-                RequiredLength  = ROUND_UP(RequiredLength, Alignment);
-                DataOffset      = RequiredLength;
-                RequiredLength += DataLength;
-                RequiredLength  = ROUND_UP(RequiredLength, sizeof(ULONG));
-
-                if (KeyValueInformation == nullptr || Length < MinimumSize)
-                    break;
-
-                Information = Length < RequiredLength ? AllocStack(RequiredLength) : KeyValueInformation;
-
-                FullInformation->TitleIndex = 0;
-                FullInformation->Type       = Entry->Redirected.DataType;
-                FullInformation->NameLength = Entry->Redirected.ValueName.GetSize() + sizeof(WCHAR);
-                FullInformation->DataOffset = DataOffset;
-                FullInformation->DataLength = DataLength;
-
-                CopyMemory(FullInformation->Name, (PWSTR)Entry->Redirected.ValueName, FullInformation->NameLength);
-                CopyMemory(PtrAdd(FullInformation, DataOffset), Entry->Redirected.Data, DataLength);
-                break;
-
-            case KeyValuePartialInformationAlign64:
-                Alignment = sizeof(ULONG64);
-
-                MinimumSize = FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION_ALIGN64, Data);
-                RequiredLength = MinimumSize + DataLength;
-                RequiredLength = ROUND_UP(RequiredLength, Alignment);
-                if (KeyValueInformation == nullptr || Length < MinimumSize)
-                    break;
-
-                Information = Length < RequiredLength ? AllocStack(RequiredLength) : KeyValueInformation;
-
-                PartialInformationAlign64->Type = Entry->Redirected.DataType;
-                PartialInformationAlign64->DataLength = DataLength;
-
-                CopyMemory(PartialInformationAlign64->Data, Entry->Redirected.Data, DataLength);
-                break;
-
-            case KeyValuePartialInformation:
-                MinimumSize = FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data);
-                RequiredLength = MinimumSize + DataLength;
-                RequiredLength = ROUND_UP(RequiredLength, Alignment);
-                if (KeyValueInformation == nullptr || Length < MinimumSize)
-                    break;
-
-                Information = Length < RequiredLength ? AllocStack(RequiredLength) : KeyValueInformation;
-
-                PartialInformation->TitleIndex  = 0;
-                PartialInformation->Type        = Entry->Redirected.DataType;
-                PartialInformation->DataLength  = DataLength;
-
-                CopyMemory(PartialInformation->Data, Entry->Redirected.Data, DataLength);
-                break;
+            ULONG RequiredLength = ResultLength != nullptr ? *ResultLength : 0;
+            WriteLog(
+                L"registry synthetic value: name=%ws class=%u length=%u required=%u status=%08X",
+                Entry->Redirected.ValueName.GetBuffer(),
+                (ULONG)KeyValueInformationClass,
+                Length,
+                RequiredLength,
+                Status
+            );
         }
 
-        if (Information != nullptr && Information != KeyValueInformation)
-        {
-            CopyMemory(KeyValueInformation, Information, ML_MIN(RequiredLength, Length));
-        }
-
-        if (ResultLength != nullptr)
-            *ResultLength = RequiredLength;
-
-        if (KeyValueInformation == nullptr)
-            return STATUS_ACCESS_VIOLATION;
-
-        if (Length < MinimumSize)
-            return STATUS_BUFFER_TOO_SMALL;
-
-        if (Length < RequiredLength)
-            return STATUS_BUFFER_OVERFLOW;
-
-        return STATUS_SUCCESS;
+        return Status;
     }
     else
     {
@@ -2292,10 +2171,133 @@ LepLdrResSearchResource(
     NTSTATUS Status;
     PLepGlobalData GlobalData = LepGetGlobalData();
 
+    static volatile LONG TraceSequence = 0;
     ULONG_PTR Type = 0;
     ULONG_PTR Name = 0;
     ULONG_PTR Language = 0;
-    BOOLEAN LogManifest = FALSE;
+    PVOID ReturnAddress = _ReturnAddress();
+
+    auto QueryMappedPath = [] (PVOID Address, PWSTR Path, ULONG PathCount) -> VOID
+    {
+        union
+        {
+            MEMORY_MAPPED_FILENAME_INFORMATION2 Information;
+            BYTE Buffer[1024];
+        } MappedFile;
+        ULONG_PTR CharacterCount;
+
+        if (Path == nullptr || PathCount == 0)
+            return;
+
+        Path[0] = 0;
+        if (Address == nullptr ||
+            NT_FAILED(NtQueryVirtualMemory(
+                CurrentProcess,
+                Address,
+                MemoryMappedFilenameInformation,
+                &MappedFile,
+                sizeof(MappedFile),
+                nullptr
+            )))
+        {
+            return;
+        }
+
+        CharacterCount = ML_MIN(
+            MappedFile.Information.Name.Length / sizeof(WCHAR),
+            PathCount - 1
+        );
+        CopyMemory(Path, MappedFile.Information.Name.Buffer, CharacterCount * sizeof(WCHAR));
+        Path[CharacterCount] = 0;
+    };
+
+    auto FindSelectedLanguage = [] (PVOID ResourceAddress) -> USHORT
+    {
+        MEMORY_BASIC_INFORMATION MemoryInformation;
+        PBYTE ImageBase;
+        PIMAGE_NT_HEADERS NtHeaders;
+        PIMAGE_RESOURCE_DIRECTORY Root;
+        PIMAGE_RESOURCE_DIRECTORY_ENTRY TypeEntries;
+        ULONG ResourceRva;
+        ULONG TypeCount;
+        USHORT SelectedLanguage = 0xFFFF;
+
+        if (ResourceAddress == nullptr ||
+            NT_FAILED(NtQueryVirtualMemory(
+                CurrentProcess,
+                ResourceAddress,
+                MemoryBasicInformation,
+                &MemoryInformation,
+                sizeof(MemoryInformation),
+                nullptr
+            )) ||
+            MemoryInformation.Type != MEM_IMAGE)
+        {
+            return SelectedLanguage;
+        }
+
+        ImageBase = (PBYTE)MemoryInformation.AllocationBase;
+        SEH_TRY
+        {
+            NtHeaders = RtlImageNtHeader(ImageBase);
+            if (NtHeaders == nullptr ||
+                NtHeaders->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_RESOURCE)
+            {
+                return SelectedLanguage;
+            }
+
+            ResourceRva = NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress;
+            if (ResourceRva == 0)
+                return SelectedLanguage;
+
+            Root = (PIMAGE_RESOURCE_DIRECTORY)(ImageBase + ResourceRva);
+            TypeEntries = (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(Root + 1);
+            TypeCount = Root->NumberOfNamedEntries + Root->NumberOfIdEntries;
+            for (ULONG TypeIndex = 0; TypeIndex != TypeCount; ++TypeIndex)
+            {
+                if (!TypeEntries[TypeIndex].DataIsDirectory)
+                    continue;
+
+                PIMAGE_RESOURCE_DIRECTORY NameDirectory =
+                    (PIMAGE_RESOURCE_DIRECTORY)((PBYTE)Root + TypeEntries[TypeIndex].OffsetToDirectory);
+                PIMAGE_RESOURCE_DIRECTORY_ENTRY NameEntries =
+                    (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(NameDirectory + 1);
+                ULONG NameCount = NameDirectory->NumberOfNamedEntries + NameDirectory->NumberOfIdEntries;
+                for (ULONG NameIndex = 0; NameIndex != NameCount; ++NameIndex)
+                {
+                    if (!NameEntries[NameIndex].DataIsDirectory)
+                        continue;
+
+                    PIMAGE_RESOURCE_DIRECTORY LanguageDirectory =
+                        (PIMAGE_RESOURCE_DIRECTORY)((PBYTE)Root + NameEntries[NameIndex].OffsetToDirectory);
+                    PIMAGE_RESOURCE_DIRECTORY_ENTRY LanguageEntries =
+                        (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(LanguageDirectory + 1);
+                    ULONG LanguageCount =
+                        LanguageDirectory->NumberOfNamedEntries + LanguageDirectory->NumberOfIdEntries;
+                    for (ULONG LanguageIndex = 0; LanguageIndex != LanguageCount; ++LanguageIndex)
+                    {
+                        if (LanguageEntries[LanguageIndex].DataIsDirectory)
+                            continue;
+
+                        PIMAGE_RESOURCE_DATA_ENTRY DataEntry =
+                            (PIMAGE_RESOURCE_DATA_ENTRY)((PBYTE)Root + LanguageEntries[LanguageIndex].OffsetToData);
+                        if (ImageBase + DataEntry->OffsetToData == ResourceAddress)
+                        {
+                            SelectedLanguage = LanguageEntries[LanguageIndex].NameIsString ?
+                                0xFFFE : LanguageEntries[LanguageIndex].Id;
+                            return SelectedLanguage;
+                        }
+                    }
+                }
+            }
+        }
+        SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+        {
+            SelectedLanguage = 0xFFFF;
+        }
+
+        return SelectedLanguage;
+    };
 
     SEH_TRY
     {
@@ -2306,40 +2308,348 @@ LepLdrResSearchResource(
                 Name = ResourceIdPath[1];
             if (ResourceIdPathLength > 2)
                 Language = ResourceIdPath[2];
-            LogManifest = Type == (ULONG_PTR)RT_MANIFEST;
         }
     }
     SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
-        LogManifest = FALSE;
+        Type = 0;
+        Name = 0;
+        Language = 0;
     }
 
     Status = GlobalData->HookStub.StubLdrResSearchResource(DllHandle, ResourceIdPath, ResourceIdPathLength, Flags, Resource, Size, Reserve1, Reserve2);
-    if (LogManifest)
+
+    LONG Sequence = _InterlockedIncrement(&TraceSequence);
+    if (Sequence <= 4096)
     {
-        WriteLog(L"LdrResSearchResource manifest: module=%p depth=%u name=%p lang=%p flags=%08X status=%08X resource=%p size=%u",
-            DllHandle,
+        WCHAR RequestModulePath[260];
+        WCHAR ResultModulePath[260];
+        WCHAR CallerModulePath[260];
+        PVOID ResourceAddress = nullptr;
+        ULONG ResourceSize = 0;
+        USHORT SelectedLanguage = 0xFFFF;
+
+        SEH_TRY
+        {
+            if (NT_SUCCESS(Status) && Resource != nullptr)
+                ResourceAddress = *Resource;
+            if (NT_SUCCESS(Status) && Size != nullptr)
+                ResourceSize = *Size;
+        }
+        SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+        {
+            ResourceAddress = nullptr;
+            ResourceSize = 0;
+        }
+
+        QueryMappedPath((PVOID)((ULONG_PTR)DllHandle & ~(ULONG_PTR)3), RequestModulePath, countof(RequestModulePath));
+        QueryMappedPath(ResourceAddress, ResultModulePath, countof(ResultModulePath));
+        QueryMappedPath(ReturnAddress, CallerModulePath, countof(CallerModulePath));
+        if (NT_SUCCESS(Status))
+            SelectedLanguage = FindSelectedLanguage(ResourceAddress);
+
+        WriteLog(L"resource trace #%u caller=%p caller-module=%ws request-module=%ws depth=%u type=%p name=%p requested-lang=%04X flags=%08X status=%08X selected-lang=%04X result-module=%ws resource=%p size=%u",
+            Sequence,
+            ReturnAddress,
+            CallerModulePath,
+            RequestModulePath,
             ResourceIdPathLength,
+            Type,
             Name,
-            Language,
+            (ULONG)Language,
             Flags,
             Status,
-            Resource != nullptr ? *Resource : nullptr,
-            Size != nullptr ? *Size : 0);
+            SelectedLanguage,
+            ResultModulePath,
+            ResourceAddress,
+            ResourceSize);
     }
-    FAIL_RETURN(Status);
+    else if (Sequence == 4097)
+    {
+        WriteLog(L"resource trace limit reached");
+    }
 
-    if (ResourceIdPathLength != 3)
-        return Status;
+    return Status;
+}
 
-    if (ResourceIdPath[0] != (ULONG_PTR)RT_VERSION || ResourceIdPath[1] != 1 || ResourceIdPath[2] != 0)
-        return Status;
+static VOID LepQueryResourceTraceMappedPath(PVOID Address, PWSTR Path, ULONG PathCount)
+{
+    union
+    {
+        MEMORY_MAPPED_FILENAME_INFORMATION2 Information;
+        BYTE Buffer[1024];
+    } MappedFile;
+    ULONG_PTR CharacterCount;
 
-    if (Resource == nullptr)
-        return Status;
+    if (Path == nullptr || PathCount == 0)
+        return;
 
-    ReplaceMUIVersionLocaleInfo(*Resource, *Size);
+    Path[0] = 0;
+    if (Address == nullptr ||
+        NT_FAILED(NtQueryVirtualMemory(
+            CurrentProcess,
+            Address,
+            MemoryMappedFilenameInformation,
+            &MappedFile,
+            sizeof(MappedFile),
+            nullptr
+        )))
+    {
+        return;
+    }
 
+    CharacterCount = ML_MIN(
+        MappedFile.Information.Name.Length / sizeof(WCHAR),
+        PathCount - 1
+    );
+    CopyMemory(Path, MappedFile.Information.Name.Buffer, CharacterCount * sizeof(WCHAR));
+    Path[CharacterCount] = 0;
+}
+
+static USHORT LepFindResourceDataEntryLanguage(PIMAGE_RESOURCE_DATA_ENTRY TargetDataEntry)
+{
+    MEMORY_BASIC_INFORMATION MemoryInformation;
+    PBYTE ImageBase;
+    PIMAGE_NT_HEADERS NtHeaders;
+    PIMAGE_RESOURCE_DIRECTORY Root;
+    PIMAGE_RESOURCE_DIRECTORY_ENTRY TypeEntries;
+    ULONG ResourceRva;
+    ULONG TypeCount;
+    USHORT SelectedLanguage = 0xFFFF;
+
+    if (TargetDataEntry == nullptr ||
+        NT_FAILED(NtQueryVirtualMemory(
+            CurrentProcess,
+            TargetDataEntry,
+            MemoryBasicInformation,
+            &MemoryInformation,
+            sizeof(MemoryInformation),
+            nullptr
+        )) ||
+        MemoryInformation.Type != MEM_IMAGE)
+    {
+        return SelectedLanguage;
+    }
+
+    ImageBase = (PBYTE)MemoryInformation.AllocationBase;
+    SEH_TRY
+    {
+        NtHeaders = RtlImageNtHeader(ImageBase);
+        if (NtHeaders == nullptr ||
+            NtHeaders->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_RESOURCE)
+        {
+            return SelectedLanguage;
+        }
+
+        ResourceRva = NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress;
+        if (ResourceRva == 0)
+            return SelectedLanguage;
+
+        Root = (PIMAGE_RESOURCE_DIRECTORY)(ImageBase + ResourceRva);
+        TypeEntries = (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(Root + 1);
+        TypeCount = Root->NumberOfNamedEntries + Root->NumberOfIdEntries;
+        for (ULONG TypeIndex = 0; TypeIndex != TypeCount; ++TypeIndex)
+        {
+            if (!TypeEntries[TypeIndex].DataIsDirectory)
+                continue;
+
+            PIMAGE_RESOURCE_DIRECTORY NameDirectory =
+                (PIMAGE_RESOURCE_DIRECTORY)((PBYTE)Root + TypeEntries[TypeIndex].OffsetToDirectory);
+            PIMAGE_RESOURCE_DIRECTORY_ENTRY NameEntries =
+                (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(NameDirectory + 1);
+            ULONG NameCount = NameDirectory->NumberOfNamedEntries + NameDirectory->NumberOfIdEntries;
+            for (ULONG NameIndex = 0; NameIndex != NameCount; ++NameIndex)
+            {
+                if (!NameEntries[NameIndex].DataIsDirectory)
+                    continue;
+
+                PIMAGE_RESOURCE_DIRECTORY LanguageDirectory =
+                    (PIMAGE_RESOURCE_DIRECTORY)((PBYTE)Root + NameEntries[NameIndex].OffsetToDirectory);
+                PIMAGE_RESOURCE_DIRECTORY_ENTRY LanguageEntries =
+                    (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(LanguageDirectory + 1);
+                ULONG LanguageCount =
+                    LanguageDirectory->NumberOfNamedEntries + LanguageDirectory->NumberOfIdEntries;
+                for (ULONG LanguageIndex = 0; LanguageIndex != LanguageCount; ++LanguageIndex)
+                {
+                    if (LanguageEntries[LanguageIndex].DataIsDirectory)
+                        continue;
+
+                    PIMAGE_RESOURCE_DATA_ENTRY DataEntry =
+                        (PIMAGE_RESOURCE_DATA_ENTRY)((PBYTE)Root + LanguageEntries[LanguageIndex].OffsetToData);
+                    if (DataEntry == TargetDataEntry)
+                    {
+                        SelectedLanguage = LanguageEntries[LanguageIndex].NameIsString ?
+                            0xFFFE : LanguageEntries[LanguageIndex].Id;
+                        return SelectedLanguage;
+                    }
+                }
+            }
+        }
+    }
+    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        SelectedLanguage = 0xFFFF;
+    }
+
+    return SelectedLanguage;
+}
+
+static VOID LepTraceFindResource(
+    PCWSTR ApiName,
+    PVOID ReturnAddress,
+    PVOID DllHandle,
+    PULONG_PTR ResourceIdPath,
+    ULONG ResourceIdPathLength,
+    ULONG Flags,
+    NTSTATUS Status,
+    PIMAGE_RESOURCE_DATA_ENTRY DataEntry
+)
+{
+    static volatile LONG TraceSequence = 0;
+    LONG Sequence = _InterlockedIncrement(&TraceSequence);
+    ULONG_PTR Type = 0;
+    ULONG_PTR Name = 0;
+    ULONG_PTR RequestedLanguage = 0;
+    WCHAR RequestModulePath[260];
+    WCHAR ResultModulePath[260];
+    WCHAR CallerModulePath[260];
+    USHORT SelectedLanguage = 0xFFFF;
+
+    if (Sequence > 8192)
+    {
+        if (Sequence == 8193)
+            WriteLog(L"find-resource trace limit reached");
+        return;
+    }
+
+    SEH_TRY
+    {
+        if (ResourceIdPath != nullptr && ResourceIdPathLength != 0)
+        {
+            Type = ResourceIdPath[0];
+            if (ResourceIdPathLength > 1)
+                Name = ResourceIdPath[1];
+            if (ResourceIdPathLength > 2)
+                RequestedLanguage = ResourceIdPath[2];
+        }
+    }
+    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        Type = 0;
+        Name = 0;
+        RequestedLanguage = 0;
+    }
+
+    LepQueryResourceTraceMappedPath(
+        (PVOID)((ULONG_PTR)DllHandle & ~(ULONG_PTR)3),
+        RequestModulePath,
+        countof(RequestModulePath)
+    );
+    LepQueryResourceTraceMappedPath(DataEntry, ResultModulePath, countof(ResultModulePath));
+    LepQueryResourceTraceMappedPath(ReturnAddress, CallerModulePath, countof(CallerModulePath));
+    if (NT_SUCCESS(Status))
+        SelectedLanguage = LepFindResourceDataEntryLanguage(DataEntry);
+
+    WriteLog(L"find-resource #%u api=%ws caller=%p caller-module=%ws request-module=%ws depth=%u type=%p name=%p requested-lang=%04X flags=%08X status=%08X selected-lang=%04X result-module=%ws entry=%p",
+        Sequence,
+        ApiName,
+        ReturnAddress,
+        CallerModulePath,
+        RequestModulePath,
+        ResourceIdPathLength,
+        Type,
+        Name,
+        (ULONG)RequestedLanguage,
+        Flags,
+        Status,
+        SelectedLanguage,
+        ResultModulePath,
+        DataEntry);
+}
+
+NTSTATUS
+NTAPI
+LepLdrFindResource(
+    PVOID DllHandle,
+    PULONG_PTR ResourceIdPath,
+    ULONG ResourceIdPathLength,
+    PIMAGE_RESOURCE_DATA_ENTRY *ResourceDataEntry
+)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+    PVOID ReturnAddress = _ReturnAddress();
+    NTSTATUS Status = GlobalData->HookStub.StubLdrFindResource(
+        DllHandle,
+        ResourceIdPath,
+        ResourceIdPathLength,
+        ResourceDataEntry
+    );
+    PIMAGE_RESOURCE_DATA_ENTRY DataEntry = nullptr;
+
+    SEH_TRY
+    {
+        if (NT_SUCCESS(Status) && ResourceDataEntry != nullptr)
+            DataEntry = *ResourceDataEntry;
+    }
+    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        DataEntry = nullptr;
+    }
+
+    LepTraceFindResource(
+        L"LdrFindResource_U",
+        ReturnAddress,
+        DllHandle,
+        ResourceIdPath,
+        ResourceIdPathLength,
+        0,
+        Status,
+        DataEntry
+    );
+    return Status;
+}
+
+NTSTATUS
+NTAPI
+LepLdrFindResourceEx(
+    ULONG Flags,
+    PVOID DllHandle,
+    PULONG_PTR ResourceIdPath,
+    ULONG ResourceIdPathLength,
+    PIMAGE_RESOURCE_DATA_ENTRY *ResourceDataEntry
+)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+    PVOID ReturnAddress = _ReturnAddress();
+    NTSTATUS Status = GlobalData->HookStub.StubLdrFindResourceEx(
+        Flags,
+        DllHandle,
+        ResourceIdPath,
+        ResourceIdPathLength,
+        ResourceDataEntry
+    );
+    PIMAGE_RESOURCE_DATA_ENTRY DataEntry = nullptr;
+
+    SEH_TRY
+    {
+        if (NT_SUCCESS(Status) && ResourceDataEntry != nullptr)
+            DataEntry = *ResourceDataEntry;
+    }
+    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        DataEntry = nullptr;
+    }
+
+    LepTraceFindResource(
+        L"LdrFindResourceEx_U",
+        ReturnAddress,
+        DllHandle,
+        ResourceIdPath,
+        ResourceIdPathLength,
+        Flags,
+        Status,
+        DataEntry
+    );
     return Status;
 }
 
@@ -2504,12 +2814,92 @@ LepRtlGetThreadPreferredUILanguagesPassthrough(
     PULONG BufferLength
 )
 {
-    return LepGetGlobalData()->HookStub.StubRtlGetThreadPreferredUILanguages(
+    static volatile LONG TraceSequence = 0;
+    PLepGlobalData GlobalData = LepGetGlobalData();
+    PVOID Caller = _ReturnAddress();
+    NTSTATUS Status = GlobalData->HookStub.StubRtlGetThreadPreferredUILanguages(
         Flags,
         NumberOfLanguages,
         LanguagesBuffer,
         BufferLength
     );
+
+    LONG Sequence = _InterlockedIncrement(&TraceSequence);
+    if (Sequence <= 512)
+    {
+        PVOID Frames[12];
+        ULONG FrameCount = RtlCaptureStackBackTrace(1, countof(Frames), Frames, nullptr);
+        ULONG Count = 0;
+        ULONG Length = 0;
+        WCHAR CallerPath[260];
+
+        SEH_TRY
+        {
+            if (NumberOfLanguages != nullptr)
+                Count = *NumberOfLanguages;
+            if (BufferLength != nullptr)
+                Length = *BufferLength;
+        }
+        SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+        {
+            Count = 0xFFFFFFFF;
+            Length = 0xFFFFFFFF;
+        }
+
+        LepQueryResourceTraceMappedPath(Caller, CallerPath, countof(CallerPath));
+        WriteLog(L"preferred-ui trace #%u caller=%p module=%ws flags=%08X status=%08X count=%u length=%u buffer=%p frames=%u",
+            Sequence,
+            Caller,
+            CallerPath,
+            Flags,
+            Status,
+            Count,
+            Length,
+            LanguagesBuffer,
+            FrameCount);
+
+        if (NT_SUCCESS(Status) && LanguagesBuffer != nullptr && Length != 0 && Length <= 0x1000)
+        {
+            SEH_TRY
+            {
+                ULONG Offset = 0;
+                for (ULONG Index = 0; Index < Count && Index < 16 && Offset < Length; ++Index)
+                {
+                    WCHAR Language[LOCALE_NAME_MAX_LENGTH];
+                    ULONG LanguageLength = 0;
+                    while (Offset + LanguageLength < Length &&
+                           LanguagesBuffer[Offset + LanguageLength] != 0 &&
+                           LanguageLength + 1 < countof(Language))
+                    {
+                        Language[LanguageLength] = LanguagesBuffer[Offset + LanguageLength];
+                        ++LanguageLength;
+                    }
+                    Language[LanguageLength] = 0;
+                    WriteLog(L"preferred-ui trace #%u language[%u]=%ws",
+                        Sequence, Index, Language);
+                    Offset += LanguageLength + 1;
+                }
+            }
+            SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+            {
+                WriteLog(L"preferred-ui trace #%u buffer exception", Sequence);
+            }
+        }
+
+        for (ULONG Index = 0; Index < FrameCount; ++Index)
+        {
+            WCHAR ModulePath[260];
+            LepQueryResourceTraceMappedPath(Frames[Index], ModulePath, countof(ModulePath));
+            WriteLog(L"preferred-ui trace #%u frame[%u]=%p module=%ws",
+                Sequence, Index, Frames[Index], ModulePath);
+        }
+    }
+    else if (Sequence == 513)
+    {
+        WriteLog(L"preferred-ui trace limit reached");
+    }
+
+    return Status;
 }
 
 LONG NTAPI LepKnownExceptionFilter(PEXCEPTION_POINTERS ExceptionPointers)
@@ -2578,13 +2968,28 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
     if (IsLepLoader())
         return STATUS_SUCCESS;
 
-    if (GetLepb()->HookUILanguageApi == 2)
+    // Culture-name lookup below can lazily initialize ntdll's NLS mapping.
+    // Install the locale filters first so that mapping caches the emulated
+    // system locale. Host UI-language lookup remains unfiltered here.
+    ADD_FILTER_(NtInitializeNlsFiles,       LepNtInitializeNlsFiles,     this);
+    ADD_FILTER_(NtQueryDefaultLocale,       LepNtQueryDefaultLocale,     this);
+
+    if (GetLepb()->RegistryRedirectionMode == 2)
+    {
+        Status = LepInitializeAdvancedRegistryRedirection(this, Ntdll);
+        WriteLog(L"registry redirection mode 2 initialized entries=%p status=%08X",
+                 this->RegistryRedirectionEntry.GetSize(), Status);
+        FAIL_RETURN(Status);
+    }
+
+    if (GetLepb()->HookUILanguageMode == 2)
     {
         Status = LepInitializeVirtualMuiLanguage(this, Ntdll);
         FAIL_RETURN(Status);
     }
 
-    if (this->RegistryRedirectionEntry.GetSize() != 0 || GetLepb()->HookUILanguageApi == 2)
+    if (this->RegistryRedirectionEntry.GetSize() != 0 ||
+        GetLepb()->HookUILanguageMode == 2)
     {
 #if ML_AMD64 && defined(LEP_X64_CRASH_PROBE)
         if (LEP_X64_CRASH_PROBE == 2)
@@ -2594,11 +2999,9 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
     }
 
     ADD_FILTER_(NtQuerySystemInformation,   LepNtQuerySystemInformation, this);
-    ADD_FILTER_(NtInitializeNlsFiles,       LepNtInitializeNlsFiles,     this);
-    ADD_FILTER_(NtQueryDefaultLocale,       LepNtQueryDefaultLocale,     this);
-    ADD_FILTER_(NtQueryDefaultUILanguage,   LepNtQueryDefaultUILanguage, this);
-    if (GetLepb()->HookUILanguageApi == 2)
+    if (GetLepb()->HookUILanguageMode == 2)
     {
+        ADD_FILTER_(NtQueryDefaultUILanguage, LepNtQueryDefaultUILanguage, this);
         Status = ADD_FILTER_(NtQueryLicenseValue, LepNtQueryLicenseValue, this);
         WriteLog(L"hook NtQueryLicenseValue: %08X", Status);
         FAIL_RETURN(Status);
@@ -2608,6 +3011,7 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
         ADD_FILTER_(NtEnumerateValueKey,      LepNtEnumerateValueKey,      this);
         ADD_FILTER_(NtQueryKey,               LepNtQueryKey,               this);
         ADD_FILTER_(NtQueryInstallUILanguage, LepNtQueryInstallUILanguage, this);
+
     }
 #if ML_AMD64
     ADD_FILTER_(NtContinue,                 LepNtContinue,               this);
@@ -2651,6 +3055,5 @@ NTSTATUS LepGlobalData::UnHookNtdllRoutines()
     Mp::RestoreMemory(HookStub.StubRtlCustomCPToUnicodeN);
 #endif
     Mp::RestoreMemory(HookStub.StubLdrResSearchResource);
-
     return 0;
 }
