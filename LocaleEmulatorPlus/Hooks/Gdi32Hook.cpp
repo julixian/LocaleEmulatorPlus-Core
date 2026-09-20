@@ -1048,8 +1048,17 @@ HGDIOBJ NTAPI LepSelectObject(HDC hdc, HGDIOBJ h)
 
 VOID LepSelectTargetStockFontInDC(PLepGlobalData GlobalData, HDC DC)
 {
-    if (DC == nullptr)
+    // USER32's DC hooks can become active before HookGdi32Routines has
+    // installed the GetStockObject trampoline.  This happens in particular
+    // when a packed DLL resolves its original imports from its loader stub.
+    // Leave early DCs untouched until the GDI hook is fully usable; otherwise
+    // FindOriginalStockFontObject calls a null StubGetStockObject.
+    if (GlobalData == nullptr ||
+        DC == nullptr ||
+        GlobalData->HookStub.StubGetStockObject == nullptr)
+    {
         return;
+    }
 
     HGDIOBJ CurrentFont = GetCurrentObject(DC, OBJ_FONT);
     LONG StockFontObject = FindOriginalStockFontObject(GlobalData, CurrentFont);
