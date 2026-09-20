@@ -39,6 +39,7 @@ class LepGlobalData;
 typedef LepGlobalData* PLepGlobalData;
 
 typedef ULONG (NTAPI *PLEP_QUERY_FONT_ASSOC_STATUS)();
+typedef LONG (WINAPI *PLEP_GDI_GET_CHAR_DIMENSIONS)(HDC, LPTEXTMETRICW, LONG *);
 typedef LANGID (WINAPI *PLEP_GET_DEFAULT_UI_LANGUAGE)();
 typedef NTSTATUS (NTAPI *PLEP_GET_THREAD_PREFERRED_UI_LANGUAGES)(
     ULONG Flags,
@@ -785,6 +786,14 @@ public:
         PLEP_GET_DEFAULT_UI_LANGUAGE            StubGetUserDefaultUILanguage;
         API_POINTER(NtUserMessageCall)          StubNtUserMessageCall;
         API_POINTER(NtUserDefSetText)           StubNtUserDefSetText;
+        PVOID                                   StubGetDpiServerInfoForCurrentThread;
+        PVOID                                   StubDefaultEditSetFont;
+#if !ML_AMD64
+        PVOID                                   StubNtUserGetDC;
+        PVOID                                   StubNtUserGetDCEx;
+        PVOID                                   StubNtUserGetWindowDC;
+        PVOID                                   StubNtUserBeginPaint;
+#endif
         API_POINTER(SetWindowLongA)             StubSetWindowLongA;
         API_POINTER(GetWindowLongA)             StubGetWindowLongA;
 #if ML_AMD64
@@ -809,6 +818,8 @@ public:
         };
 
         API_POINTER(GetStockObject)             StubGetStockObject;
+        API_POINTER(GetTextCharset)             StubGetTextCharset;
+        PLEP_GDI_GET_CHAR_DIMENSIONS            StubGdiGetCharDimensions;
         API_POINTER(DeleteObject)               StubDeleteObject;
         API_POINTER(CreateFontIndirectExW)      StubCreateFontIndirectExW;
         API_POINTER(NtGdiHfontCreate)           StubNtGdiHfontCreate;
@@ -822,7 +833,14 @@ public:
         API_POINTER(EnumFontFamiliesExW)        StubEnumFontFamiliesExW;
     } HookStub;
 
-    ATOM AtomAnsiProc; //, AtomUnicodeProc;
+    ULONG_PTR DefaultEditCharsetOffset;
+
+#if !ML_AMD64
+    PVOID User32NtUserMessageCallIat;
+    PVOID OriginalUser32NtUserMessageCall;
+#endif
+
+    ATOM AtomAnsiProc;
 
     struct HookRoutineData
     {
@@ -1016,17 +1034,6 @@ public:
     {
         return SetPropW(Window, (PCWSTR)AtomAnsiProc, Data);
     }
-/*
-    PVOID GetWindowDataW(HWND Window)
-    {
-        return GetPropW(Window, (PCWSTR)AtomUnicodeProc);
-    }
-
-    BOOL SetWindowDataW(HWND Window, PVOID Data)
-    {
-        return SetPropW(Window, (PCWSTR)AtomUnicodeProc, Data);
-    }
-*/
     LONG_PTR GetWindowLongA(HWND hWnd, int Index)
     {
         return HookStub.StubGetWindowLongA(hWnd, Index);

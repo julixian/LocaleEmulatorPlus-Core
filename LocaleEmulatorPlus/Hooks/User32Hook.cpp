@@ -5,6 +5,317 @@
 
 VOID ResetDCCharset(PLepGlobalData GlobalData, HWND hWnd);
 
+static BOOL ContainsByteSequence(PBYTE Begin, PBYTE End, const BYTE *Sequence, ULONG_PTR Size)
+{
+    if (Size == 0 || Begin >= End || (ULONG_PTR)(End - Begin) < Size)
+        return FALSE;
+
+    for (PBYTE Current = Begin; Current + Size <= End; ++Current)
+    {
+        if (RtlCompareMemory(Current, Sequence, Size) == Size)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static PBYTE FindNextCallTo(PBYTE Begin, PBYTE End, PVOID Target)
+{
+    for (PBYTE Current = Begin; Current + 5 <= End; ++Current)
+    {
+        if (Current[0] == 0xE8 && GetCallDestination(Current) == Target)
+            return Current;
+    }
+
+    return nullptr;
+}
+
+// ECSetFont(nullptr) obtains the default width, height and TEXTMETRICW by
+// calling the same private user32 getter three times and reading +32, +36 and
+// +40.  Locating the producer from this consumer is stable across the supplied
+// Win10/Win11 x86/x64 images and avoids relying on a private function name.
+static PVOID FindDefaultEditDpiServerInfoGetter(PVOID User32)
+{
+#if ML_AMD64
+    static const BYTE ReadWidth[] = { 0x8B, 0x48, 0x20 };
+    static const BYTE ReadHeight[] = { 0x8B, 0x48, 0x24 };
+    static const BYTE ReadMetricStart[] = { 0x0F, 0x10, 0x40, 0x28 };
+    static const BYTE ReadMetricEnd[] = { 0x8B, 0x40, 0x60 };
+#else
+    static const BYTE ReadWidth[] = { 0x8B, 0x40, 0x20 };
+    static const BYTE ReadHeight[] = { 0x8B, 0x40, 0x24 };
+    static const BYTE CopyMetricStart[] = { 0x8D, 0x70, 0x28 };
+    static const BYTE CopyMetric[] = { 0xF3, 0xA5 };
+#endif
+
+    PIMAGE_NT_HEADERS Nt = (PIMAGE_NT_HEADERS)PtrAdd(
+        User32, ((PIMAGE_DOS_HEADER)User32)->e_lfanew);
+    PIMAGE_SECTION_HEADER Section = IMAGE_FIRST_SECTION(Nt);
+    PBYTE Found = nullptr;
+
+    for (USHORT Index = 0; Index != Nt->FileHeader.NumberOfSections; ++Index, ++Section)
+    {
+        if (RtlCompareMemory(Section->Name, ".text", 5) != 5)
+            continue;
+
+        PBYTE TextBegin = (PBYTE)PtrAdd(User32, Section->VirtualAddress);
+        PBYTE TextEnd = TextBegin + Section->Misc.VirtualSize;
+        for (PBYTE FirstCall = TextBegin; FirstCall + 5 <= TextEnd; ++FirstCall)
+        {
+            if (FirstCall[0] != 0xE8)
+                continue;
+
+            PVOID Target = GetCallDestination(FirstCall);
+            if ((PBYTE)Target < TextBegin || (PBYTE)Target >= TextEnd)
+                continue;
+
+            PBYTE SearchEnd = ML_MIN(FirstCall + 96, TextEnd);
+            PBYTE SecondCall = FindNextCallTo(FirstCall + 5, SearchEnd, Target);
+            if (SecondCall == nullptr ||
+                !ContainsByteSequence(FirstCall + 5, SecondCall, ReadWidth, sizeof(ReadWidth)))
+                continue;
+
+            PBYTE ThirdCall = FindNextCallTo(SecondCall + 5, SearchEnd, Target);
+            if (ThirdCall == nullptr ||
+                !ContainsByteSequence(SecondCall + 5, ThirdCall, ReadHeight, sizeof(ReadHeight)))
+                continue;
+
+#if ML_AMD64
+            if (!ContainsByteSequence(ThirdCall + 5, SearchEnd, ReadMetricStart, sizeof(ReadMetricStart)) ||
+                !ContainsByteSequence(ThirdCall + 5, SearchEnd, ReadMetricEnd, sizeof(ReadMetricEnd)))
+                continue;
+#else
+            if (!ContainsByteSequence(ThirdCall + 5, SearchEnd, CopyMetricStart, sizeof(CopyMetricStart)) ||
+                !ContainsByteSequence(ThirdCall + 5, SearchEnd, CopyMetric, sizeof(CopyMetric)))
+                continue;
+#endif
+
+            if (Found != nullptr && Found != Target)
+                return nullptr;
+            Found = (PBYTE)Target;
+            FirstCall = ThirdCall;
+        }
+    }
+
+    return Found;
+}
+
+static PBYTE NTAPI LepGetDpiServerInfoForCurrentThread()
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+    PBYTE Info = ((PBYTE (NTAPI *)())
+        GlobalData->HookStub.StubGetDpiServerInfoForCurrentThread)();
+    if (Info == nullptr)
+        return nullptr;
+
+    // A thread-local shadow keeps the server's shared page untouched.  Only
+    // its default font charset is virtualized; explicit font metrics do not
+    // pass through this user32 helper.
+    static DECL_THREAD BYTE Shadow[104];
+    static_assert(FIELD_OFFSET(TEXTMETRICW, tmCharSet) == 56,
+        "Unexpected TEXTMETRICW layout");
+    RtlCopyMemory(Shadow, Info, sizeof(Shadow));
+    TEXTMETRICW *Metric = (TEXTMETRICW *)(Shadow + 40);
+    BYTE TargetCharset = (BYTE)GlobalData->GetLepb()->DefaultCharset;
+    Metric->tmCharSet = TargetCharset;
+
+    return Shadow;
+}
+
+typedef struct DEFAULT_EDIT_SET_FONT_INFO
+{
+    PVOID       Routine;
+    ULONG_PTR   CharsetOffset;
+} DEFAULT_EDIT_SET_FONT_INFO, *PDEFAULT_EDIT_SET_FONT_INFO;
+
+// Windows 7's ECSetFont(nullptr) does not call the DPI server-info getter used
+// by Windows 10/11.  It copies a 60-byte TEXTMETRICW directly from gpsi and
+// later stores tmCharSet in the EDIT instance.  Locate that consumer from the
+// copy sequence, then derive the private EDIT charset offset from the later
+// load/store pair.  Ambiguous or structurally incomplete matches are rejected.
+static DEFAULT_EDIT_SET_FONT_INFO FindDefaultEditSetFont(PVOID User32)
+{
+    DEFAULT_EDIT_SET_FONT_INFO Found{};
+    PIMAGE_NT_HEADERS Nt = (PIMAGE_NT_HEADERS)PtrAdd(
+        User32, ((PIMAGE_DOS_HEADER)User32)->e_lfanew);
+    PIMAGE_SECTION_HEADER Section = IMAGE_FIRST_SECTION(Nt);
+
+    for (USHORT Index = 0; Index != Nt->FileHeader.NumberOfSections; ++Index, ++Section)
+    {
+        if (RtlCompareMemory(Section->Name, ".text", 5) != 5)
+            continue;
+
+        PBYTE TextBegin = (PBYTE)PtrAdd(User32, Section->VirtualAddress);
+        PBYTE TextEnd = TextBegin + Section->Misc.VirtualSize;
+
+        for (PBYTE Anchor = TextBegin; Anchor + 40 <= TextEnd; ++Anchor)
+        {
+#if ML_AMD64
+            // mov r8d,3Ch / mov eax,[rdx+...] / add rdx,... /
+            // mov [rbx+...],eax / mov eax,[rdx-4] / mov [rbx+...],eax / call memcpy
+            if (Anchor[0] != 0x41 || Anchor[1] != 0xB8 || Anchor[2] != 0x3C ||
+                Anchor[3] != 0 || Anchor[4] != 0 || Anchor[5] != 0 ||
+                Anchor[6] != 0x8B || Anchor[7] != 0x82 ||
+                Anchor[12] != 0x48 || Anchor[13] != 0x81 || Anchor[14] != 0xC2 ||
+                Anchor[19] != 0x89 || Anchor[20] != 0x83 ||
+                Anchor[25] != 0x8B || Anchor[26] != 0x42 || Anchor[27] != 0xFC ||
+                Anchor[28] != 0x89 || Anchor[29] != 0x83 || Anchor[34] != 0xE8)
+                continue;
+
+            PIMAGE_DATA_DIRECTORY ExceptionDirectory =
+                &Nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+            if (ExceptionDirectory->VirtualAddress == 0 ||
+                ExceptionDirectory->Size < sizeof(RUNTIME_FUNCTION))
+                continue;
+
+            PRUNTIME_FUNCTION Functions = (PRUNTIME_FUNCTION)PtrAdd(
+                User32, ExceptionDirectory->VirtualAddress);
+            ULONG_PTR FunctionCount = ExceptionDirectory->Size / sizeof(RUNTIME_FUNCTION);
+            ULONG AnchorRva = (ULONG)PtrOffset(Anchor, User32);
+            PBYTE Routine = nullptr;
+            PBYTE RoutineEnd = nullptr;
+
+            for (ULONG_PTR FunctionIndex = 0; FunctionIndex != FunctionCount; ++FunctionIndex)
+            {
+                if (AnchorRva >= Functions[FunctionIndex].BeginAddress &&
+                    AnchorRva < Functions[FunctionIndex].EndAddress)
+                {
+                    Routine = (PBYTE)PtrAdd(User32, Functions[FunctionIndex].BeginAddress);
+                    RoutineEnd = (PBYTE)PtrAdd(User32, Functions[FunctionIndex].EndAddress);
+                    break;
+                }
+            }
+            if (Routine == nullptr)
+                continue;
+
+            ULONG_PTR CharsetOffset = 0;
+            PBYTE SearchEnd = ML_MIN(Routine + 0x300, RoutineEnd);
+            for (PBYTE FirstLoad = Anchor + 35; FirstLoad + 5 <= SearchEnd; ++FirstLoad)
+            {
+                if (FirstLoad[0] != 0x44 || FirstLoad[1] != 0x8A ||
+                    FirstLoad[2] != 0x44 || FirstLoad[3] != 0x24)
+                    continue;
+
+                BYTE StackOffset = FirstLoad[4];
+                PBYTE SecondSearchEnd = ML_MIN(FirstLoad + 0x60, SearchEnd);
+                for (PBYTE SecondLoad = FirstLoad + 5; SecondLoad + 10 <= SecondSearchEnd; ++SecondLoad)
+                {
+                    if (SecondLoad[0] != 0x8A || SecondLoad[1] != 0x44 ||
+                        SecondLoad[2] != 0x24 || SecondLoad[3] != StackOffset)
+                        continue;
+
+                    for (PBYTE Store = SecondLoad + 4;
+                         Store + 6 <= ML_MIN(SecondLoad + 0x20, SearchEnd);
+                         ++Store)
+                    {
+                        if (Store[0] == 0x88 && Store[1] == 0x83)
+                        {
+                            CharsetOffset = *(UNALIGNED ULONG *)(Store + 2);
+                            break;
+                        }
+                    }
+                    if (CharsetOffset != 0)
+                        break;
+                }
+                if (CharsetOffset != 0)
+                    break;
+            }
+#else
+            // push 0Fh / add esi,gpsiMetricOffset / pop ecx /
+            // lea edi,[ebp+tm] / rep movsd
+            if (Anchor[0] != 0x6A || Anchor[1] != 0x0F ||
+                Anchor[2] != 0x81 || Anchor[3] != 0xC6 ||
+                Anchor[8] != 0x59 || Anchor[9] != 0x8D || Anchor[10] != 0x7D ||
+                Anchor[12] != 0xF3 || Anchor[13] != 0xA5)
+                continue;
+
+            PBYTE SearchBegin = Anchor - ML_MIN((ULONG_PTR)(Anchor - TextBegin), (ULONG_PTR)0x300);
+            PBYTE Routine = nullptr;
+            for (PBYTE Current = Anchor; Current >= SearchBegin + 5; --Current)
+            {
+                if (Current[0] == 0x8B && Current[1] == 0xFF &&
+                    Current[2] == 0x55 && Current[3] == 0x8B && Current[4] == 0xEC)
+                {
+                    Routine = Current;
+                    break;
+                }
+            }
+            if (Routine == nullptr)
+                continue;
+
+            ULONG_PTR CharsetOffset = 0;
+            PBYTE SearchEnd = ML_MIN(Routine + 0x300, TextEnd);
+            for (PBYTE Load = Anchor + 14; Load + 9 <= SearchEnd; ++Load)
+            {
+                if (Load[0] != 0x8A || Load[1] != 0x4D)
+                    continue;
+
+                BOOL MatchingPush = FALSE;
+                PBYTE PushBegin = Load - ML_MIN((ULONG_PTR)(Load - Routine), (ULONG_PTR)0x20);
+                for (PBYTE Push = PushBegin; Push + 3 <= Load; ++Push)
+                {
+                    if (Push[0] == 0xFF && Push[1] == 0x75 && Push[2] == Load[2])
+                    {
+                        MatchingPush = TRUE;
+                        break;
+                    }
+                }
+                if (!MatchingPush)
+                    continue;
+
+                for (PBYTE Store = Load + 3;
+                     Store + 6 <= ML_MIN(Load + 0x30, SearchEnd);
+                     ++Store)
+                {
+                    if (Store[0] == 0x88 && Store[1] == 0x8B)
+                    {
+                        CharsetOffset = *(UNALIGNED ULONG *)(Store + 2);
+                        break;
+                    }
+                }
+                if (CharsetOffset != 0)
+                    break;
+            }
+#endif
+
+            if (CharsetOffset == 0 || CharsetOffset >= 0x1000)
+                continue;
+
+            if (Found.Routine != nullptr &&
+                (Found.Routine != Routine || Found.CharsetOffset != CharsetOffset))
+                return DEFAULT_EDIT_SET_FONT_INFO{};
+
+            Found.Routine = Routine;
+            Found.CharsetOffset = CharsetOffset;
+            Anchor += 39;
+        }
+    }
+
+    return Found;
+}
+
+static ULONG NTAPI LepDefaultEditSetFont(PVOID Edit, HGDIOBJ Font, ULONG Redraw)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+    ULONG Result = ((ULONG (NTAPI *)(PVOID, HGDIOBJ, ULONG))
+        GlobalData->HookStub.StubDefaultEditSetFont)(Edit, Font, Redraw);
+
+    if (Font == nullptr && Edit != nullptr && GlobalData->DefaultEditCharsetOffset != 0)
+    {
+        PBYTE Charset = (PBYTE)PtrAdd(Edit, GlobalData->DefaultEditCharsetOffset);
+        BYTE OriginalCharset = *Charset;
+        BYTE TargetCharset = (BYTE)GlobalData->GetLepb()->DefaultCharset;
+        *Charset = TargetCharset;
+
+#if ENABLE_LOG
+        WriteLog(L"user32 default EDIT charset cache: edit=%p offset=%Iu original=%u target=%u",
+            Edit, GlobalData->DefaultEditCharsetOffset, OriginalCharset, TargetCharset);
+#endif
+    }
+
+    return Result;
+}
+
 ForceInline VOID CheckDC(HDC hDC)
 {
     // if (GdiGetCodePage(hDC) == 0x3A4) _asm ud2;
@@ -1443,7 +1754,6 @@ typedef struct { PVOID _[16]; } USER_CREATE_WINDOW_WIN8;
 typedef struct { PVOID _[17]; } USER_CREATE_WINDOW_WIN10;
 
 HWND LepNtUserCreateWindowExWorker(PUSER_CREATE_WINDOW Parameters, HWND (*Invoker)(PVOID, PUSER_CREATE_WINDOW));
-HFONT GetFontFromDC(PLepGlobalData GlobalData, HDC hDC);
 
 #if ML_AMD64
 PVOID LepGlobalData::GetNtUserSystemCallOriginal(ULONG RoutineHash)
@@ -1490,8 +1800,8 @@ LepHpNtUserGetDC(
 )
 {
     HDC DC;
-    HFONT Font;
     PVOID Original;
+    PLepGlobalData GlobalData;
 
     HpSetFilterAction(BlockSystemCall);
 
@@ -1500,9 +1810,8 @@ LepHpNtUserGetDC(
         return nullptr;
 
     DC = ((HDC (NTAPI *)(HWND))Original)(hWnd);
-    Font = (HFONT)GetStockObject(SYSTEM_FONT);
-    if (Font != nullptr)
-        SelectObject(DC, Font);
+    GlobalData = LepGetGlobalData();
+    LepSelectTargetStockFontInDC(GlobalData, DC);
 
     return DC;
 }
@@ -1517,8 +1826,8 @@ LepHpNtUserGetDCEx(
 )
 {
     HDC DC;
-    HFONT Font;
     PVOID Original;
+    PLepGlobalData GlobalData;
 
     HpSetFilterAction(BlockSystemCall);
 
@@ -1527,9 +1836,8 @@ LepHpNtUserGetDCEx(
         return nullptr;
 
     DC = ((HDC (NTAPI *)(HWND, HRGN, DWORD))Original)(hWnd, hrgnClip, flags);
-    Font = (HFONT)GetStockObject(SYSTEM_FONT);
-    if (Font != nullptr)
-        SelectObject(DC, Font);
+    GlobalData = LepGetGlobalData();
+    LepSelectTargetStockFontInDC(GlobalData, DC);
 
     return DC;
 }
@@ -1542,8 +1850,8 @@ LepHpNtUserGetWindowDC(
 )
 {
     HDC DC;
-    HFONT Font;
     PVOID Original;
+    PLepGlobalData GlobalData;
 
     HpSetFilterAction(BlockSystemCall);
 
@@ -1552,9 +1860,8 @@ LepHpNtUserGetWindowDC(
         return nullptr;
 
     DC = ((HDC (NTAPI *)(HWND))Original)(hWnd);
-    Font = (HFONT)GetStockObject(SYSTEM_FONT);
-    if (Font != nullptr)
-        SelectObject(DC, Font);
+    GlobalData = LepGetGlobalData();
+    LepSelectTargetStockFontInDC(GlobalData, DC);
 
     return DC;
 }
@@ -1568,7 +1875,6 @@ LepHpNtUserBeginPaint(
 )
 {
     HDC DC;
-    HFONT Font;
     PVOID Original;
     PLepGlobalData GlobalData;
 
@@ -1580,12 +1886,7 @@ LepHpNtUserBeginPaint(
 
     DC = ((HDC (NTAPI *)(HWND, LPPAINTSTRUCT))Original)(hWnd, lpPaint);
     GlobalData = LepGetGlobalData();
-    Font = GetFontFromDC(GlobalData, DC);
-    if (Font != nullptr)
-    {
-        SelectObject(DC, Font);
-        DeleteObject(Font);
-    }
+    LepSelectTargetStockFontInDC(GlobalData, DC);
 
     return DC;
 }
@@ -2085,24 +2386,55 @@ BOOL NTAPI LepSystemParametersInfoW(UINT uiAction, UINT uiParam, PVOID pvParam, 
             );
 }
 
-#define GetSystemFont(...) (HFONT)GetStockObject(SYSTEM_FONT)
+#if !ML_AMD64
+HDC NTAPI LepNtUserGetDC(HWND hWnd)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+    HDC DC = ((HDC (NTAPI *)(HWND))GlobalData->HookStub.StubNtUserGetDC)(hWnd);
+
+    LepSelectTargetStockFontInDC(GlobalData, DC);
+
+    return DC;
+}
+
+HDC NTAPI LepNtUserGetDCEx(HWND hWnd, HRGN hrgnClip, DWORD flags)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+    HDC DC = ((HDC (NTAPI *)(HWND, HRGN, DWORD))GlobalData->HookStub.StubNtUserGetDCEx)(hWnd, hrgnClip, flags);
+
+    LepSelectTargetStockFontInDC(GlobalData, DC);
+
+    return DC;
+}
+
+HDC NTAPI LepNtUserGetWindowDC(HWND hWnd)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+    HDC DC = ((HDC (NTAPI *)(HWND))GlobalData->HookStub.StubNtUserGetWindowDC)(hWnd);
+
+    LepSelectTargetStockFontInDC(GlobalData, DC);
+
+    return DC;
+}
+
+HDC NTAPI LepNtUserBeginPaint(HWND hWnd, LPPAINTSTRUCT lpPaint)
+{
+    PLepGlobalData GlobalData = LepGetGlobalData();
+    HDC DC = ((HDC (NTAPI *)(HWND, LPPAINTSTRUCT))GlobalData->HookStub.StubNtUserBeginPaint)(hWnd, lpPaint);
+
+    LepSelectTargetStockFontInDC(GlobalData, DC);
+
+    return DC;
+}
+#endif
 
 HDC NTAPI LepGetDCEx(HWND hWnd, HRGN hrgnClip, DWORD flags)
 {
     HDC             DC;
-    HFONT           Font;
     PLepGlobalData   GlobalData = LepGetGlobalData();
 
     DC = GlobalData->GetDCEx(hWnd, hrgnClip, flags);
-    //if (hWnd == nullptr)
-    {
-        Font = GetSystemFont(GlobalData, DC);
-        if (Font != nullptr)
-        {
-            SelectObject(DC, Font);
-            //DeleteObject(Font);
-        }
-    }
+    LepSelectTargetStockFontInDC(GlobalData, DC);
 
     return DC;
 }
@@ -2110,19 +2442,10 @@ HDC NTAPI LepGetDCEx(HWND hWnd, HRGN hrgnClip, DWORD flags)
 HDC NTAPI LepGetDC(HWND hWnd)
 {
     HDC             DC;
-    HFONT           Font;
     PLepGlobalData   GlobalData = LepGetGlobalData();
 
     DC = GlobalData->GetDC(hWnd);
-    //if (hWnd == nullptr)
-    {
-        Font = GetSystemFont(GlobalData, DC);
-        if (Font != nullptr)
-        {
-            SelectObject(DC, Font);
-            //DeleteObject(Font);
-        }
-    }
+    LepSelectTargetStockFontInDC(GlobalData, DC);
 
     return DC;
 }
@@ -2130,19 +2453,10 @@ HDC NTAPI LepGetDC(HWND hWnd)
 HDC NTAPI LepGetWindowDC(HWND hWnd)
 {
     HDC             DC;
-    HFONT           Font;
     PLepGlobalData   GlobalData = LepGetGlobalData();
 
     DC = GlobalData->GetWindowDC(hWnd);
-    //if (hWnd == nullptr)
-    {
-        Font = GetSystemFont(GlobalData, DC);
-        if (Font != nullptr)
-        {
-            SelectObject(DC, Font);
-            //DeleteObject(Font);
-        }
-    }
+    LepSelectTargetStockFontInDC(GlobalData, DC);
 
     return DC;
 }
@@ -2150,16 +2464,10 @@ HDC NTAPI LepGetWindowDC(HWND hWnd)
 HDC NTAPI LepBeginPaint(HWND hWnd, LPPAINTSTRUCT lpPaint)
 {
     HDC             DC;
-    HFONT           Font;
     PLepGlobalData   GlobalData = LepGetGlobalData();
 
     DC = GlobalData->BeginPaint(hWnd, lpPaint);
-    Font = GetFontFromDC(GlobalData, DC);
-    if (Font != nullptr)
-    {
-        SelectObject(DC, Font);
-        DeleteObject(Font);
-    }
+    LepSelectTargetStockFontInDC(GlobalData, DC);
 
     return DC;
 }
@@ -2978,10 +3286,6 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
 
     Status = NtAddAtom(PROP_WINDOW_ANSI_PROC, CONST_STRLEN(PROP_WINDOW_ANSI_PROC) * sizeof(WCHAR), &this->AtomAnsiProc);
     FAIL_RETURN(Status);
-/*
-    Status = NtAddAtom(PROP_WINDOW_UNICODE_PROC, CONST_STRLEN(PROP_WINDOW_UNICODE_PROC) * sizeof(WCHAR), &this->AtomUnicodeProc);
-    FAIL_RETURN(Status);
-*/
     Status = Nt_QueryOsVersion(&VersionInfo);
     FAIL_RETURN(Status);
 
@@ -3084,6 +3388,25 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
             return STATUS_UNKNOWN_REVISION;
     }
 
+    PVOID DefaultEditDpiServerInfoGetter =
+        FindDefaultEditDpiServerInfoGetter(User32);
+    DEFAULT_EDIT_SET_FONT_INFO DefaultEditSetFont{};
+
+    if (DefaultEditDpiServerInfoGetter == nullptr &&
+        VersionInfo.dwMajorVersion == 6 && VersionInfo.dwMinorVersion == 1)
+    {
+        DefaultEditSetFont = FindDefaultEditSetFont(User32);
+    }
+
+    this->DefaultEditCharsetOffset = DefaultEditSetFont.CharsetOffset;
+
+#if ENABLE_LOG
+    WriteLog(L"user32 default EDIT DPI server-info getter=%p target=%u",
+        DefaultEditDpiServerInfoGetter, GetLepb()->DefaultCharset);
+    WriteLog(L"user32 Win7 default EDIT ECSetFont=%p charset-offset=%Iu",
+        DefaultEditSetFont.Routine, DefaultEditSetFont.CharsetOffset);
+#endif
+
 #if ML_AMD64
     LOOP_ONCE
     {
@@ -3183,7 +3506,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
                 LEP_FUNCTION_NO_ABSOLUTE_JUMP_OP :
                 LEP_FUNCTION_JUMP_OP;
 
-        Mp::PATCH_MEMORY_DATA p[9];
+        Mp::PATCH_MEMORY_DATA p[10];
         ULONG_PTR Count = 0;
 
         p[Count++] = LepHookFromEATOp(User32, USER32, SetWindowLongA, SetWindowLongHookOp);
@@ -3201,6 +3524,23 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
             p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoW);
         }
 
+        if (DefaultEditDpiServerInfoGetter != nullptr)
+        {
+            p[Count++] = Mp::FunctionJumpVa(
+                DefaultEditDpiServerInfoGetter,
+                LepGetDpiServerInfoForCurrentThread,
+                &HookStub.StubGetDpiServerInfoForCurrentThread,
+                LEP_FUNCTION_JUMP_OP);
+        }
+        else if (DefaultEditSetFont.Routine != nullptr)
+        {
+            p[Count++] = Mp::FunctionJumpVa(
+                DefaultEditSetFont.Routine,
+                LepDefaultEditSetFont,
+                &HookStub.StubDefaultEditSetFont,
+                LEP_FUNCTION_JUMP_OP);
+        }
+
         Status = Mp::PatchMemory(p, Count);
 
 #if ENABLE_LOG
@@ -3211,12 +3551,72 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     }
 #endif
 
-    Mp::PATCH_MEMORY_DATA p[14];
+#if !ML_AMD64
+    PVOID NtUserGetDC = nullptr;
+    PVOID NtUserGetDCEx = nullptr;
+    PVOID NtUserGetWindowDC = nullptr;
+    PVOID NtUserBeginPaint = nullptr;
+    BOOL HookNativeDC = FALSE;
+
+    if (this->HasWin32U)
+    {
+        PVOID Win32uMod = Nt_GetModuleHandle(L"win32u.dll");
+
+        User32NtUserMessageCallIat = LookupImportTable(User32, "win32u.dll", "NtUserMessageCall");
+        if (User32NtUserMessageCallIat == IMAGE_INVALID_VA)
+            User32NtUserMessageCallIat = nullptr;
+        if (User32NtUserMessageCallIat != nullptr)
+            OriginalUser32NtUserMessageCall = *(PVOID *)User32NtUserMessageCallIat;
+
+        if (Win32uMod != nullptr)
+        {
+            NtUserGetDC = Nt_GetProcAddress(Win32uMod, "NtUserGetDC");
+            NtUserGetDCEx = Nt_GetProcAddress(Win32uMod, "NtUserGetDCEx");
+            NtUserGetWindowDC = Nt_GetProcAddress(Win32uMod, "NtUserGetWindowDC");
+            NtUserBeginPaint = Nt_GetProcAddress(Win32uMod, "NtUserBeginPaint");
+            HookNativeDC = NtUserGetDC != nullptr && NtUserGetDCEx != nullptr &&
+                           NtUserGetWindowDC != nullptr && NtUserBeginPaint != nullptr;
+        }
+    }
+
+#if ENABLE_LOG
+    WriteLog(L"user32 x86 NtUserMessageCall export=%p iat=%p original=%p",
+        NtUserMessageCall, User32NtUserMessageCallIat, OriginalUser32NtUserMessageCall);
+    WriteLog(L"user32 x86 DC route native=%u getdc=%p getdcex=%p getwindowdc=%p beginpaint=%p",
+        HookNativeDC, NtUserGetDC, NtUserGetDCEx, NtUserGetWindowDC, NtUserBeginPaint);
+#endif
+
+    Mp::PATCH_MEMORY_DATA p[20];
     ULONG_PTR Count = 0;
 
     p[Count++] = LepFunctionJump(NtUserCreateWindowEx);
     p[Count++] = LepFunctionJump(NtUserMessageCall);
     p[Count++] = LepFunctionJump(NtUserDefSetText);
+
+    if (DefaultEditDpiServerInfoGetter != nullptr)
+    {
+        p[Count++] = Mp::FunctionJumpVa(
+            DefaultEditDpiServerInfoGetter,
+            LepGetDpiServerInfoForCurrentThread,
+            &HookStub.StubGetDpiServerInfoForCurrentThread,
+            LEP_FUNCTION_JUMP_OP);
+    }
+    else if (DefaultEditSetFont.Routine != nullptr)
+    {
+        p[Count++] = Mp::FunctionJumpVa(
+            DefaultEditSetFont.Routine,
+            LepDefaultEditSetFont,
+            &HookStub.StubDefaultEditSetFont,
+            LEP_FUNCTION_JUMP_OP);
+    }
+
+    if (User32NtUserMessageCallIat != nullptr)
+    {
+        p[Count++] = Mp::MemoryPatchVa(
+            (ULONG_PTR)LepNtUserMessageCall,
+            sizeof(PVOID),
+            User32NtUserMessageCallIat);
+    }
 
     p[Count++] = LepHookFromEAT(User32, USER32, SetWindowLongA);
     p[Count++] = LepHookFromEAT(User32, USER32, GetWindowLongA);
@@ -3231,13 +3631,20 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
         p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoW);
     }
 
-#if !ML_AMD64
-    p[Count++] = LepHookFromEAT(User32, USER32, GetDC);
-#endif
-    p[Count++] = LepHookFromEAT(User32, USER32, GetDCEx);
-    p[Count++] = LepHookFromEAT(User32, USER32, GetWindowDC);
-
-    p[Count++] = LepHookFromEAT(User32, USER32, BeginPaint);
+    if (HookNativeDC)
+    {
+        p[Count++] = LepFunctionJump(NtUserGetDC);
+        p[Count++] = LepFunctionJump(NtUserGetDCEx);
+        p[Count++] = LepFunctionJump(NtUserGetWindowDC);
+        p[Count++] = LepFunctionJump(NtUserBeginPaint);
+    }
+    else
+    {
+        p[Count++] = LepHookFromEAT(User32, USER32, GetDC);
+        p[Count++] = LepHookFromEAT(User32, USER32, GetDCEx);
+        p[Count++] = LepHookFromEAT(User32, USER32, GetWindowDC);
+        p[Count++] = LepHookFromEAT(User32, USER32, BeginPaint);
+    }
 
     Status = Mp::PatchMemory(p, Count);
 
@@ -3245,6 +3652,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     WriteLog(L"user32 generic patch status=%08X", Status);
 #endif
 
+#endif
     return Status;
 }
 
@@ -3260,10 +3668,30 @@ NTSTATUS LepGlobalData::UnHookUser32Routines()
     HpRemoveSystemCallFilter(WIN32K_NtUserBeginPaint, LepHpNtUserBeginPaint);
 #endif
 
+    Mp::RestoreMemory(HookStub.StubGetDpiServerInfoForCurrentThread);
+    Mp::RestoreMemory(HookStub.StubDefaultEditSetFont);
+    DefaultEditCharsetOffset = 0;
+#if !ML_AMD64
+    if (User32NtUserMessageCallIat != nullptr && OriginalUser32NtUserMessageCall != nullptr)
+    {
+        Mp::PATCH_MEMORY_DATA Patch = Mp::MemoryPatchVa(
+            (ULONG_PTR)OriginalUser32NtUserMessageCall,
+            sizeof(PVOID),
+            User32NtUserMessageCallIat);
+        Mp::PatchMemory(&Patch, 1);
+        User32NtUserMessageCallIat = nullptr;
+        OriginalUser32NtUserMessageCall = nullptr;
+    }
+
+    Mp::RestoreMemory(HookStub.StubNtUserGetDC);
+    Mp::RestoreMemory(HookStub.StubNtUserGetDCEx);
+    Mp::RestoreMemory(HookStub.StubNtUserGetWindowDC);
+    Mp::RestoreMemory(HookStub.StubNtUserBeginPaint);
+#endif
+
     Mp::RestoreMemory(HookStub.StubNtUserCreateWindowEx);
     Mp::RestoreMemory(HookStub.StubNtUserMessageCall);
     Mp::RestoreMemory(HookStub.StubNtUserDefSetText);
-
     Mp::RestoreMemory(HookStub.StubSetWindowLongA);
     Mp::RestoreMemory(HookStub.StubGetWindowLongA);
 #if ML_AMD64
@@ -3288,12 +3716,5 @@ NTSTATUS LepGlobalData::UnHookUser32Routines()
         NtDeleteAtom(AtomAnsiProc);
         AtomAnsiProc = 0;
     }
-/*
-    if (AtomUnicodeProc != NULL)
-    {
-        NtDeleteAtom(AtomUnicodeProc);
-        AtomUnicodeProc = NULL;
-    }
-*/
     return 0;
 }

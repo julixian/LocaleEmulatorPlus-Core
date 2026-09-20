@@ -38,18 +38,6 @@ HFONT GetFontFromFont(PLepGlobalData GlobalData, HFONT Font)
     return Font;
 }
 
-HFONT GetFontFromDC(PLepGlobalData GlobalData, HDC hDC)
-{
-    HFONT       Font;
-    LOGFONTW    LogFont;
-
-    Font = (HFONT)GetCurrentObject(hDC, OBJ_FONT);
-    if (Font == nullptr)
-        return nullptr;
-
-    return GetFontFromFont(GlobalData, Font);
-}
-
 BOOL IsGdiHookBypassed()
 {
     return FindThreadFrame(GDI_HOOK_BYPASS) != nullptr;
@@ -964,42 +952,113 @@ LepQueryFontAssocStatus()
     return 0;
 }
 
+INT WINAPI LepGetTextCharset(HDC DC)
+{
+    PLepGlobalData GlobalData;
+    INT Charset, TargetCharset;
+    ULONG CodePage;
+
+    GlobalData = LepGetGlobalData();
+    Charset = GlobalData->HookStub.StubGetTextCharset(DC);
+
+    if (IsGdiHookBypassed() || GdiGetCodePage == nullptr)
+        return Charset;
+
+    CodePage = GdiGetCodePage(DC);
+    TargetCharset = GlobalData->GetLepb()->DefaultCharset;
+    if (CodePage != GlobalData->GetLepb()->AnsiCodePage || Charset == TargetCharset)
+        return Charset;
+
+    return TargetCharset;
+}
+
+LONG WINAPI LepGdiGetCharDimensions(HDC DC, LPTEXTMETRICW TextMetric, LONG *Height)
+{
+    PLepGlobalData GlobalData;
+    LONG Result;
+    INT OriginalCharset, TargetCharset;
+    ULONG CodePage;
+
+    GlobalData = LepGetGlobalData();
+    Result = GlobalData->HookStub.StubGdiGetCharDimensions(DC, TextMetric, Height);
+
+    if (Result == 0 || TextMetric == nullptr || IsGdiHookBypassed() || GdiGetCodePage == nullptr)
+        return Result;
+
+    CodePage = GdiGetCodePage(DC);
+    TargetCharset = GlobalData->GetLepb()->DefaultCharset;
+    OriginalCharset = TextMetric->tmCharSet;
+    if (CodePage != GlobalData->GetLepb()->AnsiCodePage || OriginalCharset == TargetCharset)
+        return Result;
+
+    TextMetric->tmCharSet = (BYTE)TargetCharset;
+
+    return Result;
+}
+
 API_POINTER(SelectObject)  StubSelectObject;
+
+static LONG FindOriginalStockFontObject(PLepGlobalData GlobalData, HGDIOBJ Font)
+{
+    static const LONG StockFontObjectIndex[] =
+    {
+        ANSI_FIXED_FONT,
+        ANSI_VAR_FONT,
+        DEVICE_DEFAULT_FONT,
+        DEFAULT_GUI_FONT,
+        OEM_FIXED_FONT,
+        SYSTEM_FONT,
+        SYSTEM_FIXED_FONT,
+    };
+
+    if (Font == nullptr || GetObjectType(Font) != OBJ_FONT)
+        return -1;
+
+    for (ULONG_PTR Index = 0; Index != countof(StockFontObjectIndex); ++Index)
+    {
+        LONG Object = StockFontObjectIndex[Index];
+
+        if (GlobalData->GetStockObject(Object) == Font)
+            return Object;
+    }
+
+    return -1;
+}
 
 HGDIOBJ NTAPI LepSelectObject(HDC hdc, HGDIOBJ h)
 {
-    HGDIOBJ obj;
+    PLepGlobalData GlobalData;
+    LONG StockFontObject;
 
-    obj = StubSelectObject(hdc, h);
-
-    switch (GdiGetCodePage(hdc))
+    GlobalData = LepGetGlobalData();
+    StockFontObject = FindOriginalStockFontObject(GlobalData, h);
+    if (StockFontObject >= 0)
     {
-        //case 0x3A4:
-        case 0x3A8:
+        HGDIOBJ TargetFont = LepGetStockObject(StockFontObject);
+        if (TargetFont != nullptr)
         {
-            ULONG objtype = GetObjectType(h);
-
-            union
-            {
-                LOGFONTW lf;
-            };
-
-            switch (objtype)
-            {
-                case OBJ_FONT:
-                    GetObjectW(h, sizeof(lf), &lf);
-                    ExceptionBox(lf.lfFaceName, L"FUCK FACE");
-                    break;
-
-                default:
-                    return obj;
-            }
-
-            break;
+            h = TargetFont;
         }
     }
 
-    return obj;
+    HGDIOBJ PreviousObject = StubSelectObject(hdc, h);
+
+    return PreviousObject;
+}
+
+VOID LepSelectTargetStockFontInDC(PLepGlobalData GlobalData, HDC DC)
+{
+    if (DC == nullptr)
+        return;
+
+    HGDIOBJ CurrentFont = GetCurrentObject(DC, OBJ_FONT);
+    LONG StockFontObject = FindOriginalStockFontObject(GlobalData, CurrentFont);
+    if (StockFontObject < 0)
+        return;
+
+    HGDIOBJ TargetFont = LepGetStockObject(StockFontObject);
+    if (TargetFont != nullptr)
+        SelectObject(DC, TargetFont);
 }
 
 /************************************************************************
@@ -1180,8 +1239,11 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
     Mp::PATCH_MEMORY_DATA p[] =
     {
         LepHookFromEAT(Gdi32, GDI32, GetStockObject),
+        LepHookFromEAT(Gdi32, GDI32, GetTextCharset),
+        Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_GdiGetCharDimensions), LepGdiGetCharDimensions, &HookStub.StubGdiGetCharDimensions, LEP_FUNCTION_JUMP_OP),
         LepHookFromEAT(Gdi32, GDI32, DeleteObject),
         LepHookFromEAT(Gdi32, GDI32, CreateCompatibleDC),
+        Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_SelectObject), LepSelectObject, &StubSelectObject, LEP_FUNCTION_JUMP_OP),
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontsW),
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontsA),
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontFamiliesA),
@@ -1192,25 +1254,33 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
 
 #undef LepHookEnumFontFromEAT
 #else
-    Mp::PATCH_MEMORY_DATA p[] =
-    {
-        LepHookFromEAT(Gdi32, GDI32, GetStockObject),
-        LepHookFromEAT(Gdi32, GDI32, DeleteObject),
-        //LepHookFromEAT(Gdi32, GDI32, CreateFontIndirectExW),
-        LepHookFromEAT(Gdi32, GDI32, CreateCompatibleDC),
-        LepHookFromEAT(Gdi32, GDI32, EnumFontsW),
-        LepHookFromEAT(Gdi32, GDI32, EnumFontsA),
-        LepHookFromEAT(Gdi32, GDI32, EnumFontFamiliesA),
-        LepHookFromEAT(Gdi32, GDI32, EnumFontFamiliesW),
-        LepHookFromEAT(Gdi32, GDI32, EnumFontFamiliesExA),
-        LepHookFromEAT(Gdi32, GDI32, EnumFontFamiliesExW),
+    PVOID Gdi32Full = Nt_GetModuleHandle(L"gdi32full.dll");
+    PVOID EnumFontModule = Gdi32Full != nullptr ? Gdi32Full : Gdi32;
 
-        LepFunctionJump(NtGdiHfontCreate),
+#if ENABLE_LOG
+    WriteLog(L"gdi32 x86 route win32u=%u hfont=%p enumFull=%u enumModule=%p",
+        this->HasWin32U,
+        NtGdiHfontCreate,
+        EnumFontModule == Gdi32Full,
+        EnumFontModule);
+#endif
 
-        //Mp::MemoryPatchVa((ULONG_PTR)LepFmsEnumFontFamiliesExW, sizeof(ULONG_PTR), LookupImportTable(Fms, "GDI32.dll", GDI32_EnumFontFamiliesExW)),
+    Mp::PATCH_MEMORY_DATA p[14];
+    ULONG_PTR Count = 0;
 
-        //Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_SelectObject), LepSelectObject, &StubSelectObject),
-    };
+    p[Count++] = LepHookFromEAT(Gdi32, GDI32, GetStockObject);
+    p[Count++] = LepHookFromEAT(Gdi32, GDI32, GetTextCharset);
+    p[Count++] = Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_GdiGetCharDimensions), LepGdiGetCharDimensions, &HookStub.StubGdiGetCharDimensions, LEP_FUNCTION_JUMP_OP);
+    p[Count++] = LepHookFromEAT(Gdi32, GDI32, DeleteObject);
+    p[Count++] = LepHookFromEAT(Gdi32, GDI32, CreateCompatibleDC);
+    p[Count++] = Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_SelectObject), LepSelectObject, &StubSelectObject, LEP_FUNCTION_JUMP_OP);
+    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontsW);
+    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontsA);
+    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontFamiliesA);
+    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontFamiliesW);
+    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontFamiliesExA);
+    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontFamiliesExW);
+    p[Count++] = LepFunctionJump(NtGdiHfontCreate);
 #endif
 
 #if !ML_AMD64
@@ -1226,7 +1296,11 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
     }
 #endif
 
+#if ML_AMD64
     return Mp::PatchMemory(p, countof(p));
+#else
+    return Mp::PatchMemory(p, Count);
+#endif
 }
 
 NTSTATUS LepGlobalData::UnHookGdi32Routines()
@@ -1235,7 +1309,10 @@ NTSTATUS LepGlobalData::UnHookGdi32Routines()
     HpRemoveSystemCallFilter(WIN32K_NtGdiHfontCreate, LepHpNtGdiHfontCreate);
 #endif
 
+    Mp::RestoreMemory(StubSelectObject);
     Mp::RestoreMemory(HookStub.StubGetStockObject);
+    Mp::RestoreMemory(HookStub.StubGetTextCharset);
+    Mp::RestoreMemory(HookStub.StubGdiGetCharDimensions);
     Mp::RestoreMemory(HookStub.StubDeleteObject);
     Mp::RestoreMemory(HookStub.StubCreateCompatibleDC);
     Mp::RestoreMemory(HookStub.StubEnumFontFamiliesExA);
