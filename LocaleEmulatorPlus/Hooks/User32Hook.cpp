@@ -111,10 +111,14 @@ static PBYTE NTAPI LepGetDpiServerInfoForCurrentThread()
     // A thread-local shadow keeps the server's shared page untouched.  Only
     // its default font charset is virtualized; explicit font metrics do not
     // pass through this user32 helper.
-    static DECL_THREAD BYTE Shadow[104];
+    PTHREAD_LOCAL_BUFFER Tlb = THREAD_LOCAL_BUFFER::GetTlb(TRUE);
+    if (Tlb == nullptr)
+        return Info;
+
+    PBYTE Shadow = Tlb->DpiServerInfoShadow;
     static_assert(FIELD_OFFSET(TEXTMETRICW, tmCharSet) == 56,
         "Unexpected TEXTMETRICW layout");
-    RtlCopyMemory(Shadow, Info, sizeof(Shadow));
+    RtlCopyMemory(Shadow, Info, sizeof(Tlb->DpiServerInfoShadow));
     TEXTMETRICW *Metric = (TEXTMETRICW *)(Shadow + 40);
     BYTE TargetCharset = (BYTE)GlobalData->GetLepb()->DefaultCharset;
     Metric->tmCharSet = TargetCharset;

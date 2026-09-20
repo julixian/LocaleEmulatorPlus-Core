@@ -140,6 +140,7 @@ inline BOOL IsLepLoader()
 typedef struct THREAD_LOCAL_BUFFER : public TEB_ACTIVE_FRAME
 {
     BYTE Buffer[MEMORY_PAGE_SIZE * 2];
+    BYTE DpiServerInfoShadow[104];
 
     THREAD_LOCAL_BUFFER()
     {
