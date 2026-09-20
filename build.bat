@@ -95,8 +95,6 @@ if /I "%TARGET%"=="x86" (
   "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_ntdll_x64.def" /out:"%LIBOUT%\%NTDLL_IMPORT_LIB%" || exit /b 1
   "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_k32_x64.def" /out:"%LIBOUT%\%K32_IMPORT_LIB%" || exit /b 1
 )
-"%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\ntdll_vsnprintf_x86_x64.def" /out:"%LIBOUT%\ntdll_vsnprintf.lib" || exit /b 1
-
 echo [%TARGET% 2/5] Building LEP delay-load helper
 "%CL_EXE%" %COMMON_CL% /Fo"%OBJ%\LepDelayLoad.obj" %COMMON_INC% "%DEP%\libs\LepDelayLoad_x86_x64.cpp" || exit /b 1
 if /I "%TARGET%"=="x64" (
@@ -134,7 +132,7 @@ set "LEP_OBJECTS=%LEP_OBJECTS% "%OBJ%\LEP_HookPort.obj""
   /export:LoadFirstDll ^
   /delayload:KERNEL32.dll /delayload:USER32.dll /delayload:GDI32.dll /delayload:DBGHELP.dll ^
   %ALT_UNDOC% ^
-  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" "%LIBOUT%\ntdll_vsnprintf.lib" kernel32.lib user32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
+  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" kernel32.lib user32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
 
 echo [%TARGET% 5/5] Building %LOADER_DLL%
 pushd "%ROOT%" || exit /b 1
@@ -145,7 +143,7 @@ popd
   "%OBJ%\LoaderDll.obj" ^
   %LIBPATHS% /nodefaultlib /debug:none /opt:ref /ignore:4254 %SAFESEH% /manifest:no /machine:%MACHINE% /subsystem:windows ^
   %ALT_UNDOC% ^
-  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" "%LIBOUT%\ntdll_vsnprintf.lib" kernel32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
+  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" kernel32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
 
 if exist "%LEP_DEPLOY_DIR%\." (
   copy /y "%OUT%\%LEP_DLL%" "%LEP_DEPLOY_DIR%\%LEP_DLL%" >nul || exit /b 1

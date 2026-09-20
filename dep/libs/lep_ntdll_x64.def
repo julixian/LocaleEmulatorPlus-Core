@@ -5,6 +5,7 @@ EXPORTS
     LdrUnregisterDllNotification
     _stricmp
     _vscwprintf
+    _vsnprintf
     _vsnwprintf
     strcmp
     wcsncmp
