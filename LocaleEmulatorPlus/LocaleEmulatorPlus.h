@@ -835,11 +835,6 @@ public:
 
     ULONG_PTR DefaultEditCharsetOffset;
 
-#if !ML_AMD64
-    PVOID User32NtUserMessageCallIat;
-    PVOID OriginalUser32NtUserMessageCall;
-#endif
-
     ATOM AtomAnsiProc;
 
     struct HookRoutineData

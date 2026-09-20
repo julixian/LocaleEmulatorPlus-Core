@@ -162,7 +162,7 @@ x64：不再扫描 `LdrInitializeThunk`，也不安装 x86 使用的 loader call
 
 x86/x64：均走 HookPort filter。
 
-作用：让查询 ntdll 层默认区域、时区和 NLS 文件的路径看到目标 locale；UI language 的 native filter 则由模式 2 单独控制。
+作用：让查询 ntdll 层默认区域、时区和 NLS 文件的路径看到目标 locale。
 
 ### 5. 注册表重定向：`NtQueryValueKey`
 
@@ -309,7 +309,7 @@ x64 user32 兼容布局：先从 `CreateWindowExW/A` 找 internal `CreateWindowE
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
-x86：有 win32u 时按名称取 `NtUserMessageCall` 并 inline hook，同时改写 user32 自身的 `win32u!NtUserMessageCall` IAT 槽，覆盖系统控件通过 `gapfnScSendMessage` 进入的内部消息 thunk；调用原始 syscall 时仍使用 win32u inline hook 生成的 trampoline。无 win32u 的兼容布局使用 `FindNtUserMessageCall2(user32)`：查 `kernel32!GlobalLock`、`GlobalUnlock`、`GlobalFree` 的 IAT 项，遍历 user32 relocation table 找这三个导入指针连续出现的位置，再在前两个引用之间找 syscall stub。
+x86：有 win32u 时按名称取 `NtUserMessageCall` 并 inline hook；无 win32u 的兼容布局使用 `FindNtUserMessageCall2(user32)`：查 `kernel32!GlobalLock`、`GlobalUnlock`、`GlobalFree` 的 IAT 项，遍历 user32 relocation table 找这三个导入指针连续出现的位置，再在前两个引用之间找 syscall stub。
 
 x64 win32u 布局：从 `win32u.dll` 按名称取 `NtUserMessageCall`，注册 HookPort filter。
 
@@ -360,7 +360,7 @@ x64 user32 兼容布局：先按 `NtUserCreateWindowEx` 路径找到 internal `C
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
-x86 win32u 布局：优先 inline hook `win32u!NtUserGetDC`、`NtUserGetDCEx`、`NtUserGetWindowDC`、`NtUserBeginPaint`，覆盖 user32 内部控件直接获取 DC 的路径；只有 native 导出不完整时才回退 EAT inline hook `GetDC`、`GetDCEx`、`GetWindowDC`、`BeginPaint`。
+x86 win32u 布局：优先 inline hook `win32u!NtUserGetDC`、`NtUserGetDCEx`、`NtUserGetWindowDC`、`NtUserBeginPaint`；只有 native 导出不完整时才回退 EAT inline hook `user32!GetDC`、`GetDCEx`、`GetWindowDC`、`BeginPaint`。
 
 x64 win32u 布局：从 `win32u.dll` 按名称取 `NtUserGetDC`、`NtUserGetDCEx`、`NtUserGetWindowDC`、`NtUserBeginPaint`，验证为直接 x64 syscall stub，再注册 HookPort filter。
 
@@ -368,9 +368,9 @@ x64 user32 兼容布局：从 user32 导出 `GetDC`、`GetDCEx`、`GetWindowDC`�
 
 作用：获取 DC 或 paint DC 后检查当前字体；只有当前字体仍是 Windows 原始 stock/default font 时，才选择对应的目标 charset 克隆。显式创建并选择的字体保持不变，DC codepage 继续由实际字体 charset 自然派生。
 
- Win10/Win11 的系统 EDIT 还有一条不经过 DC/GDI 查询的默认字体路径：创建时的 `ECSetFont(nullptr)` 从 user32 的 104 字节 DPI server-info 结构复制 `TEXTMETRICW`，并用其中的 `tmCharSet` 覆盖 EDIT 的 charset 缓存。x86/x64 现在都从消费者语义定位该 getter：要求同一内部函数连续三次提供 `+32` 宽度、`+36` 高度和 `+40` 起始的完整 `TEXTMETRICW`，且候选唯一；不再依赖私有函数名、固定 RVA 或 Win11 build 号。Win10 中目标是 `GetDPIServerInfo`，Win11 中目标是 `GetDpiServerInfoForCurrentThread`。hook 调用原函数后返回线程私有的 104 字节副本，仅把默认度量的 `tmCharSet` 改成目标 charset；系统共享页、其它字段和显式选中的字体不变。特征不匹配或候选不唯一时不安装。该路径已在 Win11 x86 的 RiddleGarden_cn.exe 上复测确认：默认名称显示恢复正常。
+ Win10/Win11 的系统 EDIT 还有一条不经过 DC/GDI 查询的默认字体路径：创建时的 `ECSetFont(nullptr)` 从 user32 的 104 字节 DPI server-info 结构复制 `TEXTMETRICW`，并用其中的 `tmCharSet` 覆盖 EDIT 的 charset 缓存。x86/x64 现在都从消费者语义定位该 getter：要求同一内部函数连续三次提供 `+32` 宽度、`+36` 高度和 `+40` 起始的完整 `TEXTMETRICW`，且候选唯一。Win10 中目标是 `GetDPIServerInfo`，Win11 中目标是 `GetDpiServerInfoForCurrentThread`。hook 调用原函数后返回线程私有的 104 字节副本，仅把默认度量的 `tmCharSet` 改成目标 charset；系统共享页、其它字段和显式选中的字体不变。特征不匹配或候选不唯一时不安装。
 
- Win7 x86/x64 的 `ECSetFont(nullptr)` 直接读取 `gpsi` 中的默认度量，不调用上述 getter；Win7 x86 虽存在名为 `GetDPIServerInfo` 的内部函数，但 EDIT 不使用它。因此 Win10/Win11 的 getter matcher 在两份 Win7 样本上均不产生候选。Win7 改由第二套消费者语义定位：x86 匹配 `push 0Fh / add esi,gpsi+metric / rep movsd` 的 60 字节 `TEXTMETRICW` 复制，x64 匹配等价的 `memcpy(..., 0x3C)` 序列；再从同一 `ECSetFont` 内后续的 `tmCharSet` load/store 推导 EDIT 私有 charset 字段偏移。仅当函数和偏移都唯一且结构完整时才 hook。原函数完成 `Font == nullptr` 的默认字体初始化后，LEP 只把该 EDIT 实例的 charset 缓存改成目标 charset；显式字体路径不改，`gpsi` 全局共享数据也不改。该兼容路径只在 Windows 7 且新式 getter 未匹配时安装。
+ Win7 x86/x64 的 `ECSetFont(nullptr)` 直接读取 `gpsi` 中的默认度量，不调用上述 getter；Win7 x86 虽存在名为 `GetDPIServerInfo` 的内部函数，但 EDIT 不使用它。因此 Win10/Win11 的 getter matcher 在两份 Win7 样本上均不产生候选。Win7 改由第二套消费者语义定位：x86 匹配 `push 0Fh / add esi,gpsi+metric / rep movsd` 的 60 字节 `TEXTMETRICW` 复制，x64 匹配等价的 `memcpy(..., 0x3C)` 序列；再从同一 `ECSetFont` 内后续的 `tmCharSet` load/store 推导 EDIT 私有 charset 字段偏移。仅当函数和偏移都唯一且结构完整时才 hook。原函数完成 `Font == nullptr` 的默认字体初始化后，LEP 把该 EDIT 实例的 charset 缓存改成目标 charset。
 
 ### 20. `SetWindowLongA` / `GetWindowLongA` / PtrA 与 `IsWindowUnicode`
 
@@ -426,17 +426,11 @@ x86/x64：对 `QueryFontAssocStatus` 使用普通 inline hook。查找时优先�
 
 时机：`GDI32.dll` 加载后，`HookGdi32Routines()`。
 
-x86：在 `gdi32.dll` hook `GetStockObject`、`GetTextCharset`、`GdiGetCharDimensions`、`DeleteObject`、`CreateCompatibleDC`、`SelectObject`；字体枚举函数优先 hook 已加载的 `gdi32full.dll`，不存在时回退 `gdi32.dll`。均为 inline hook。
+x86：在 `gdi32.dll` hook `GetStockObject`、`DeleteObject`、`CreateCompatibleDC`；字体枚举函数优先 hook 已加载的 `gdi32full.dll`，不存在时回退 `gdi32.dll`。均为 inline hook。
 
-x64：inline hook `gdi32.dll` 的 `GetStockObject`、`GetTextCharset`、`GdiGetCharDimensions`、`DeleteObject`、`CreateCompatibleDC`、`SelectObject`。字体枚举函数优先 hook `gdi32full.dll`，不存在时 hook `gdi32.dll`；枚举字体宏显式使用 `Mp::OpJumpIndirect`。
+x64：inline hook `gdi32.dll` 的 `GetStockObject`、`DeleteObject`、`CreateCompatibleDC`。字体枚举函数优先 hook `gdi32full.dll`，不存在时 hook `gdi32.dll`；枚举字体宏显式使用 `Mp::OpJumpIndirect`。
 
-`SelectObject` 只识别 Windows 原始 `ANSI_FIXED_FONT`、`ANSI_VAR_FONT`、`DEVICE_DEFAULT_FONT`、`DEFAULT_GUI_FONT`、`OEM_FIXED_FONT`、`SYSTEM_FONT`、`SYSTEM_FIXED_FONT` 句柄，并将它们替换为同一 stock index 的目标 charset 克隆。其它字体句柄原样传给 GDI，包括显式中文 charset 字体。
-
-`GetTextCharset` 先调用原函数，再读取同一 DC 的 `GdiGetCodePage`。仅当 DC codepage 已等于目标 ACP、但原 charset 尚未等于目标 charset 时，才把返回值对齐为目标 charset。显式 `GB2312_CHARSET` 字体派生出的 CP936 因 codepage 不匹配而保持原值。
-
-`GdiGetCharDimensions` 对成功返回的 `TEXTMETRICW.tmCharSet` 应用同一规则。USER32 的 `ECSetFont` 在显式字体分支使用这项度量结果；无显式字体分支则直接复制上述 DPI server info，不会调用该 GDI 函数。
-
-作用：让默认/系统字体选择把 DC 自然切换到目标 codepage，并让依赖 `GetTextCharset` 缓存 charset 的 USER32/LPK 路径与该 DC codepage 一致，同时保留应用显式字体选择的原始 charset/codepage 语义。
+作用：调整字体枚举、stock font 和兼容 DC 路径中的 charset/font 行为。
 
 ### 26. DLL load notification
 

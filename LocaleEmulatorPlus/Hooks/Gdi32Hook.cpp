@@ -1239,11 +1239,15 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
     Mp::PATCH_MEMORY_DATA p[] =
     {
         LepHookFromEAT(Gdi32, GDI32, GetStockObject),
-        LepHookFromEAT(Gdi32, GDI32, GetTextCharset),
-        Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_GdiGetCharDimensions), LepGdiGetCharDimensions, &HookStub.StubGdiGetCharDimensions, LEP_FUNCTION_JUMP_OP),
+        // Disabled: these broad GDI hooks were exploratory fallbacks for the
+        // default EDIT charset issue.  The confirmed fix now patches the
+        // user32 default-font cache directly, so keep the implementations for
+        // reference without expanding the process-wide hook surface.
+        // LepHookFromEAT(Gdi32, GDI32, GetTextCharset),
+        // Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_GdiGetCharDimensions), LepGdiGetCharDimensions, &HookStub.StubGdiGetCharDimensions, LEP_FUNCTION_JUMP_OP),
         LepHookFromEAT(Gdi32, GDI32, DeleteObject),
         LepHookFromEAT(Gdi32, GDI32, CreateCompatibleDC),
-        Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_SelectObject), LepSelectObject, &StubSelectObject, LEP_FUNCTION_JUMP_OP),
+        // Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_SelectObject), LepSelectObject, &StubSelectObject, LEP_FUNCTION_JUMP_OP),
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontsW),
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontsA),
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontFamiliesA),
@@ -1269,11 +1273,13 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
     ULONG_PTR Count = 0;
 
     p[Count++] = LepHookFromEAT(Gdi32, GDI32, GetStockObject);
-    p[Count++] = LepHookFromEAT(Gdi32, GDI32, GetTextCharset);
-    p[Count++] = Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_GdiGetCharDimensions), LepGdiGetCharDimensions, &HookStub.StubGdiGetCharDimensions, LEP_FUNCTION_JUMP_OP);
+    // Disabled for the same reason as x64 above: these exploratory hooks are
+    // not part of the confirmed default EDIT cache fix.
+    // p[Count++] = LepHookFromEAT(Gdi32, GDI32, GetTextCharset);
+    // p[Count++] = Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_GdiGetCharDimensions), LepGdiGetCharDimensions, &HookStub.StubGdiGetCharDimensions, LEP_FUNCTION_JUMP_OP);
     p[Count++] = LepHookFromEAT(Gdi32, GDI32, DeleteObject);
     p[Count++] = LepHookFromEAT(Gdi32, GDI32, CreateCompatibleDC);
-    p[Count++] = Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_SelectObject), LepSelectObject, &StubSelectObject, LEP_FUNCTION_JUMP_OP);
+    // p[Count++] = Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_SelectObject), LepSelectObject, &StubSelectObject, LEP_FUNCTION_JUMP_OP);
     p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontsW);
     p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontsA);
     p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontFamiliesA);
@@ -1309,10 +1315,11 @@ NTSTATUS LepGlobalData::UnHookGdi32Routines()
     HpRemoveSystemCallFilter(WIN32K_NtGdiHfontCreate, LepHpNtGdiHfontCreate);
 #endif
 
-    Mp::RestoreMemory(StubSelectObject);
+    // Paired with the disabled exploratory hooks in HookGdi32Routines().
+    // Mp::RestoreMemory(StubSelectObject);
     Mp::RestoreMemory(HookStub.StubGetStockObject);
-    Mp::RestoreMemory(HookStub.StubGetTextCharset);
-    Mp::RestoreMemory(HookStub.StubGdiGetCharDimensions);
+    // Mp::RestoreMemory(HookStub.StubGetTextCharset);
+    // Mp::RestoreMemory(HookStub.StubGdiGetCharDimensions);
     Mp::RestoreMemory(HookStub.StubDeleteObject);
     Mp::RestoreMemory(HookStub.StubCreateCompatibleDC);
     Mp::RestoreMemory(HookStub.StubEnumFontFamiliesExA);
