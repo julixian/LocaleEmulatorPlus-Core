@@ -905,9 +905,6 @@ BOOL Initialize(PVOID BaseAddress, PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload = nul
 
 #if ENABLE_LOG
     InitLog(GlobalData->LogFile, BootstrapPayload);
-    WriteLog(L"diagnostic skipChatChildInjection=%u", (ULONG)LEP_DIAG_SKIP_CHAT_CHILD_INJECTION);
-    WriteLog(L"diagnostic chatChildRestoreOnly=%u", (ULONG)LEP_DIAG_CHAT_CHILD_RESTORE_ONLY);
-    WriteLog(L"diagnostic chatChildNoLdrPatch=%u", (ULONG)LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH);
     WriteLog(L"process identity pid=%u tid=%u bits=%u processOnly=%u nlsApply=%u",
              (ULONG)CurrentPid(), (ULONG)CurrentTid(), (ULONG)(sizeof(PVOID) * 8),
              (ULONG)LEP_DIAG_PROCESS_ONLY, (ULONG)!LEP_DIAG_SKIP_NLS_APPLY);

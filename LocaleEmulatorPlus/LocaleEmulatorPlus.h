@@ -549,30 +549,6 @@ inline ULONG_PTR FormatLepUIntHex4(PWSTR Buffer, ULONG_PTR Value)
 #error LEP_DIAG_SKIP_NLS_APPLY requires LEP_DIAG_PROCESS_ONLY
 #endif
 
-// Third isolation pass: stop propagation at the chat browser -> child edge.
-// Keep the same process creation/suspension path as the second pass.
-#ifndef LEP_DIAG_SKIP_CHAT_CHILD_INJECTION
-#define LEP_DIAG_SKIP_CHAT_CHILD_INJECTION 0
-#endif
-#if LEP_DIAG_SKIP_CHAT_CHILD_INJECTION && (!LEP_DIAG_PROCESS_ONLY || !LEP_DIAG_SKIP_NLS_APPLY)
-#error LEP_DIAG_SKIP_CHAT_CHILD_INJECTION requires the no-NLS-apply diagnostic mode
-#endif
-
-#ifndef LEP_DIAG_CHAT_CHILD_RESTORE_ONLY
-#define LEP_DIAG_CHAT_CHILD_RESTORE_ONLY 0
-#endif
-#if LEP_DIAG_CHAT_CHILD_RESTORE_ONLY && (!LEP_DIAG_PROCESS_ONLY || !LEP_DIAG_SKIP_NLS_APPLY || LEP_DIAG_SKIP_CHAT_CHILD_INJECTION)
-#error Chat restore-only requires no-NLS-apply mode and child injection enabled
-#endif
-
-// Write the chat child's shadow image and metadata payload without executing it.
-#ifndef LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH
-#define LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH 0
-#endif
-#if LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH && (!LEP_DIAG_PROCESS_ONLY || !LEP_DIAG_SKIP_NLS_APPLY || LEP_DIAG_SKIP_CHAT_CHILD_INJECTION || LEP_DIAG_CHAT_CHILD_RESTORE_ONLY)
-#error Chat no-Ldr-patch requires no-NLS-apply mode and no other chat injection diagnostic
-#endif
-
 #ifndef ENABLE_LOG
 #define ENABLE_LOG 1
 #endif

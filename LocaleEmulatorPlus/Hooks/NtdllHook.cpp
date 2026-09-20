@@ -1488,47 +1488,13 @@ LepNtCreateUserProcess(
              Cid != nullptr ? (ULONG)(ULONG_PTR)Cid->UniqueThread : 0,
              !ResumeAfterInjection);
 
-    BOOL InjectionSkipped = FALSE;
-    ULONG ChildInjectionFlags = LEP_INJECT_FULL;
-#if LEP_DIAG_SKIP_CHAT_CHILD_INJECTION || LEP_DIAG_CHAT_CHILD_RESTORE_ONLY || LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH
-    PLDR_MODULE CreatorModule = FindLdrModuleByHandle(nullptr);
-    BOOL IsChatCreator = CreatorModule != nullptr &&
-        RtlEqualUnicodeString(&CreatorModule->BaseDllName, &USTR(L"QQSpeedChatBrowser.exe"), TRUE);
-#if LEP_DIAG_SKIP_CHAT_CHILD_INJECTION
-    InjectionSkipped = IsChatCreator;
-#elif LEP_DIAG_CHAT_CHILD_NO_LDR_PATCH
-    if (IsChatCreator)
-    {
-        ChildInjectionFlags = LEP_INJECT_WRITE_SHADOW;
-        WriteLog(L"diagnostic chat child no-Ldr-patch: creatorPid=%u childPid=%u flags=%08X",
-                 (ULONG)CurrentPid(), (ULONG)(ULONG_PTR)Cid->UniqueProcess, ChildInjectionFlags);
-    }
-#else
-    if (IsChatCreator)
-    {
-        ChildInjectionFlags |= LEP_INJECT_RESTORE_ONLY;
-        WriteLog(L"diagnostic chat child restore-only: creatorPid=%u childPid=%u flags=%08X",
-                 (ULONG)CurrentPid(), (ULONG)(ULONG_PTR)Cid->UniqueProcess, ChildInjectionFlags);
-    }
-#endif
-#endif
-    if (InjectionSkipped)
-    {
-        Status2 = STATUS_SUCCESS;
-        WriteLog(L"diagnostic skip child injection: chat boundary creatorPid=%u childPid=%u childTid=%u",
-                 (ULONG)CurrentPid(), (ULONG)(ULONG_PTR)Cid->UniqueProcess,
-                 (ULONG)(ULONG_PTR)Cid->UniqueThread);
-    }
-    else
-    {
-        Status2 = GlobalData->InjectSelfToChildProcess(*ProcessHandle, Cid, ChildInjectionFlags);
-    }
+    Status2 = GlobalData->InjectSelfToChildProcess(*ProcessHandle, Cid, LEP_INJECT_FULL);
 
     WriteLog(L"inject %p", Status2);
-    WriteLog(L"create edge creatorPid=%u creatorTid=%u childPid=%u childTid=%u createStatus=%08X injectStatus=%08X originalSuspended=%u injectionSkipped=%u",
+    WriteLog(L"create edge creatorPid=%u creatorTid=%u childPid=%u childTid=%u createStatus=%08X injectStatus=%08X originalSuspended=%u",
              (ULONG)CurrentPid(), (ULONG)CurrentTid(),
              (ULONG)(ULONG_PTR)Cid->UniqueProcess, (ULONG)(ULONG_PTR)Cid->UniqueThread,
-             Status, Status2, !ResumeAfterInjection, InjectionSkipped);
+             Status, Status2, !ResumeAfterInjection);
 
     if (ResumeAfterInjection)
     {
