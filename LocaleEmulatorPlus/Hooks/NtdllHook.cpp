@@ -87,10 +87,10 @@ NTSTATUS LepGlobalData::BuildBootstrapPayload(
     if (FullPath == nullptr || Payload == nullptr || PayloadSize == nullptr)
         return STATUS_INVALID_PARAMETER;
 
-    ULONG EnvironmentSize = sizeof(LEPB);
     PLEPB Environment = GetLepb();
     if (!LepValidateEnvironment(Environment))
         return STATUS_INVALID_PARAMETER;
+    ULONG EnvironmentSize = Environment->Size;
 
     WCHAR DirPath[MAX_NTPATH];
     ULONG_PTR FullPathLength = StrLengthW(FullPath);
@@ -1157,6 +1157,21 @@ LoadFirstDll(
     return LdrLoadDll(PathToFile, DllCharacteristics, ModuleFileName, DllHandle);
 }
 
+static VOID LepNormalizeTokyoTimeZoneName(PLEPB Environment, PRTL_TIME_ZONE_INFORMATION Timezone)
+{
+    // v2 has no identity field. Preserve its data instead of guessing from
+    // localized names or a bias shared by other UTC+9 time zones.
+    if (Environment->Version != LEP_ENVIRONMENT_VERSION ||
+        StrICompareW(Environment->TimeZoneId, L"Tokyo Standard Time") != 0)
+        return;
+
+    static const WCHAR JapaneseName[] = L"\u6771\u4EAC\u6A19\u6E96\u6642";
+    ZeroMemory(Timezone->StandardName, sizeof(Timezone->StandardName));
+    ZeroMemory(Timezone->DaylightName, sizeof(Timezone->DaylightName));
+    CopyMemory(Timezone->StandardName, JapaneseName, sizeof(JapaneseName));
+    CopyMemory(Timezone->DaylightName, JapaneseName, sizeof(JapaneseName));
+}
+
 NTSTATUS
 HPCALL
 LepNtQuerySystemInformation(
@@ -1180,6 +1195,7 @@ LepNtQuerySystemInformation(
                 break;
 
             *((PRTL_TIME_ZONE_INFORMATION)SystemInformation) = GlobalData->GetLepb()->Timezone;
+            LepNormalizeTokyoTimeZoneName(GlobalData->GetLepb(), (PRTL_TIME_ZONE_INFORMATION)SystemInformation);
 
             if (ReturnLength != nullptr)
                 *ReturnLength = sizeof(GlobalData->GetLepb()->Timezone);

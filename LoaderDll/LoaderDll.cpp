@@ -146,7 +146,26 @@ static NTSTATUS LepCreateBootstrapPayload(
         return STATUS_INVALID_PARAMETER;
     if (!LepValidateEnvironment(Environment))
         return STATUS_INVALID_PARAMETER;
-    ULONG EnvironmentSize = sizeof(LEPB);
+    ULONG EnvironmentSize = Environment->Size;
+
+    if (Environment->Version == LEP_ENVIRONMENT_VERSION && Environment->TimeZoneId[0] != 0)
+    {
+        // Validate the stable Windows ID once at the public API boundary.
+        // The ID is copied inline with LEPB, never passed as a remote pointer.
+        static const WCHAR Prefix[] = L"\\Registry\\Machine\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\";
+        WCHAR Path[countof(Prefix) + countof(Environment->TimeZoneId)];
+        CopyMemory(Path, Prefix, sizeof(Prefix) - sizeof(WCHAR));
+        CopyMemory(Path + countof(Prefix) - 1, Environment->TimeZoneId, sizeof(Environment->TimeZoneId));
+        UNICODE_STRING KeyName;
+        OBJECT_ATTRIBUTES Attributes;
+        HANDLE Key;
+        RtlInitUnicodeString(&KeyName, Path);
+        InitializeObjectAttributes(&Attributes, &KeyName, OBJ_CASE_INSENSITIVE, nullptr, nullptr);
+        NTSTATUS IdStatus = NtOpenKey(&Key, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &Attributes);
+        if (NT_FAILED(IdStatus))
+            return IdStatus;
+        NtClose(Key);
+    }
 
     WCHAR DirPath[MAX_NTPATH];
     ULONG_PTR Length = StrLengthW(DllPath);

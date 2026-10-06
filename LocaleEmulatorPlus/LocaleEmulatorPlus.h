@@ -236,14 +236,18 @@ typedef struct
     ULONG                           RegistryRedirectionMode;
     ULONG                           HookUILanguageMode;
     RTL_TIME_ZONE_INFORMATION       Timezone;
+    WCHAR                           TimeZoneId[128];
 
 } LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK, *PLOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK, LEPB, *PLEPB;
 
-#define LEP_ENVIRONMENT_VERSION 2
+#define LEP_ENVIRONMENT_VERSION 3
+#define LEP_ENVIRONMENT_V2_VERSION 2
+#define LEP_ENVIRONMENT_V2_SIZE 204
 #define LEP_UI_LANGUAGE_MODE_MAX 2
 #define LEP_REGISTRY_REDIRECTION_MODE_MAX 2
 
-static_assert(sizeof(LEPB) == 204, "LEPB ABI v2 size mismatch");
+static_assert(sizeof(LEPB) == 460, "LEPB ABI v3 size mismatch");
+static_assert(offsetof(LEPB, TimeZoneId) == LEP_ENVIRONMENT_V2_SIZE, "LEPB v2 prefix changed");
 
 #if ML_AMD64
 #define LDR_LOAD_DLL_BACKUP_SIZE 14
@@ -358,11 +362,34 @@ inline BOOL LepPayloadRangeValid(ULONG Offset, ULONG Size, ULONG TotalSize)
 
 inline BOOL LepValidateEnvironment(PLEPB Environment)
 {
-    return Environment != nullptr &&
-           Environment->Size == sizeof(*Environment) &&
-           Environment->Version == LEP_ENVIRONMENT_VERSION &&
-           Environment->RegistryRedirectionMode <= LEP_REGISTRY_REDIRECTION_MODE_MAX &&
-           Environment->HookUILanguageMode <= LEP_UI_LANGUAGE_MODE_MAX;
+    if (Environment == nullptr ||
+        !((Environment->Size == LEP_ENVIRONMENT_V2_SIZE && Environment->Version == LEP_ENVIRONMENT_V2_VERSION) ||
+          (Environment->Size == sizeof(LEPB) && Environment->Version == LEP_ENVIRONMENT_VERSION)) ||
+        Environment->RegistryRedirectionMode > LEP_REGISTRY_REDIRECTION_MODE_MAX ||
+        Environment->HookUILanguageMode > LEP_UI_LANGUAGE_MODE_MAX)
+    {
+        return FALSE;
+    }
+
+    // Do not read beyond the 204-byte buffer supplied by a v2 caller.
+    if (Environment->Version == LEP_ENVIRONMENT_V2_VERSION)
+        return TRUE;
+
+    for (ULONG Index = 0; Index != countof(Environment->TimeZoneId); ++Index)
+    {
+        if (Environment->TimeZoneId[Index] == 0)
+        {
+            if (StrICompareW(Environment->TimeZoneId, L"Tokyo Standard Time") == 0 &&
+                (Environment->Timezone.Bias != -540 || Environment->Timezone.StandardBias != 0))
+            {
+                return FALSE;
+            }
+            return TRUE;
+        }
+        if (Environment->TimeZoneId[Index] == L'\\' || Environment->TimeZoneId[Index] == L'/')
+            return FALSE;
+    }
+    return FALSE;
 }
 
 inline BOOL LepValidateBootstrapPayload(PLEP_BOOTSTRAP_PAYLOAD Payload)
@@ -379,7 +406,7 @@ inline BOOL LepValidateBootstrapPayload(PLEP_BOOTSTRAP_PAYLOAD Payload)
         Payload->LepDllFullPathLength > Payload->TotalSize - sizeof(WCHAR) ||
         Payload->LepDllDirPathLength > Payload->TotalSize - sizeof(WCHAR) ||
         !LepPayloadRangeValid(Payload->EnvironmentOffset, Payload->EnvironmentSize, Payload->TotalSize) ||
-        Payload->EnvironmentSize != sizeof(LEPB) ||
+        (Payload->EnvironmentSize != LEP_ENVIRONMENT_V2_SIZE && Payload->EnvironmentSize != sizeof(LEPB)) ||
         !LepPayloadRangeValid(Payload->LepDllFullPathOffset, Payload->LepDllFullPathLength + sizeof(WCHAR), Payload->TotalSize) ||
         !LepPayloadRangeValid(Payload->LepDllDirPathOffset, Payload->LepDllDirPathLength + sizeof(WCHAR), Payload->TotalSize) ||
         (Payload->LepDllFullPathLength & (sizeof(WCHAR) - 1)) != 0 ||
@@ -389,7 +416,8 @@ inline BOOL LepValidateBootstrapPayload(PLEP_BOOTSTRAP_PAYLOAD Payload)
     }
 
     PLEPB Environment = (PLEPB)PtrAdd(Payload, Payload->EnvironmentOffset);
-    if (!LepValidateEnvironment(Environment))
+    // Check the advertised length before validating any optional fields.
+    if (Environment->Size != Payload->EnvironmentSize || !LepValidateEnvironment(Environment))
         return FALSE;
 
     PCWSTR FullPath = (PCWSTR)PtrAdd(Payload, Payload->LepDllFullPathOffset);
@@ -448,7 +476,8 @@ inline NTSTATUS LepBuildBootstrapPayload(
     PCWSTR DirPath
 )
 {
-    if (Payload == nullptr || Environment == nullptr || FullPath == nullptr || DirPath == nullptr)
+    if (Payload == nullptr || Environment == nullptr || FullPath == nullptr || DirPath == nullptr ||
+        !LepValidateEnvironment(Environment) || EnvironmentSize != Environment->Size)
         return STATUS_INVALID_PARAMETER;
 
     ULONG TotalSize = LepBootstrapPayloadSize(EnvironmentSize, FullPath, DirPath);
