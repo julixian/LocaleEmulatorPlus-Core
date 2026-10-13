@@ -91,7 +91,15 @@ set EXTRA_CL=
 `build.bat` 默认把四个 DLL 复制到 `LEP_DEPLOY_DIR` 指向的目录，但只有该目录已经存在时才复制；构建脚本不会创建部署目录。目录不存在时仍报告构建成功，并保留各架构的 `out` 构建产物。
 
 `ENABLE_LOG=1` 会启用 `WriteLog`，并同时启用远程注入阶段的详细诊断日志。所有日志统一位于 LEP DLL 同目录下的 `Log` 子目录；普通运行日志文件名形如 `<目标进程模块名>.<pid>.log.txt`，注入阶段日志文件名形如 `LocaleEmulatorPlus-inject-<arch>-<pid>.log`。
-日志会改变早期执行路径和时序，定位完问题后可以通过自定义 `EXTRA_CL` 关闭：
+日志会改变早期执行路径和时序，定位完问题后可以使用 `build-nolog.bat` 关闭：
+
+```bat
+build-nolog.bat
+build-nolog.bat x86
+build-nolog.bat x64
+```
+
+该脚本复用 `build.bat`，默认构建两个架构，在保留现有 `EXTRA_CL` 参数的同时追加 `ENABLE_LOG=0`，输出目录和部署行为与默认构建一致。也可以手动指定：
 
 ```bat
 set EXTRA_CL=/DENABLE_LOG=0
