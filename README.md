@@ -15,6 +15,7 @@ If you are an end user rather than a developer, download LEP from the GUI
 repository instead of using this core repository directly.
 
 For implementation notes and maintenance details, see [MAINTAINING.md](MAINTAINING.md).
+Build with Python 3.10+ on Windows: `python build.py all --no-deploy`.
 
 Third-party native callers can use the standalone declarations in
 [LocaleEmulatorPlus.ixx](include/LocaleEmulatorPlus.ixx), with a
@@ -36,6 +37,7 @@ See `README_ORG.md` for the original upstream license notice and third-party att
 Core 仓库。
 
 实现原理和维护说明请看 [MAINTAINING.md](MAINTAINING.md)。
+Windows 上使用 Python 3.10+ 构建：`python build.py all --no-deploy`。
 
 第三方原生调用可直接使用或复制 [LocaleEmulatorPlus.ixx](include/LocaleEmulatorPlus.ixx)
 中的独立声明，参考[启动示例](examples/lep-launch.cpp)与 [ABI 说明](ai-docs/lepb-v3.md)。

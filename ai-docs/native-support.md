@@ -64,15 +64,14 @@ PVOID routine = LookupExportTable(module, lep::HashExportName("LdrLoadDll"));
 
 ## 构建与验证
 
-[`build.bat`](../build.bat) 从 `runtime/`、`native/`、`pe/`、`patch/` 编译 `.cpp`，对象名称包含子目录，静态库使用本次明确的对象列表，避免删除源文件后混入旧 `.obj`。输出为 `out/libs/<arch>/LepSupport.lib`，部署所需 DLL 数量不变。原支持层 `INCLUDE_LIB` pragma 和第三方库开关已移除，链接依赖由构建脚本指定。
+[`build.py`](../build.py) 从 `runtime/`、`native/`、`pe/`、`patch/` 编译 `.cpp`，对象名称包含子目录，静态库使用本次明确的对象列表，避免删除源文件后混入旧 `.obj`。输出为 `out/libs/<arch>/LepSupport.lib`，部署所需 DLL 数量不变。原支持层 `INCLUDE_LIB` pragma 和第三方库开关已移除，链接依赖由构建脚本指定。
 
-`build.bat all` 在子架构失败时返回非零状态，不继续把它报告为成功。使用独立的 `build_all` 标签调度，避免在父级条件块内递归调用脚本时丢失失败状态。
+构建入口使用 Python 3.10+ 标准库，按工具链配置、独立架构构建、编译/归档/链接/部署分开组织，使用参数列表直接运行工具。`all` 先检查两个架构的依赖，任何步骤失败立即返回非零状态。`--dry-run` 只打印命令，`--no-deploy` 直接禁用部署；工具链和额外编译参数支持命令行或原有环境变量配置，详见 [维护说明](../MAINTAINING.md)。
 
-在仓库根目录运行以下 PowerShell 命令；部署路径应不存在，构建产物会留在 `out/`。
+在仓库根目录运行以下 PowerShell 命令，构建产物会留在 `out/`。
 
 ```powershell
-$env:LEP_DEPLOY_DIR = Join-Path $PWD 'out\no-deployment'
-& .\build.bat all
+python .\build.py all --no-deploy
 if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 & .\tests\run-support-headers.ps1
 & .\tests\run-support-layout.ps1
@@ -83,6 +82,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 
 `run-support-layout.ps1` 对照拆分前测得的固定数值，各检查 x86/x64 的 26 项大小和偏移，包括 PEB、TEB、NLS、时区、文件及容器布局。类型改名只同步基线中的名称，未改变其数值；布局有意变化时应人工审查基线差异。
 
-其余测试覆盖 34 个 LEPB/子进程场景、10 个 broker 句柄场景、两个架构的公开声明布局和实际第三方调用。关闭日志时使用 `build-nolog.bat all`。Core 仍只能普通静态导入 `ntdll.dll`，其他依赖保留 delay-load；不得因整理头文件引入全局动态初始化或 TLS。
+其余测试覆盖 34 个 LEPB/子进程场景、10 个 broker 句柄场景、两个架构的公开声明布局和实际第三方调用。关闭日志时使用 `python .\build.py all --no-log --no-deploy`。构建脚本的参数、失败传播、部署和预览行为通过 `python -m unittest discover -s tests -p test_build.py` 验证。Core 仍只能普通静态导入 `ntdll.dll`，其他依赖保留 delay-load；不得因整理头文件引入全局动态初始化或 TLS。
 
 本轮对开启、关闭日志两种配置分别构建并运行启动回归，与对应原版产物比较普通导入、延迟导入、导出名/序号及 TLS 目录。自动测试不能替代具体游戏的人工兼容性验证。

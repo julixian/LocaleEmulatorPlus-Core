@@ -102,7 +102,7 @@ Set-Location 'D:\VSProj\LocaleEmulatorPlus-Core'
 .\tests\run-lepb-compat.ps1
 ```
 
-脚本默认使用仓库 build.bat 对应的 VS/SDK，可通过 VcTools、SdkRoot、SdkVersion 参数调整。产物和临时运行目录在 out/，不会覆盖已安装目录。
+脚本默认使用仓库 build.py 对应的 VS/SDK，可通过 VcTools、SdkRoot、SdkVersion 参数调整。产物和临时运行目录在 out/，不会覆盖已安装目录。
 
 2026-10-07：两种位数共 34 组测试通过，包括 v2/v3、空 ID、其他 UTC+9 ID、ID 大小写、无效参数和注册表 ID、同位数及跨位数子进程。输入缓冲区放在 PAGE_NOACCESS 页前，验证不读取或复制超出传入大小的数据。完整 GUI Release 构建以及真实 LoaderWrapper 的 v3 封送、启动和返回值测试通过。产品版本仍为 2.0.3.0。
 

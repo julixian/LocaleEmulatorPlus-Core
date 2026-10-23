@@ -60,62 +60,46 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 
 ## 构建
 
-默认构建：
+构建入口为 [`build.py`](build.py)，需要 Windows、Python 3.10+，只使用 Python 标准库。原两个 bat 已移除。默认构建两个架构，也可以单独选择：
 
-```bat
-build.bat
+```powershell
+python .\build.py
+python .\build.py x86
+python .\build.py x64
 ```
 
-单独构建：
+通过命令行指定本机工具链，无需修改脚本：
 
-```bat
-build.bat x86
-build.bat x64
+```powershell
+python .\build.py x86 --vs-root D:\VisualStudio2026 --msvc-version 14.44.35207 --sdk-version 10.0.26100.0
 ```
 
-可覆盖的环境变量：
+| 参数 | 对应环境变量 | 默认值/行为 |
+| --- | --- | --- |
+| `--vs-root` | `VS_ROOT` | `D:\VisualStudio2026` |
+| `--msvc-version` | `MSVC_VER` | `14.44.35207` |
+| `--sdk-root` | `SDK_ROOT` | `C:\Program Files (x86)\Windows Kits\10` |
+| `--sdk-version` | `SDK_VER` | `10.0.26100.0` |
+| `--extra-cl` | `EXTRA_CL` | 未指定选项时使用 `/DENABLE_LOG=1`；指定后替换默认选项 |
+| `--deploy-dir` | `LEP_DEPLOY_DIR` | `D:\GALGAME\GALGAMETOOLS\LocaleEmulatorPlus` |
 
-```bat
-set VS_ROOT=D:\VisualStudio2026
-set MSVC_VER=14.44.35207
-set SDK_VER=10.0.26100.0
-build.bat x86
+显式命令行参数优先于环境变量。`--extra-cl` 按 Windows 引号规则解析，含空格的路径应在参数字符串内加引号；工具执行使用参数列表，不经过 shell 展开。
+
+默认仅向已经存在的部署目录复制 DLL，目录不存在则保留 `out/` 产物并跳过复制。传入 `--no-deploy` 可直接禁用部署，无需构造不存在的目录。使用 `--no-log` 关闭日志，它优先于额外编译参数中的日志定义：
+
+```powershell
+python .\build.py all --no-log --no-deploy
 ```
 
-构建脚本默认通过 `EXTRA_CL` 开启 `ENABLE_LOG=1`。也可以手动指定该变量覆盖默认编译宏：
+`ENABLE_LOG=1` 会启用 `WriteLog`。日志位于 LEP DLL 同目录下的 `Log` 子目录，普通运行日志形如 `<目标进程模块名>.<pid>.log.txt`，broker 日志记录跨架构注入阶段。日志会改变早期执行路径和时序，定位完问题后可关闭。
 
-```bat
-set EXTRA_CL=/DENABLE_LOG=1
-build.bat
-set EXTRA_CL=
+如果目标进程在 log 建立前失败，可以使用弹框阶段诊断；使用等号传入以 `/` 或 `-` 开头的额外编译参数：
+
+```powershell
+python .\build.py --extra-cl="/DLEP_DIAG_INIT=1" --no-deploy
 ```
 
-`build.bat` 默认把四个 DLL 复制到 `LEP_DEPLOY_DIR` 指向的目录，但只有该目录已经存在时才复制；构建脚本不会创建部署目录。目录不存在时仍报告构建成功，并保留各架构的 `out` 构建产物。
-
-`ENABLE_LOG=1` 会启用 `WriteLog`，并同时启用远程注入阶段的详细诊断日志。所有日志统一位于 LEP DLL 同目录下的 `Log` 子目录；普通运行日志文件名形如 `<目标进程模块名>.<pid>.log.txt`，注入阶段日志文件名形如 `LocaleEmulatorPlus-inject-<arch>-<pid>.log`。
-日志会改变早期执行路径和时序，定位完问题后可以使用 `build-nolog.bat` 关闭：
-
-```bat
-build-nolog.bat
-build-nolog.bat x86
-build-nolog.bat x64
-```
-
-该脚本复用 `build.bat`，默认构建两个架构，在保留现有 `EXTRA_CL` 参数的同时追加 `ENABLE_LOG=0`，输出目录和部署行为与默认构建一致。也可以手动指定：
-
-```bat
-set EXTRA_CL=/DENABLE_LOG=0
-build.bat
-set EXTRA_CL=
-```
-
-如果目标进程在 log 能建立之前就失败，可以改用弹框阶段诊断：
-
-```bat
-set EXTRA_CL=/DLEP_DIAG_INIT=1
-build.bat
-set EXTRA_CL=
-```
+`--dry-run` 校验工具链并打印命令，不执行工具、不写文件，也不部署；`--verbose` 在真实构建时打印命令。运行 `python .\build.py --help` 查看全部参数。所有选定架构的工具链会先检查，任何工具失败立即返回非零状态，停止后续构建。
 
 `LEP_DIAG_INIT=1` 会在 `LocaleEmulatorPlus` 初始化关键阶段弹出 `LEP modern init diag` 消息框，适合确认崩溃卡在哪一步；它会严重打断目标进程启动，只用于本机调试。
 
@@ -136,7 +120,7 @@ set EXTRA_CL=
    `%VS_ROOT%\VC\Tools\MSVC\%MSVC_VER%\bin\Hostx64\x86`，作为新的 `dep\tools`
    基础。
 3. 在这份本机工具链副本上 patch `link.exe`。 patch 方法详见下文。
-4. 用 `build.bat` 顶部的 `VS_ROOT`、`MSVC_VER`、`SDK_VER` 指向自己的安装路径。
+4. 通过 `build.py` 的工具链参数或 `VS_ROOT`、`MSVC_VER`、`SDK_ROOT`、`SDK_VER` 环境变量指定自己的安装路径。
 
 原则上 `cl.exe`、`lib.exe`、`link.exe` 应属于同一 MSVC toolset，版本应该一致。
 当前仓库中的 `dep\tools` 只是演示用 patched linker 及其环境。不应混用不同版本的 compiler/linker。
@@ -173,7 +157,7 @@ set EXTRA_CL=
 - hook/trampoline/self-patching 逻辑需要写代码页，ERW section 避免反复处理自身代码和相邻常量/全局数据的保护属性。
 - 某些逻辑默认代码、常量、运行期数据离得很近且都可访问；保留这个布局能降低移植时引入额外初始化问题的概率。
 
-代价也很明确：它破坏现代 W^X 习惯，安全性和可审计性不如 `.text` 只执行、`.rdata` 只读、`.data` 可写的普通布局。LNK4254 warning 正是 linker 在提示“把不同属性的 section 合并了”。当前 `build.bat` 用 `/ignore:4254` 隐藏这个已知 warning；这只是不再输出噪声，不会改变 section 合并行为。
+代价也很明确：它破坏现代 W^X 习惯，安全性和可审计性不如 `.text` 只执行、`.rdata` 只读、`.data` 可写的普通布局。LNK4254 warning 正是 linker 在提示“把不同属性的 section 合并了”。当前 `build.py` 用 `/ignore:4254` 隐藏这个已知 warning；这只是不再输出噪声，不会改变 section 合并行为。
 
 ## 私有 import lib 和 delay-load helper
 
@@ -226,12 +210,12 @@ dep\tools\link.exe
 4. 定位硬编码 DLL 分类/掩码检查，将禁止 kernel32 等 delay-load 的 bitmask 或分支放宽。
 5. 对比原版和补丁版，应尽量只有极少字节差异。
 6. 用这份 patched 工具链目录更新 `dep\tools`，要成套保留 linker 旁边的依赖 DLL、PDB 服务相关工具、资源目录等。
-7. 重新运行 `build.bat`。
+7. 重新运行 `python .\build.py`。
 8. 用 `dep\tools\dumpbin.exe` 检查 `LocaleEmulatorPlus_*`：普通 imports 中不得出现 kernel32/ucrt/vcruntime。
 
 ## 更换/升级 VS/SDK/WDK 时的检查清单
 
-1. 修改 `build.bat` 顶部：`VS_ROOT`、`MSVC_VER`、`SDK_VER`。
+1. 通过 `build.py` 命令行参数或 `VS_ROOT`、`MSVC_VER`、`SDK_ROOT`、`SDK_VER` 环境变量选择新工具链。
 2. `SDK_VER` 应指向实际存在的 Windows Kits 版本。
 3. 确认存在 `%VC_TOOLS%\include`、`%VC_TOOLS%\lib\x86`、`%VC_TOOLS%\lib\x64`、`%SDK_INC%\um`、`%SDK_INC%\shared`、`%SDK_INC%\km`。
 4. `km` 目录通常来自 WDK。若找不到 WDK/内核头，确认 Visual Studio Installer 已安装 WDK/Windows Driver Kit 组件，且已安装与当前 Windows SDK 版本对应的 [WDK](https://learn.microsoft.com/zh-cn/windows-hardware/drivers/other-wdk-downloads)。
