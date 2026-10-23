@@ -206,6 +206,15 @@ static NTSTATUS LepCreateBootstrapPayload(
     return STATUS_SUCCESS;
 }
 
+static VOID BrokerRecordStage(PLEP_BROKER_CONFIG Config, ULONG Stage, NTSTATUS Status)
+{
+    WCHAR Log[256];
+    if (Config != nullptr)
+        Config->Stage = Stage;
+    BrokerFormat(Log, countof(Log), L"stage=%ws status=%08X", LepBrokerStageName(Stage), Status);
+    BrokerLog(Log);
+}
+
 static NTSTATUS LepBrokerInject(ULONG ProcessId, LPCWSTR MappingName)
 {
     HANDLE Process = nullptr;
@@ -220,21 +229,22 @@ static NTSTATUS LepBrokerInject(ULONG ProcessId, LPCWSTR MappingName)
     PLEP_BROKER_CONFIG Config = nullptr;
     BYTE Backup[LDR_LOAD_DLL_BACKUP_SIZE];
     WCHAR Log[512];
-
-    Process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, ProcessId);
-    if (Process == nullptr)
-        return ML_NTSTATUS_FROM_WIN32(GetLastError());
+    OBJECT_BASIC_INFORMATION ProcessInfo = {};
 
     Mapping = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, MappingName);
     if (Mapping == nullptr)
     {
         Status = ML_NTSTATUS_FROM_WIN32(GetLastError());
+        BrokerFormat(Log, countof(Log), L"open-mapping status=%08X", Status);
+        BrokerLog(Log);
         goto BROKER_FINISH_NEW;
     }
     View = MapViewOfFile(Mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
     if (View == nullptr)
     {
         Status = ML_NTSTATUS_FROM_WIN32(GetLastError());
+        BrokerFormat(Log, countof(Log), L"map-view status=%08X", Status);
+        BrokerLog(Log);
         goto BROKER_FINISH_NEW;
     }
 
@@ -249,12 +259,62 @@ static NTSTATUS LepBrokerInject(ULONG ProcessId, LPCWSTR MappingName)
         ((PLEP_BOOTSTRAP_PAYLOAD)Config->Payload)->TotalSize != Config->PayloadSize)
     {
         Status = STATUS_INVALID_PARAMETER;
+        BrokerRecordStage(Config, LepBrokerStageValidateConfig, Status);
         goto BROKER_FINISH_NEW;
     }
+    BrokerRecordStage(Config, LepBrokerStageValidateConfig, STATUS_SUCCESS);
+
+    if (Config->ProcessHandleValue != 0)
+    {
+        if ((ULONGLONG)(ULONG_PTR)Config->ProcessHandleValue != Config->ProcessHandleValue)
+        {
+            Status = STATUS_INVALID_HANDLE;
+            BrokerRecordStage(Config, LepBrokerStageAcceptHandle, Status);
+            goto BROKER_FINISH_NEW;
+        }
+        Process = (HANDLE)(ULONG_PTR)Config->ProcessHandleValue;
+        BrokerRecordStage(Config, LepBrokerStageAcceptHandle, STATUS_SUCCESS);
+    }
+    else
+    {
+        Process = OpenProcess(LEP_BROKER_PROCESS_ACCESS, FALSE, ProcessId);
+        Status = Process != nullptr ? STATUS_SUCCESS : ML_NTSTATUS_FROM_WIN32(GetLastError());
+        BrokerRecordStage(Config, LepBrokerStageOpenProcess, Status);
+        if (NT_FAILED(Status))
+            goto BROKER_FINISH_NEW;
+    }
+
+    NTSTATUS AccessStatus = NtQueryObject(Process, ObjectBasicInformation, &ProcessInfo, sizeof(ProcessInfo), nullptr);
+    BrokerRecordStage(Config, LepBrokerStageQueryAccess, AccessStatus);
+    if (NT_SUCCESS(AccessStatus))
+    {
+        // The second OBJECT_BASIC_INFORMATION field is the granted mask.
+        Config->GrantedAccess = ProcessInfo.DesiredAccess;
+        ACCESS_MASK MissingAccess = LEP_BROKER_PROCESS_ACCESS & ~Config->GrantedAccess;
+        BrokerFormat(Log, countof(Log), L"targetPid=%u handle=%p source=%ws granted=%08X required=%08X missing=%08X",
+                     ProcessId, Process, Config->ProcessHandleValue != 0 ? L"created-handle" : L"OpenProcess",
+                     Config->GrantedAccess, LEP_BROKER_PROCESS_ACCESS, MissingAccess);
+        BrokerLog(Log);
+        if (MissingAccess != 0)
+        {
+            Status = STATUS_ACCESS_DENIED;
+            BrokerRecordStage(Config, LepBrokerStageQueryAccess, Status);
+            goto BROKER_FINISH_NEW;
+        }
+    }
+
+    DWORD ActualProcessId = GetProcessId(Process);
+    Status = ActualProcessId == ProcessId ? STATUS_SUCCESS :
+        (ActualProcessId == 0 ? ML_NTSTATUS_FROM_WIN32(GetLastError()) : STATUS_INVALID_PARAMETER);
+    BrokerRecordStage(Config, LepBrokerStageValidateTarget, Status);
+    if (NT_FAILED(Status))
+        goto BROKER_FINISH_NEW;
 
     PLEP_BOOTSTRAP_PAYLOAD Payload = (PLEP_BOOTSTRAP_PAYLOAD)Config->Payload;
     PCWSTR DllPath = LepBootstrapDllFullPath(Payload);
+    Config->Stage = LepBrokerStageLoadImage;
     Status = LoadPeImage(DllPath, &LocalImage, nullptr, 0);
+    BrokerRecordStage(Config, LepBrokerStageLoadImage, Status);
     if (NT_FAILED(Status))
         goto BROKER_FINISH_NEW;
 
@@ -265,7 +325,9 @@ static NTSTATUS LepBrokerInject(ULONG ProcessId, LPCWSTR MappingName)
         goto BROKER_FINISH_NEW;
     }
     ULONG_PTR PayloadOffset = ROUND_UP(ImageSize, 16);
+    Config->Stage = LepBrokerStageAllocateMemory;
     Status = AllocVirtualMemoryEx(Process, &RemoteImage, PayloadOffset + Config->PayloadSize);
+    BrokerRecordStage(Config, LepBrokerStageAllocateMemory, Status);
     if (NT_FAILED(Status))
         goto BROKER_FINISH_NEW;
 
@@ -278,11 +340,15 @@ static NTSTATUS LepBrokerInject(ULONG ProcessId, LPCWSTR MappingName)
 
     if ((Config->InjectionFlags & LEP_INJECT_PATCH_LDR_LOAD_DLL) != 0)
     {
+        Config->Stage = LepBrokerStageReadLdr;
         Status = ReadMemory(Process, LdrLoadDllAddress, Backup, sizeof(Backup));
+        BrokerRecordStage(Config, LepBrokerStageReadLdr, Status);
         if (NT_FAILED(Status))
             goto BROKER_FINISH_NEW;
+        Config->Stage = LepBrokerStageProtectLdr;
         Status = ProtectVirtualMemory(LdrLoadDllAddress, sizeof(Backup), PAGE_EXECUTE_READWRITE,
                                       &LdrLoadDllProtect, Process);
+        BrokerRecordStage(Config, LepBrokerStageProtectLdr, Status);
         if (NT_FAILED(Status))
             goto BROKER_FINISH_NEW;
         LdrLoadDllWritable = TRUE;
@@ -309,9 +375,15 @@ static NTSTATUS LepBrokerInject(ULONG ProcessId, LPCWSTR MappingName)
         CopyMemory(BootstrapData->Backup, Backup, sizeof(Backup));
     }
 
+    Config->Stage = LepBrokerStageWriteImage;
     Status = WriteMemory(Process, RemoteImage, LocalImage, ImageSize);
+    BrokerRecordStage(Config, LepBrokerStageWriteImage, Status);
     if (NT_SUCCESS(Status))
+    {
+        Config->Stage = LepBrokerStageWritePayload;
         Status = WriteMemory(Process, PtrAdd(RemoteImage, PayloadOffset), Payload, Config->PayloadSize);
+        BrokerRecordStage(Config, LepBrokerStageWritePayload, Status);
+    }
     if (NT_FAILED(Status) || (Config->InjectionFlags & LEP_INJECT_PATCH_LDR_LOAD_DLL) == 0)
         goto BROKER_FINISH_NEW;
 
@@ -331,12 +403,20 @@ static NTSTATUS LepBrokerInject(ULONG ProcessId, LPCWSTR MappingName)
     Jump[0] = JUMP;
     *(LONG*)&Jump[1] = (LONG)PtrOffset(RemoteLoadFirstDll, PtrAdd(LdrLoadDllAddress, 5));
 #endif
+    Config->Stage = LepBrokerStagePatchLdr;
     Status = WriteMemory(Process, LdrLoadDllAddress, Jump, sizeof(Backup));
+    BrokerRecordStage(Config, LepBrokerStagePatchLdr, Status);
     BrokerFormat(Log, countof(Log), L"metadata injection status=%08X image=%I64X payload=%u",
                  Status, (ULONG64)(ULONG_PTR)RemoteImage, Config->PayloadSize);
     BrokerLog(Log);
+    if (NT_SUCCESS(Status))
+        BrokerRecordStage(Config, LepBrokerStageComplete, Status);
 
 BROKER_FINISH_NEW:
+    BrokerFormat(Log, countof(Log), L"injection result=%08X stage=%ws targetPid=%u granted=%08X",
+                 Status, Config != nullptr ? LepBrokerStageName(Config->Stage) : L"mapping",
+                 ProcessId, Config != nullptr ? Config->GrantedAccess : 0);
+    BrokerLog(Log);
     if (Config != nullptr)
         Config->Result = (ULONG)Status;
     if (LocalImage != nullptr)

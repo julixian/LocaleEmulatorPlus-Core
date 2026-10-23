@@ -1001,7 +1001,7 @@ public:
     NTSTATUS HackUserDefaultLCID2(PVOID Kernel32);
     NTSTATUS HackAnsiOemCodeHashNodes();
     NTSTATUS InjectSelfToChildProcess(HANDLE Process, PCLIENT_ID Cid, ULONG InjectionFlags = LEP_INJECT_FULL);
-    NTSTATUS InjectCrossArchitecture(BOOL CurrentWow64, PCLIENT_ID Cid, BOOL TargetWow64, ULONG InjectionFlags);
+    NTSTATUS InjectCrossArchitecture(HANDLE Process, BOOL CurrentWow64, PCLIENT_ID Cid, BOOL TargetWow64, ULONG InjectionFlags);
 
     /************************************************************************
       helper func

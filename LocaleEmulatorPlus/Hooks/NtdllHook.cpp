@@ -132,7 +132,7 @@ NTSTATUS LepGlobalData::BuildBootstrapPayload(
     return STATUS_SUCCESS;
 }
 
-NTSTATUS LepGlobalData::InjectCrossArchitecture(BOOL CurrentWow64, PCLIENT_ID Cid, BOOL TargetWow64, ULONG InjectionFlags)
+NTSTATUS LepGlobalData::InjectCrossArchitecture(HANDLE Process, BOOL CurrentWow64, PCLIENT_ID Cid, BOOL TargetWow64, ULONG InjectionFlags)
 {
     ULONG_PTR ConfigSize;
     ULONG PayloadSize;
@@ -234,7 +234,7 @@ NTSTATUS LepGlobalData::InjectCrossArchitecture(BOOL CurrentWow64, PCLIENT_ID Ci
     ZeroMemory(&NativeInfo, sizeof(NativeInfo));
     TEB_ACTIVE_FRAME BrokerLaunchFrame(LEP_BROKER_LAUNCH_CONTEXT);
     BrokerLaunchFrame.Push();
-    Created = CreateProcessW(RundllPath, CommandLine, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &StartupInfo, &NativeInfo);
+    Created = CreateProcessW(RundllPath, CommandLine, nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &StartupInfo, &NativeInfo);
     BrokerLaunchFrame.Pop();
     if (!Created)
     {
@@ -244,12 +244,44 @@ NTSTATUS LepGlobalData::InjectCrossArchitecture(BOOL CurrentWow64, PCLIENT_ID Ci
         CloseHandle(Mapping);
         return ML_NTSTATUS_FROM_WIN32(Error);
     }
+    OBJECT_BASIC_INFORMATION SourceInfo = {};
+    NTSTATUS AccessStatus = NtQueryObject(Process, ObjectBasicInformation, &SourceInfo, sizeof(SourceInfo), nullptr);
+    // The legacy header calls ObjectBasicInformation.GrantedAccess DesiredAccess.
+    WriteLog(L"cross-arch created handle=%p queryStatus=%08X granted=%08X required=%08X",
+             Process, AccessStatus, SourceInfo.DesiredAccess, LEP_BROKER_PROCESS_ACCESS);
+
+    HANDLE BrokerProcessHandle = nullptr;
+    if (DuplicateHandle(NtCurrentProcess(), Process, NativeInfo.hProcess, &BrokerProcessHandle,
+                        0, FALSE, DUPLICATE_SAME_ACCESS))
+    {
+        Config->ProcessHandleValue = (ULONGLONG)(ULONG_PTR)BrokerProcessHandle;
+        WriteLog(L"cross-arch duplicate created handle status=00000000 brokerHandle=%p", BrokerProcessHandle);
+    }
+    else
+    {
+        Error = GetLastError();
+        WriteLog(L"cross-arch duplicate created handle failed=%u; broker will use minimum-access OpenProcess", Error);
+    }
+
+    // Publish the broker-local handle before allowing the broker to run.
+    Status = NtResumeThread(NativeInfo.hThread, nullptr);
+    if (NT_FAILED(Status))
+    {
+        WriteLog(L"cross-arch resume broker failed=%08X", Status);
+        TerminateProcess(NativeInfo.hProcess, (ULONG)Status);
+        CloseHandle(NativeInfo.hThread);
+        CloseHandle(NativeInfo.hProcess);
+        UnmapViewOfFile(Config);
+        CloseHandle(Mapping);
+        return Status;
+    }
     WriteLog(L"cross-arch broker started pid=%u cmd=%ws", NativeInfo.dwProcessId, CommandLine);
     WaitForSingleObject(NativeInfo.hProcess, INFINITE);
     ExitCode = STATUS_UNSUCCESSFUL;
     GetExitCodeProcess(NativeInfo.hProcess, &ExitCode);
     Status = (NTSTATUS)Config->Result;
-    WriteLog(L"cross-arch broker finished pid=%u processExit=%08X result=%08X", NativeInfo.dwProcessId, ExitCode, Status);
+    WriteLog(L"cross-arch broker finished pid=%u processExit=%08X result=%08X stage=%ws granted=%08X",
+             NativeInfo.dwProcessId, ExitCode, Status, LepBrokerStageName(Config->Stage), Config->GrantedAccess);
     CloseHandle(NativeInfo.hThread);
     CloseHandle(NativeInfo.hProcess);
     UnmapViewOfFile(Config);
@@ -1259,7 +1291,7 @@ NTSTATUS LepGlobalData::InjectSelfToChildProcess(HANDLE Process, PCLIENT_ID Cid,
 
     BOOL TargetWow64 = Ps::IsWow64Process(Process);
     if (this->Wow64 != TargetWow64)
-        return this->InjectCrossArchitecture(this->Wow64, Cid, TargetWow64, InjectionFlags);
+        return this->InjectCrossArchitecture(Process, this->Wow64, Cid, TargetWow64, InjectionFlags);
 
     NTSTATUS Status = STATUS_SUCCESS;
     ULONG StartTime = LepCurrentTimeMs();
