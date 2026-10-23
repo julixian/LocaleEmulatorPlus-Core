@@ -40,7 +40,7 @@ Nt_AnsiToUnicode(
     PULONG_PTR  BytesInUnicode
 )
 {
-    return ml::Native::Nls::AnsiToUnicode(UnicodeBuffer, BufferCount, AnsiString, AnsiLength, BytesInUnicode);
+    return lep::Native::Nls::AnsiToUnicode(UnicodeBuffer, BufferCount, AnsiString, AnsiLength, BytesInUnicode);
 }
 
 NTSTATUS
@@ -52,7 +52,7 @@ Nt_UnicodeToAnsi(
     PULONG_PTR  BytesInAnsi
 )
 {
-    return ml::Native::Nls::UnicodeToAnsi(AnsiBuffer, BufferCount, UnicodeString, UnicodeLength, BytesInAnsi);
+    return lep::Native::Nls::UnicodeToAnsi(AnsiBuffer, BufferCount, UnicodeString, UnicodeLength, BytesInAnsi);
 }
 
 NTSTATUS
@@ -63,7 +63,7 @@ Nt_AnsiToUnicodeString(
     BOOL            AllocateDestinationString
 )
 {
-    return ml::Native::Nls::AnsiToUnicodeString(Unicode, AnsiString, AnsiLength, AllocateDestinationString);
+    return lep::Native::Nls::AnsiToUnicodeString(Unicode, AnsiString, AnsiLength, AllocateDestinationString);
 }
 
 NTSTATUS
@@ -74,7 +74,7 @@ Nt_UnicodeToAnsiString(
     BOOL            AllocateDestinationString
 )
 {
-    return ml::Native::Nls::UnicodeToAnsiString(Ansi, UnicodeString, UnicodeLength, AllocateDestinationString);
+    return lep::Native::Nls::UnicodeToAnsiString(Ansi, UnicodeString, UnicodeLength, AllocateDestinationString);
 }
 
 
@@ -259,7 +259,7 @@ Nt_GetSessionId(
     HANDLE Process
 )
 {
-    return ml::Native::Ps::GetSessionId(Process);
+    return lep::Native::Ps::GetSessionId(Process);
 }
 
 
@@ -370,7 +370,7 @@ NTSTATUS Nt_DebugActiveProcess(ULONG_PTR ProcessId)
     if (!NT_SUCCESS(Status))
         return Status;
 
-    ProcessHandle = ml::Native::Ps::ProcessIdToHandle(ProcessId);
+    ProcessHandle = lep::Native::Ps::ProcessIdToHandle(ProcessId);
     if (ProcessHandle == NULL)
         return STATUS_UNSUCCESSFUL;
 
@@ -385,7 +385,7 @@ NTSTATUS Nt_DebugActiveProcessStop(ULONG_PTR ProcessId)
     HANDLE      Process;
     NTSTATUS    Status;
 
-    Process = ml::Native::Ps::ProcessIdToHandle(ProcessId);
+    Process = lep::Native::Ps::ProcessIdToHandle(ProcessId);
     if (Process == NULL)
         return STATUS_UNSUCCESSFUL;
 
@@ -792,729 +792,9 @@ Nt_GetProcessUserName(
     return RtlCreateUnicodeString(UserName, Name) ? STATUS_SUCCESS : STATUS_NO_MEMORY;
 }
 */
-#if ENABLE_LOG
-
-BOOL LepGetModuleLogDirectory(PWSTR Path, ULONG Capacity)
-{
-    ULONG Length;
-
-    if (Path == nullptr || Capacity < 8)
-        return FALSE;
-
-    Length = GetModuleFileNameW((HMODULE)&__ImageBase, Path, Capacity);
-    if (Length == 0 || Length >= Capacity)
-        return FALSE;
-
-    while (Length != 0 && Path[Length - 1] != L'\\' && Path[Length - 1] != L'/')
-        --Length;
-
-    static const WCHAR DirectoryName[] = L"Log";
-    if (Length == 0 || Length + CONST_STRLEN(DirectoryName) + 2 > Capacity)
-        return FALSE;
-
-    CopyMemory(Path + Length, DirectoryName, sizeof(DirectoryName));
-    CreateDirectoryW(Path, nullptr);
-
-    Length += CONST_STRLEN(DirectoryName);
-    Path[Length++] = L'\\';
-    Path[Length] = 0;
-    return TRUE;
-}
-
-static VOID LepInjectDiagAppendRaw(PCWSTR Text)
-{
-    HANDLE File;
-    ULONG Written;
-    WCHAR Path[MAX_PATH];
-    ULONG Length;
-#if ML_AMD64
-    static const WCHAR DiagName[] = L"LocaleEmulatorPlus-inject-x64-%u.log";
-#else
-    static const WCHAR DiagName[] = L"LocaleEmulatorPlus-inject-x86-%u.log";
-#endif
-
-    if (!LepGetModuleLogDirectory(Path, countof(Path)))
-        return;
-    Length = StrLengthW(Path);
-    if (Length >= countof(Path) - 64)
-        return;
-    Length += FormatStringW(Path + Length, DiagName, (ULONG)GetCurrentProcessId());
-
-    File = CreateFileW(
-        Path,
-        FILE_APPEND_DATA,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr,
-        OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr
-    );
-
-    if (File == INVALID_HANDLE_VALUE)
-        return;
-
-    WriteFile(File, Text, (DWORD)(StrLengthW(Text) * sizeof(WCHAR)), &Written, nullptr);
-    NtClose(File);
-}
-
-static VOID LepInjectDiagHex(PCWSTR Label, ULONG_PTR Value)
-{
-    WCHAR Buffer[160];
-    ULONG_PTR Length;
-
-    Length = 0;
-    for (; Label != nullptr && *Label != 0 && Length != countof(Buffer) - 24; ++Label)
-        Buffer[Length++] = *Label;
-
-    Buffer[Length++] = L'0';
-    Buffer[Length++] = L'x';
-
-    for (ULONG_PTR Shift = sizeof(Value) * 8; Shift != 0; )
-    {
-        ULONG_PTR Digit;
-
-        Shift -= 4;
-        Digit = (Value >> Shift) & 0xF;
-        Buffer[Length++] = (WCHAR)(Digit < 10 ? L'0' + Digit : L'A' + Digit - 10);
-    }
-
-    Buffer[Length++] = L'\r';
-    Buffer[Length++] = L'\n';
-    Buffer[Length] = 0;
-
-    LepInjectDiagAppendRaw(Buffer);
-}
-
-#define LEP_INJECT_DIAG(_text) LepInjectDiagAppendRaw(_text L"\r\n")
-#define LEP_INJECT_DIAG_HEX(_label, _value) LepInjectDiagHex(_label, (ULONG_PTR)(_value))
-
-#else
-
-#define LEP_INJECT_DIAG(_text) ((VOID)0)
-#define LEP_INJECT_DIAG_HEX(_label, _value) ((VOID)0)
-
-#endif
-
-#if ML_AMD64
-static const BYTE InjectRemote_LoadDll_x64[] =
-{
-    0x4C, 0x8B, 0xD4,                                                       // mov r10, rsp
-    0x48, 0x83, 0xEC, 0x68,                                                 // sub rsp, 68h
-    0x48, 0x83, 0xE4, 0xF0,                                                 // and rsp, -10h
-    0x4C, 0x89, 0x54, 0x24, 0x50,                                           // mov [rsp+50h], r10
-    0x31, 0xC9,                                                             // xor ecx, ecx
-    0x31, 0xD2,                                                             // xor edx, edx
-    0x49, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,                                     // mov r8, DllPath
-    0x4C, 0x8D, 0x4C, 0x24, 0x30,                                           // Lepa r9, [rsp+30h]
-    0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,                                     // mov rax, LdrLoadDll
-    0xFF, 0xD0,                                                             // call rax
-    0x49, 0xBA, 0, 0, 0, 0, 0, 0, 0, 0,                                     // mov r10, StatusFlag
-    0x41, 0xC7, 0x02, 0, 0, 0, 0,                                           // mov dword ptr [r10], 0
-    0x4C, 0x8B, 0x54, 0x24, 0x50,                                           // mov r10, [rsp+50h]
-    0x49, 0x8B, 0xE2,                                                       // mov rsp, r10
-    0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,                                     // mov rax, ReturnRip
-    0xFF, 0xE0,                                                             // jmp rax
-};
-
-NTSTATUS
-InjectDllToRemoteProcess(
-    HANDLE          ProcessHandle,
-    HANDLE          ThreadHandle,
-    PUNICODE_STRING DllFullPath,
-    ULONG_PTR       Flags,
-    PVOID*          InjectBuffer,
-    ULONG_PTR       Timeout
-)
-{
-    NTSTATUS        Status;
-    PVOID           Buffer;
-    ULONG_PTR       DllPathLength, InjectContextSize, ShellCodeOffset;
-    CONTEXT         ThreadContext;
-
-    typedef struct
-    {
-        ULONG           StatusFlag;
-        ULONG           Padding;
-        PVOID           xLdrLoadDll;
-        UNICODE_STRING  DllPath;
-    } INJECT_REMOTE_LOAD_DLL64;
-
-    INJECT_REMOTE_LOAD_DLL64 LoadDll;
-    BYTE ShellCode[sizeof(InjectRemote_LoadDll_x64)];
-
-    if (FLAG_ON(Flags, INJECT_ISSUE_REMOTE_BREAKIN | INJECT_ISSUE_BREAKIN_ONLY))
-        return STATUS_NOT_IMPLEMENTED;
-
-    LEP_INJECT_DIAG(L"InjectDllToRemoteProcess64: entry");
-    LEP_INJECT_DIAG_HEX(L"  Flags=", Flags);
-    LEP_INJECT_DIAG_HEX(L"  ProcessHandle=", ProcessHandle);
-    LEP_INJECT_DIAG_HEX(L"  ThreadHandle=", ThreadHandle);
-
-    Buffer = NULL;
-    if (FLAG_ON(Flags, INJECT_PREALLOC_BUFFER))
-    {
-        if (InjectBuffer == NULL || *InjectBuffer == NULL)
-            return STATUS_INVALID_PARAMETER;
-
-        Buffer = *InjectBuffer;
-    }
-    else if (InjectBuffer != NULL)
-    {
-        *InjectBuffer = NULL;
-    }
-
-    ThreadContext.ContextFlags = CONTEXT_CONTROL;
-    Status = NtGetContextThread(ThreadHandle, &ThreadContext);
-    LEP_INJECT_DIAG_HEX(L"  NtGetContextThread=", Status);
-    FAIL_RETURN(Status);
-    LEP_INJECT_DIAG_HEX(L"  OriginalRip=", ThreadContext.Rip);
-    LEP_INJECT_DIAG_HEX(L"  OriginalRsp=", ThreadContext.Rsp);
-
-    if (!FLAG_ON(Flags, INJECT_PREALLOC_BUFFER))
-    {
-        Status = Mm::AllocVirtualMemoryEx(ProcessHandle, &Buffer, MEMORY_PAGE_SIZE);
-        LEP_INJECT_DIAG_HEX(L"  AllocVirtualMemoryEx=", Status);
-        FAIL_RETURN(Status);
-    }
-    LEP_INJECT_DIAG_HEX(L"  Buffer=", Buffer);
-
-    DllPathLength = DllFullPath == nullptr ? 0 : DllFullPath->Length;
-    InjectContextSize = sizeof(LoadDll);
-    ShellCodeOffset = ROUND_UP(InjectContextSize + DllPathLength, 16);
-
-    ZeroMemory(&LoadDll, sizeof(LoadDll));
-    LoadDll.StatusFlag = 1;
-    LoadDll.xLdrLoadDll = EATLookupRoutineByHashPNoFix(GetNtdllHandle(), NTDLL_LdrLoadDll);
-    LoadDll.DllPath.Length = (USHORT)DllPathLength;
-    LoadDll.DllPath.MaximumLength = (USHORT)DllPathLength;
-    LoadDll.DllPath.Buffer = (PWSTR)PtrAdd(Buffer, InjectContextSize);
-
-    CopyMemory(ShellCode, InjectRemote_LoadDll_x64, sizeof(ShellCode));
-    *(PVOID*)&ShellCode[22] = &((INJECT_REMOTE_LOAD_DLL64*)Buffer)->DllPath;
-    *(PVOID*)&ShellCode[37] = LoadDll.xLdrLoadDll;
-    *(PVOID*)&ShellCode[49] = &((INJECT_REMOTE_LOAD_DLL64*)Buffer)->StatusFlag;
-    *(PVOID*)&ShellCode[74] = (PVOID)ThreadContext.Rip;
-
-    LEP_INJECT_DIAG_HEX(L"  DllPathLength=", DllPathLength);
-    LEP_INJECT_DIAG_HEX(L"  ShellCodeOffset=", ShellCodeOffset);
-    LEP_INJECT_DIAG_HEX(L"  RemoteDllPath=", LoadDll.DllPath.Buffer);
-    LEP_INJECT_DIAG_HEX(L"  RemoteLdrLoadDll=", LoadDll.xLdrLoadDll);
-
-    Status = STATUS_UNSUCCESSFUL;
-    LOOP_ONCE
-    {
-        Status = WriteMemory(ProcessHandle, Buffer, &LoadDll, sizeof(LoadDll));
-        LEP_INJECT_DIAG_HEX(L"  WriteContext=", Status);
-        if (NT_FAILED(Status))
-            break;
-
-        if (DllPathLength != 0)
-        {
-            Status = WriteMemory(ProcessHandle, PtrAdd(Buffer, InjectContextSize), DllFullPath->Buffer, DllPathLength);
-            LEP_INJECT_DIAG_HEX(L"  WriteDllPath=", Status);
-            if (NT_FAILED(Status))
-                break;
-        }
-
-        ThreadContext.Rip = (DWORD64)PtrAdd(Buffer, ShellCodeOffset);
-        LEP_INJECT_DIAG_HEX(L"  NewRip=", ThreadContext.Rip);
-
-        Status = WriteMemory(ProcessHandle, (PVOID)ThreadContext.Rip, ShellCode, sizeof(ShellCode));
-        LEP_INJECT_DIAG_HEX(L"  WriteShellCode=", Status);
-        if (NT_FAILED(Status))
-            break;
-
-        NtFlushInstructionCache(ProcessHandle, (PVOID)ThreadContext.Rip, sizeof(ShellCode));
-
-        if (FLAG_OFF(Flags, INJECT_DONT_CHANGE_IP))
-        {
-            Status = NtSetContextThread(ThreadHandle, &ThreadContext);
-            LEP_INJECT_DIAG_HEX(L"  NtSetContextThread=", Status);
-            if (NT_FAILED(Status))
-                break;
-        }
-
-        if (InjectBuffer != NULL)
-            *InjectBuffer = Buffer;
-
-        if (FLAG_ON(Flags, INJECT_THREAD_SUSPENDED))
-        {
-            LEP_INJECT_DIAG(L"InjectDllToRemoteProcess64: return suspended success");
-            return STATUS_SUCCESS;
-        }
-
-        Status = NtResumeThread(ThreadHandle, NULL);
-        LEP_INJECT_DIAG_HEX(L"  NtResumeThread=", Status);
-        break;
-    }
-
-    if (NT_FAILED(Status) && FLAG_OFF(Flags, INJECT_PREALLOC_BUFFER))
-        Mm::FreeVirtualMemory(Buffer, ProcessHandle);
-
-    LEP_INJECT_DIAG_HEX(L"InjectDllToRemoteProcess64: exit ", Status);
-    return Status;
-}
-
-#else // x86
-
-ASM PVOID InjectRemote_LoadDll()
-{
-    INLINE_ASM
-    {
-        __emit  0xCC;
-
-        push eax;           // ret addr
-        pushad;
-        pushfd;
-        call SELF_LOCALIZATION;
-SELF_LOCALIZATION:
-        pop  esi;
-        and  esi, 0FFFFF000h;
-        lodsd;
-        mov  [esp+0x24], eax;   // ret addr
-        lodsd;
-        xor  ecx, ecx;
-        push ecx;
-        push esp;               // pModuleHandle
-        push esi;               // ModuleFileName
-        push ecx;               // Flags
-        push ecx;               // PathToFile
-        call eax;               // LdrLoadDll
-        pop  eax;               // pop ModuleHandle
-        xchg eax, esi;
-        and  eax, 0FFFFF000h;
-        and  dword ptr [eax], 0;
-        popfd;
-        popad;
-        ret;
-    }
-}
-
-static ASM VOID InjectRemote_LoadDllEnd() { ASM_UNIQUE() }
-
-ASM VOID InjectRemote_IssueRemoteBreakin()
-{
-    INLINE_ASM
-    {
-        call    SELF_LOCATE;
-SELF_LOCATE:
-        pop     ecx;
-        lea     ecx, [ecx + 14];
-        push    ecx;
-        xor     eax, eax;
-        push    dword ptr fs:[eax];
-        mov     dword ptr fs:[eax], esp;
-        __emit  0xCC;
-
-        call    SELF_LOCATE2;
-SELF_LOCATE2:
-        pop     esi;
-        and     esi, not (MEMORY_PAGE_SIZE - 1);
-        lodsd;
-        mov     ebx, eax;
-        lodsd;
-        mov     ecx, [esi];
-        jecxz   ISSUE_BREAK_IN_ONLY;
-
-        xor     ecx, ecx;
-        push    eax;    // sub esp, 4
-        push    esp;    // pModuleHandle
-        push    esi;    // ModuleFileName
-        push    ecx;    // Flags
-        push    ecx;    // PathToFile
-        call    eax;    // LdrLoadDll
-//        pop     eax;    // add esp, 4;
-
-ISSUE_BREAK_IN_ONLY:
-
-        xchg eax, esi;
-        and  eax, 0FFFFF000h;
-        and  dword ptr [eax], 0;
-
-EXIT_THREAD:
-//        push    0;
-        push    -2;
-        call    ebx;
-        jmp     EXIT_THREAD;
-    }
-}
-
-static ASM VOID InjectRemote_IssueRemoteBreakinEnd() { ASM_UNIQUE() }
-
-NTSTATUS
-InjectDllToRemoteProcess(
-    HANDLE          ProcessHandle,
-    HANDLE          ThreadHandle,
-    PUNICODE_STRING DllFullPath,
-    ULONG_PTR       Flags,
-    PVOID*          InjectBuffer,
-    ULONG_PTR       Timeout
-)
-{
-    NTSTATUS        Status;
-    PVOID           Buffer, InjectContext, ShellCode;
-    ULONG_PTR       DllPathLength, InjectContextSize, ShellCodeSize;
-    CONTEXT         ThreadContext;
-    LARGE_INTEGER   TimeOut;
-
-    typedef struct
-    {
-        ULONG           ReturnAddr;
-        PVOID           xLdrLoadDll;
-        UNICODE_STRING  DllPath;
-    } INJECT_REMOTE_LOAD_DLL;
-
-    typedef struct
-    {
-        PVOID           xNtTerminateThread;
-        PVOID           xLdrLoadDll;
-        UNICODE_STRING  DllPath;
-    //    WCHAR           Buffer[1];
-    } INJECT_REMOTE_ISSUE_BREAK_IN;
-
-    union
-    {
-        INJECT_REMOTE_LOAD_DLL          LoadDll;
-        INJECT_REMOTE_ISSUE_BREAK_IN    Breakin;
-    };
-
-    Buffer = NULL;
-    if (FLAG_ON(Flags, INJECT_PREALLOC_BUFFER))
-    {
-        if (InjectBuffer == NULL)
-            return STATUS_INVALID_PARAMETER;
-
-        Buffer = *InjectBuffer;
-        if (Buffer == NULL)
-            return STATUS_NO_MEMORY;
-    }
-    else if (InjectBuffer != NULL)
-    {
-        *InjectBuffer = NULL;
-    }
-
-    ThreadContext.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
-    Status = NtGetContextThread(ThreadHandle, &ThreadContext);
-    LEP_INJECT_DIAG(L"InjectDllToRemoteProcess32: entry");
-    LEP_INJECT_DIAG_HEX(L"  NtGetContextThread=", Status);
-    LEP_INJECT_DIAG_HEX(L"  OriginalEip=", ThreadContext.Eip);
-    LEP_INJECT_DIAG_HEX(L"  OriginalEsp=", ThreadContext.Esp);
-    if (!NT_SUCCESS(Status))
-        return Status;
-
-    if (!FLAG_ON(Flags, INJECT_PREALLOC_BUFFER))
-    {
-        Status = Mm::AllocVirtualMemoryEx(ProcessHandle, &Buffer, MEMORY_PAGE_SIZE);
-        LEP_INJECT_DIAG_HEX(L"  AllocVirtualMemoryEx=", Status);
-        if (!NT_SUCCESS(Status))
-            return Status;
-    }
-    LEP_INJECT_DIAG_HEX(L"  Buffer=", Buffer);
-
-    if (FLAG_OFF(Flags, INJECT_ISSUE_BREAKIN_ONLY) && DllFullPath != nullptr)
-    {
-        DllPathLength = DllFullPath->Length;
-    }
-    else
-    {
-        DllPathLength = 0;
-    }
-
-    if (FLAG_ON(Flags, INJECT_ISSUE_REMOTE_BREAKIN | INJECT_ISSUE_BREAKIN_ONLY))
-    {
-        PVOID ntdll;
-
-        InjectContext       = &Breakin;
-        InjectContextSize   = sizeof(Breakin);
-        ShellCode           = InjectRemote_IssueRemoteBreakin;
-        ShellCodeSize       = PtrOffset(InjectRemote_IssueRemoteBreakinEnd, InjectRemote_IssueRemoteBreakin);
-
-        ntdll = GetNtdllHandle();
-
-        Breakin.xLdrLoadDll             = EATLookupRoutineByHashPNoFix(ntdll, NTDLL_LdrLoadDll);
-        Breakin.xNtTerminateThread      = EATLookupRoutineByHashPNoFix(ntdll, NTDLL_NtTerminateThread);
-
-        if (FLAG_ON(Flags, INJECT_ISSUE_BREAKIN_ONLY))
-        {
-            RtlInitEmptyUnicodeString(&Breakin.DllPath, NULL, 0);
-        }
-        else
-        {
-            Breakin.DllPath.Length          = (USHORT)DllPathLength;
-            Breakin.DllPath.MaximumLength   = (USHORT)DllPathLength;
-            Breakin.DllPath.Buffer          = (PWSTR)((ULONG_PTR)Buffer + sizeof(Breakin));
-        }
-    }
-    else
-    {
-        PVOID ntdll;
-
-        InjectContext       = &LoadDll;
-        InjectContextSize   = sizeof(LoadDll);
-        ShellCode           = PtrAdd(InjectRemote_LoadDll, FLAG_OFF(Flags, INJECT_ISSUE_BREAKIN));
-        ShellCodeSize       = PtrOffset(InjectRemote_LoadDllEnd, InjectRemote_LoadDll);
-
-        ntdll = GetNtdllHandle();
-
-        LoadDll.xLdrLoadDll             = EATLookupRoutineByHashPNoFix(ntdll, NTDLL_LdrLoadDll);
-        LoadDll.ReturnAddr              = ThreadContext.Eip;
-        LoadDll.DllPath.Length          = (USHORT)DllPathLength;
-        LoadDll.DllPath.MaximumLength   = (USHORT)DllPathLength;
-        LoadDll.DllPath.Buffer          = (PWSTR)((ULONG_PTR)Buffer + sizeof(LoadDll));
-        LEP_INJECT_DIAG_HEX(L"  RemoteLdrLoadDll=", LoadDll.xLdrLoadDll);
-        LEP_INJECT_DIAG_HEX(L"  DllPathLength=", DllPathLength);
-    }
-
-    Status = STATUS_UNSUCCESSFUL;
-    LOOP_ONCE
-    {
-        Status = WriteMemory(ProcessHandle, Buffer, InjectContext, InjectContextSize);
-        LEP_INJECT_DIAG_HEX(L"  WriteContext=", Status);
-        if (!NT_SUCCESS(Status))
-            break;
-
-        if (DllFullPath != nullptr && FLAG_OFF(Flags, INJECT_ISSUE_BREAKIN_ONLY))
-        {
-            Status = WriteMemory(
-                        ProcessHandle,
-                        (PVOID)((ULONG_PTR)Buffer + InjectContextSize),
-                        DllFullPath->Buffer,
-                        DllPathLength
-                        );
-            LEP_INJECT_DIAG_HEX(L"  WriteDllPath=", Status);
-            if (!NT_SUCCESS(Status))
-                break;
-        }
-
-        ThreadContext.Eip = ROUND_UP((ULONG_PTR)Buffer + InjectContextSize + DllPathLength, 16);
-        LEP_INJECT_DIAG_HEX(L"  NewEip=", ThreadContext.Eip);
-        Status = WriteMemory(
-                    ProcessHandle,
-                    (PVOID)ThreadContext.Eip,
-                    ShellCode,
-                    ShellCodeSize
-                 );
-        LEP_INJECT_DIAG_HEX(L"  WriteShellCode=", Status);
-        if (!NT_SUCCESS(Status))
-            break;
-
-        NtFlushInstructionCache(ProcessHandle, (PVOID)ThreadContext.Eip, ShellCodeSize);
-
-        if (FLAG_OFF(Flags, INJECT_DONT_CHANGE_IP))
-        {
-            Status = NtSetContextThread(ThreadHandle, &ThreadContext);
-            LEP_INJECT_DIAG_HEX(L"  NtSetContextThread=", Status);
-            if (!NT_SUCCESS(Status))
-                break;
-
-            Status = NtGetContextThread(ThreadHandle, &ThreadContext);
-        }
-
-        if (FLAG_ON(Flags, INJECT_THREAD_SUSPENDED))
-        {
-            LEP_INJECT_DIAG(L"InjectDllToRemoteProcess32: return suspended success");
-            if (InjectBuffer != NULL)
-            {
-                *InjectBuffer = FLAG_ON(Flags, INJECT_POINT_TO_SHELL_CODE) ? (PVOID)ThreadContext.Eip : Buffer;
-            }
-
-            return Status;
-        }
-
-        Status = NtResumeThread(ThreadHandle, NULL);
-        if (!NT_SUCCESS(Status))
-            break;
-
-        FormatTimeOut(&TimeOut, Timeout);
-        for (ULONG TryTimes = 30; TryTimes; --TryTimes)
-        {
-            ULONG Val;
-            Status = ReadMemory(ProcessHandle, Buffer, &Val, sizeof(Val));
-            if (!NT_SUCCESS(Status))
-                break;
-
-            if (Val != 0)
-            {
-                NtDelayExecution(FALSE, &TimeOut);
-                continue;
-            }
-
-            break;
-        }
-
-        if (!NT_SUCCESS(Status))
-            break;
-
-        NtDelayExecution(FALSE, &TimeOut);
-        Status = NtGetContextThread(ThreadHandle, &ThreadContext);
-        if (!NT_SUCCESS(Status))
-            break;
-
-        if ((ULONG_PTR)ThreadContext.Eip < (ULONG_PTR)Buffer ||
-            (ULONG_PTR)ThreadContext.Eip > (ULONG_PTR)Buffer + MEMORY_PAGE_SIZE)
-        {
-            Status = STATUS_SUCCESS;
-        }
-        else
-        {
-            Status = STATUS_UNSUCCESSFUL;
-        }
-    }
-
-    if (FLAG_OFF(Flags, INJECT_PREALLOC_BUFFER))
-        Mm::FreeVirtualMemory(Buffer, ProcessHandle);
-
-    LEP_INJECT_DIAG_HEX(L"InjectDllToRemoteProcess32: exit=", Status);
-    return Status;
-}
-
-#endif // x64
-
 VOID Nt_ExitProcess(ULONG ExitCode)
 {
-    return ml::Native::Ps::ExitProcess(ExitCode);
-}
-
-NTSTATUS
-Nt_CreateProcess2(
-    CreateProcessInternal2Routine   Routine,
-    HANDLE                          Token,
-    PCWSTR                          ApplicationName,
-    PWSTR                           CommandLine,
-    PCWSTR                          CurrentDirectory,
-    ULONG                           CreationFlags,
-    LPSTARTUPINFOW                  StartupInfo,
-    LPPROCESS_INFORMATION           ProcessInformation,
-    LPSECURITY_ATTRIBUTES           ProcessAttributes,
-    LPSECURITY_ATTRIBUTES           ThreadAttributes,
-    PVOID                           Environment
-)
-{
-    BOOL                            Result;
-    STARTUPINFOW                    DefaultStartupInfo;
-    PROCESS_INFORMATION             DefaultProcessInformation;
-
-    SEH_TRY
-    {
-        if (StartupInfo == NULL)
-        {
-            ZeroMemory(&DefaultStartupInfo, sizeof(DefaultStartupInfo));
-            DefaultStartupInfo.cb = sizeof(DefaultStartupInfo);
-            StartupInfo = &DefaultStartupInfo;
-        }
-
-        if (ProcessInformation == NULL)
-            ProcessInformation = &DefaultProcessInformation;
-
-        CREATE_PROCESS_INTERNAL_PARAM Parameter =
-        {
-            Token,
-            ApplicationName,
-            CommandLine,
-            ProcessAttributes,
-            ThreadAttributes,
-            FALSE,
-            CreationFlags,
-            Environment,
-            CurrentDirectory,
-            StartupInfo,
-            ProcessInformation,
-            NULL,
-        };
-
-        Result = Routine(Parameter);
-        if (!Result)
-            return STATUS_UNSUCCESSFUL;
-
-        if (ProcessInformation == &DefaultProcessInformation)
-        {
-            NtClose(DefaultProcessInformation.hProcess);
-            NtClose(DefaultProcessInformation.hThread);
-        }
-
-        return STATUS_SUCCESS;
-    }
-    SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
-    {
-        ;
-    }
-
-    return STATUS_UNSUCCESSFUL;
-}
-
-NTSTATUS
-Nt_CreateProcess(
-    HANDLE                  Token,
-    PCWSTR                  ApplicationName,
-    PWSTR                   CommandLine,
-    PCWSTR                  CurrentDirectory,
-    ULONG                   CreationFlags,
-    LPSTARTUPINFOW          StartupInfo,
-    LPPROCESS_INFORMATION   ProcessInformation,
-    LPSECURITY_ATTRIBUTES   ProcessAttributes,
-    LPSECURITY_ATTRIBUTES   ThreadAttributes,
-    PVOID                   Environment
-)
-{
-    BOOL                            Result;
-    STARTUPINFOW                    DefaultStartupInfo;
-    PROCESS_INFORMATION             DefaultProcessInformation;
-
-    if (StartupInfo == NULL)
-    {
-        ZeroMemory(&DefaultStartupInfo, sizeof(DefaultStartupInfo));
-        DefaultStartupInfo.cb = sizeof(DefaultStartupInfo);
-        StartupInfo = &DefaultStartupInfo;
-    }
-
-    if (ProcessInformation == NULL)
-        ProcessInformation = &DefaultProcessInformation;
-
-#if ML_DISABLE_THIRD_LIB
-
-    Result = CreateProcessAsUserW(
-                    Token,
-                    ApplicationName,
-                    (PWSTR)CommandLine,
-                    ProcessAttributes,
-                    ThreadAttributes,
-                    FALSE,
-                    CreationFlags,
-                    Environment,
-                    CurrentDirectory,
-                    StartupInfo,
-                    ProcessInformation
-             );
-
-#else
-
-    Result = CreateProcessInternalW(
-                    Token,
-                    ApplicationName,
-                    CommandLine,
-                    ProcessAttributes,
-                    ThreadAttributes,
-                    FALSE,
-                    CreationFlags,
-                    Environment,
-                    CurrentDirectory,
-                    StartupInfo,
-                    ProcessInformation,
-                    NULL
-             );
-
-#endif // ML_DISABLE_THIRD_LIB
-
-    if (!Result)
-        return STATUS_UNSUCCESSFUL;
-
-    if (ProcessInformation == &DefaultProcessInformation)
-    {
-        NtClose(DefaultProcessInformation.hProcess);
-        NtClose(DefaultProcessInformation.hThread);
-    }
-
-    return STATUS_SUCCESS;
+    return lep::Native::Ps::ExitProcess(ExitCode);
 }
 
 NTSTATUS
@@ -1596,17 +876,17 @@ Nt_SetThreadPriority(
 
 PLDR_MODULE Nt_FindLdrModuleByName(PUNICODE_STRING ModuleName)
 {
-    return ml::Native::Ldr::FindLdrModuleByName(ModuleName);
+    return lep::Native::Ldr::FindLdrModuleByName(ModuleName);
 }
 
 PLDR_MODULE Nt_FindLdrModuleByHandle(PVOID BaseAddress)
 {
-    return ml::Native::Ldr::FindLdrModuleByHandle(BaseAddress);
+    return lep::Native::Ldr::FindLdrModuleByHandle(BaseAddress);
 }
 
 PTEB_ACTIVE_FRAME Nt_FindThreadFrameByContext(ULONG_PTR Context)
 {
-    return ml::Native::Ps::FindThreadFrame(Context);
+    return lep::Native::Ps::FindThreadFrame(Context);
 }
 
 
@@ -1895,7 +1175,7 @@ BOOL Nt_SetExeDirectoryAsCurrent()
 
 PVOID Nt_LoadLibrary(PWSTR ModuleFileName)
 {
-    return ml::Native::Ldr::LoadDll(ModuleFileName);
+    return lep::Native::Ldr::LoadDll(ModuleFileName);
 }
 
 PVOID FASTCALL Nt_GetProcAddress(PVOID ModuleBase, LPCSTR lpProcName)

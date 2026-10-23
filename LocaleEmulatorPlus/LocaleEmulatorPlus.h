@@ -29,9 +29,9 @@
 #define LEP_FUNCTION_NO_ABSOLUTE_JUMP_OP         Mp::OpJump
 #endif
 
-#define LepHookFromEAT(_Base, _Prefix, _Name)    Mp::FunctionJumpVa(LookupExportTable(_Base, _Prefix##_##_Name), Lep##_Name, &HookStub.Stub##_Name, LEP_FUNCTION_JUMP_OP)
-#define LepHookFromEATOp(_Base, _Prefix, _Name, _Op) Mp::FunctionJumpVa(LookupExportTable(_Base, _Prefix##_##_Name), Lep##_Name, &HookStub.Stub##_Name, _Op)
-#define LepHookFromEAT2(_Base, _Prefix, _Name)   Mp::FunctionJumpVa(LookupExportTable(_Base, _Prefix##_##_Name), Lep##_Name, nullptr, LEP_FUNCTION_JUMP_OP)
+#define LepHookFromEAT(_Base, _Name)    Mp::FunctionJumpVa(LookupExportTable(_Base, lep::HashExportName(#_Name)), Lep##_Name, &HookStub.Stub##_Name, LEP_FUNCTION_JUMP_OP)
+#define LepHookFromEATOp(_Base, _Name, _Op) Mp::FunctionJumpVa(LookupExportTable(_Base, lep::HashExportName(#_Name)), Lep##_Name, &HookStub.Stub##_Name, _Op)
+#define LepHookFromEAT2(_Base, _Name)   Mp::FunctionJumpVa(LookupExportTable(_Base, lep::HashExportName(#_Name)), Lep##_Name, nullptr, LEP_FUNCTION_JUMP_OP)
 #define LepFunctionJump(_Name)                   Mp::FunctionJumpVa(_Name, Lep##_Name, &HookStub.Stub##_Name, LEP_FUNCTION_JUMP_OP)
 #define LepFunctionCall(_Name)                   Mp::FunctionCallVa(_Name, Lep##_Name, &HookStub.Stub##_Name)
 
@@ -314,12 +314,12 @@ enum LEP_BOOTSTRAP_STAGE
 typedef struct DECL_ALIGN(16) REGISTRY_ENTRY
 {
     HKEY            Root;
-    ml::String      SubKey;
-    ml::String      ValueName;
+    lep::String      SubKey;
+    lep::String      ValueName;
     ULONG_PTR       DataType;
     PVOID           Data;
     ULONG_PTR       DataSize;
-    ml::String      FullPath;
+    lep::String      FullPath;
 
     REGISTRY_ENTRY()
     {
@@ -613,7 +613,7 @@ inline BOOLEAN LepAppendLogDirectory(PWSTR Path, ULONG_PTR Capacity, PULONG_PTR 
                     sizeof(NtDirectoryPath) - sizeof(DosDevicesPrefix) + sizeof(WCHAR));
     CopyMemory(&NtDirectoryPath[countof(DosDevicesPrefix) - 1], Path, Length);
 
-    Status = NtFileDisk::CreateDirectory(
+    Status = NativeFile::CreateDirectory(
         &DirectoryHandle,
         NtDirectoryPath,
         NFD_NOT_RESOLVE_PATH,
@@ -632,7 +632,7 @@ inline BOOLEAN LepAppendLogDirectory(PWSTR Path, ULONG_PTR Capacity, PULONG_PTR 
     return TRUE;
 }
 
-inline VOID InitLog(NtFileDisk &LogFile, PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload = nullptr)
+inline VOID InitLog(NativeFile &LogFile, PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload = nullptr)
 {
     WCHAR LogFilePath[MAX_NTPATH];
     WCHAR NtLogFilePath[MAX_NTPATH + 4];
@@ -758,8 +758,8 @@ protected:
     PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload;
     BOOLEAN OwnBootstrapPayload : 1;
 
-    ml::GrowableArray<REGISTRY_REDIRECTION_ENTRY> RegistryRedirectionEntry;
-    ml::HashTableT<TEXT_METRIC_INTERNAL> TextMetricCache;
+    lep::DynamicArray<REGISTRY_REDIRECTION_ENTRY> RegistryRedirectionEntry;
+    lep::HashTable<TEXT_METRIC_INTERNAL> TextMetricCache;
 
 public:
     PVOID CodePageMapView;
@@ -773,7 +773,7 @@ protected:
 #if ENABLE_LOG
 
 public:
-    NtFileDisk LogFile;
+    NativeFile LogFile;
 
 #endif // log
 
@@ -1110,7 +1110,7 @@ public:
     {
 #if ML_AMD64
         typedef LRESULT (NTAPI *PFN)(HWND, UINT, WPARAM, LPARAM, ULONG_PTR, DWORD, ULONG);
-        PVOID Original = GetNtUserSystemCallOriginal(WIN32K_NtUserMessageCall);
+        PVOID Original = GetNtUserSystemCallOriginal(lep::HashExportName("NtUserMessageCall"));
         return Original == nullptr ? 0 : ((PFN)Original)(hWnd, Message, wParam, lParam, xParam, xpfnProc, Flags);
 #else
         return HookStub.StubNtUserMessageCall(hWnd, Message, wParam, lParam, xParam, xpfnProc, Flags);
@@ -1121,7 +1121,7 @@ public:
     {
 #if ML_AMD64
         typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG_PTR);
-        PVOID Original = GetNtUserSystemCallOriginal(WIN32K_NtUserCreateWindowEx);
+        PVOID Original = GetNtUserSystemCallOriginal(lep::HashExportName("NtUserCreateWindowEx"));
         return Original == nullptr ? nullptr : ((PFN)Original)(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown);
 #else
         return HookStub.StubNtUserCreateWindowEx_Win7(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown);
@@ -1132,7 +1132,7 @@ public:
     {
 #if ML_AMD64
         typedef HWND (NTAPI *PFN)(ULONG, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, PLARGE_UNICODE_STRING, ULONG, LONG, LONG, LONG, LONG, HWND, HMENU, PVOID, LPVOID, ULONG, ULONG, ULONG_PTR);
-        PVOID Original = GetNtUserSystemCallOriginal(WIN32K_NtUserCreateWindowEx);
+        PVOID Original = GetNtUserSystemCallOriginal(lep::HashExportName("NtUserCreateWindowEx"));
         return Original == nullptr ? nullptr : ((PFN)Original)(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown, Unknown2);
 #else
         return HookStub.StubNtUserCreateWindowEx_Win8(ExStyle, ClassName, ClassVersion, WindowName, Style, X, Y, Width, Height, ParentWnd, Menu, Instance, Param, ShowMode, Unknown, Unknown2);
@@ -1143,7 +1143,7 @@ public:
     {
 #if ML_AMD64
         typedef BOOL (NTAPI *PFN)(HWND, PLARGE_UNICODE_STRING);
-        PVOID Original = GetNtUserSystemCallOriginal(WIN32K_NtUserDefSetText);
+        PVOID Original = GetNtUserSystemCallOriginal(lep::HashExportName("NtUserDefSetText"));
         return Original == nullptr ? FALSE : ((PFN)Original)(hWnd, Text);
 #else
         return HookStub.StubNtUserDefSetText(hWnd, Text);

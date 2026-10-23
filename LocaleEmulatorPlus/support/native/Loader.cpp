@@ -333,7 +333,7 @@ LoadPeImageWorker(
     ULONG_PTR                   SizeOfHeaders, FileAlignment, SectionAlignment, SizeOfImage;
     PVOID64                     ImageBase;
     NTSTATUS                    Status;
-    NtFileDisk                  file;
+    NativeFile                  file;
     IMAGE_DOS_HEADER            DosHeader;
     PIMAGE_OPTIONAL_HEADER      OptionalHeader32;
     PIMAGE_OPTIONAL_HEADER64    OptionalHeader64;

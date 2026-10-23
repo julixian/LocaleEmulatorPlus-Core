@@ -488,7 +488,7 @@ static NTSTATUS LepInitializeAdvancedRegistryRedirection(PLepGlobalData GlobalDa
     WCHAR LocaleName[LOCALE_NAME_MAX_LENGTH];
     USHORT LocaleNameLength;
 
-    *(PVOID *)&LcidToCultureName = LookupExportTable(Ntdll, NTDLL_RtlLCIDToCultureName);
+    *(PVOID *)&LcidToCultureName = LookupExportTable(Ntdll, lep::HashExportName("RtlLCIDToCultureName"));
     if (LcidToCultureName == nullptr)
         return STATUS_PROCEDURE_NOT_FOUND;
     if (!LepInitializeMuiCultureName(
@@ -514,7 +514,7 @@ static NTSTATUS LepInitializeVirtualMuiLanguage(PLepGlobalData GlobalData, PVOID
     NTSTATUS Status;
     ULONG_PTR Offset;
 
-    *(PVOID *)&LcidToCultureName = LookupExportTable(Ntdll, NTDLL_RtlLCIDToCultureName);
+    *(PVOID *)&LcidToCultureName = LookupExportTable(Ntdll, lep::HashExportName("RtlLCIDToCultureName"));
     if (LcidToCultureName == nullptr)
         return STATUS_PROCEDURE_NOT_FOUND;
 
@@ -1010,7 +1010,7 @@ static VOID LepWriteBootstrapFailureLog(ULONG Stage, NTSTATUS Status, PCUNICODE_
     WCHAR DosPath[MAX_NTPATH];
     WCHAR NtPath[MAX_NTPATH + 4];
     ULONG_PTR Offset, Length, ProcessId;
-    NtFileDisk LogFile;
+    NativeFile LogFile;
 
     PLEP_BOOTSTRAP_PAYLOAD Payload = nullptr;
     if (LepFirstDllBootstrapData.PayloadOffset <= LEP_BOOTSTRAP_IMAGE_MAX_SIZE &&
@@ -1883,8 +1883,8 @@ LookupRegistryRedirectionEntry(
 
     Status = STATUS_NOT_FOUND;
 
-    //ml::String KeyFullPathString = KeyFullPath;
-    ml::String ValueNameString;
+    //lep::String KeyFullPathString = KeyFullPath;
+    lep::String ValueNameString;
 
     if (ValueName != nullptr)
         ValueNameString = *ValueName;
@@ -2738,7 +2738,7 @@ LepRtlGetThreadPreferredUILanguages(
                 PRTL_CULTURE_NAME_TO_LCID CultureNameToLcid;
                 *(PVOID *)&CultureNameToLcid = LookupExportTable(
                     GetNtdllHandle(),
-                    NTDLL_RtlCultureNameToLCID
+                    lep::HashExportName("RtlCultureNameToLCID")
                 );
                 RtlInitUnicodeString(&LanguageName, LanguageNames[Index]);
                 if (CultureNameToLcid == nullptr || !CultureNameToLcid(&LanguageName, &LocaleId))
@@ -2971,7 +2971,7 @@ NTSTATUS LepGlobalData::HookNtdllRoutines(PVOID Ntdll)
 	WriteLog(L"LdrInitNtContinue %08X", LdrInitNtContinue);
 #endif
 
-    Status = HpAddSystemCallFilter(NTDLL_NtCreateUserProcess, LepNtCreateUserProcess, this);
+    Status = HpAddSystemCallFilter(lep::HashExportName("NtCreateUserProcess"), LepNtCreateUserProcess, this);
     WriteLog(L"hook NtCreateUserProcess: %08X", Status);
     FAIL_RETURN(Status);
 

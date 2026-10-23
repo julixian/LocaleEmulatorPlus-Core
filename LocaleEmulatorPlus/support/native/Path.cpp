@@ -63,22 +63,6 @@ NTSTATUS GetSystemDirectory(PUNICODE_STRING Buffer, BOOL Wow64NoRedirect)
 }
 
 
-NTSTATUS GetModuleDirectory(ml::String &Path, PVOID ModuleBase)
-{
-    PWSTR           FileName;
-    PLDR_MODULE     Self;
-    UNICODE_STRING  SelfPath;
-
-    Self = FindLdrModuleByHandle(ModuleBase);
-    SelfPath = Self->FullDllName;
-    FileName = findnamew(SelfPath.Buffer, SelfPath.Length / sizeof(SelfPath.Buffer[0]));
-    SelfPath.Length = (USHORT)PtrOffset(FileName, SelfPath.Buffer);
-
-    Path = SelfPath;
-
-    return STATUS_SUCCESS;
-}
-
 NTSTATUS GetWorkingDirectory(PUNICODE_STRING Buffer)
 {
     return RtlDuplicateUnicodeString(

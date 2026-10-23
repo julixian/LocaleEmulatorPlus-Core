@@ -1,3 +1,7 @@
+#pragma once
+#include "Sunday.h"
+#include "../runtime/String.h"
+
 #ifndef _SEARCHPATTERN_H_214862b7_e205_40fb_ba78_ccfbe9d04321_
 #define _SEARCHPATTERN_H_214862b7_e205_40fb_ba78_ccfbe9d04321_
 
@@ -186,11 +190,11 @@ SearchPatternSafe(
 }
 
 template<class T = VOID>
-inline PVOID SearchPatternSafe(const ml::String& Pattern, PVOID Begin, LONG_PTR Length)
+inline PVOID SearchPatternSafe(const lep::String& Pattern, PVOID Begin, LONG_PTR Length)
 {
-    GrowableArray<SEARCH_PATTERN_DATA>  Patterns;
-    GrowableArray<ml::String::ByteArray *>  BytesArray;
-    ml::String::ByteArray*                  CurrentBytes;
+    lep::DynamicArray<SEARCH_PATTERN_DATA>  Patterns;
+    lep::DynamicArray<lep::String::ByteArray *>  BytesArray;
+    lep::String::ByteArray*                  CurrentBytes;
     SEARCH_PATTERN_DATA                 CurrentPattern;
     ULONG_PTR                           GapBytes;
 
@@ -205,7 +209,7 @@ inline PVOID SearchPatternSafe(const ml::String& Pattern, PVOID Begin, LONG_PTR 
     GapBytes = 0;
     ZeroMemory(&CurrentPattern, sizeof(CurrentPattern));
 
-    for (ml::String &p : Pattern.Split(' '))
+    for (lep::String &p : Pattern.Split(' '))
     {
         if (!p)
             continue;
@@ -236,7 +240,7 @@ inline PVOID SearchPatternSafe(const ml::String& Pattern, PVOID Begin, LONG_PTR 
             }
 
             if (CurrentBytes == nullptr)
-                CurrentBytes = new ml::String::ByteArray;
+                CurrentBytes = new lep::String::ByteArray;
 
             Hex = p.ToHex();
             CurrentBytes->Add(Hex);
@@ -258,7 +262,7 @@ inline PVOID SearchPatternSafe(const ml::String& Pattern, PVOID Begin, LONG_PTR 
 template<class T = VOID>
 inline PVOID SearchPatternSafe(PCSTR Pattern, PVOID Begin, LONG_PTR Length)
 {
-    return SearchPatternSafe(ml::String::Decode((PVOID)Pattern, StrLengthA(Pattern), CP_ACP), Begin, Length);
+    return SearchPatternSafe(lep::String::Decode((PVOID)Pattern, StrLengthA(Pattern), CP_ACP), Begin, Length);
 }
 
 inline PVOID ReverseSearchFunctionHeader(PVOID Start, ULONG_PTR Length)
@@ -271,7 +275,7 @@ inline PVOID ReverseSearchFunctionHeader(PVOID Start, ULONG_PTR Length)
     {
         switch (Buffer[0])
         {
-            case CALL:
+            case 0xE8: // CALL rel32
                 // push    local_var_size
                 // mov     eax, exception_handler
                 // call    _SEH_prolog

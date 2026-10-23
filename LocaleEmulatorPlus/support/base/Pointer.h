@@ -1,65 +1,6 @@
-#ifndef _MISC_H_093f7fa1_751a_4627_83f8_df8509b9926e
-#define _MISC_H_093f7fa1_751a_4627_83f8_df8509b9926e
-
-
-_ML_C_HEAD_
-
-#pragma pack(1)
-
-#define SHA224_DIGEST_SIZE ( 224 / 8)
-#define SHA256_DIGEST_SIZE ( 256 / 8)
-#define SHA384_DIGEST_SIZE ( 384 / 8)
-#define SHA512_DIGEST_SIZE ( 512 / 8)
-
-#define SHA256_BLOCK_SIZE  ( 512 / 8)
-#define SHA512_BLOCK_SIZE  (1024 / 8)
-#define SHA384_BLOCK_SIZE  SHA512_BLOCK_SIZE
-#define SHA224_BLOCK_SIZE  SHA256_BLOCK_SIZE
-
-typedef struct
-{
-    ULONG   tot_len;
-    ULONG   Lepn;
-    BYTE    block[2 * SHA256_BLOCK_SIZE];
-    ULONG   h[8];
-} sha256_ctx;
-
-#pragma pack()
-
-VOID STDCALL sha256_init(sha256_ctx *ctx);
-VOID STDCALL sha256_update(sha256_ctx *ctx, PVOID message, ULONG Lepn);
-VOID STDCALL sha256_final(sha256_ctx *ctx, PVOID digest);
-VOID STDCALL sha256(PVOID message, ULONG Lepn, PVOID digest);
-
-inline VOID sha256to128(PVOID message, ULONG Lepn, PVOID digest)
-{
-    ULONG Hash[8];
-
-    sha256(message, Lepn, Hash);
-    ((PULONG)digest)[0] = Hash[0] ^ Hash[4];
-    ((PULONG)digest)[1] = Hash[1] ^ Hash[5];
-    ((PULONG)digest)[2] = Hash[2] ^ Hash[6];
-    ((PULONG)digest)[3] = Hash[3] ^ Hash[7];
-}
-
-#if !defined(ReadTimeStampCounter)
-
-ForceInline UInt64 ReadTimeStampCounter()
-{
-    __asm rdtsc;
-}
-
-#endif // ReadTimeStampCounter
-
-ForceInline UInt64 GetRandom64()
-{
-    return ReadTimeStampCounter();
-}
-
-ForceInline UInt32 GetRandom32()
-{
-    return (UInt32)GetRandom64();
-}
+#pragma once
+#include "Platform.h"
+#include "../runtime/MemoryPrimitives.h"
 
 #if CPP_DEFINED
 
@@ -286,16 +227,6 @@ EXTCPP template<class T> ForceInline Void FASTCALL Swap(T &t1, T &t2)
     t2 = t;
 }
 
-ForceInline UInt32 GetRandom32Range(UInt32 Min, UInt32 Max)
-{
-    UInt32 Result = GetRandom32();
-
-    if (Max < Min)
-        Swap(Min, Max);
-
-    return (Result % (Max + 1 - Min) + Min);
-}
-
 _ML_CPP_HEAD_
 
 template<typename T> T Bswap(T);
@@ -323,55 +254,3 @@ DECL_BSWAP_4(ULong);
 _ML_CPP_TAIL_
 
 #endif // CPP_DEFINED
-
-#if ML_X86
-
-ForceInline UInt32 FASTCALL GetEfFlags()
-{
-    INLINE_ASM
-    {
-        pushfd;
-        pop eax;
-    }
-}
-
-ForceInline UInt32 FASTCALL SetEfFlags(UInt32 EfFlags)
-{
-    INLINE_ASM
-    {
-        push EfFlags;
-        popfd;
-    }
-}
-
-ForceInline Void SetDirectionFlag()
-{
-    INLINE_ASM std;
-}
-
-ForceInline Void ClearDirectionFlag()
-{
-    INLINE_ASM cld;
-}
-
-inline Bool IsCPUIDValid()
-{
-    __asm
-    {
-        pushfd;
-        pop eax;
-        or eax, 1 << 21;
-        push eax;
-        popfd;
-        pushfd;
-        pop eax;
-        shr eax, 21;
-        and eax, 1;
-    }
-}
-
-#endif // x86
-
-_ML_C_TAIL_
-
-#endif // _MISC_H_093f7fa1_751a_4627_83f8_df8509b9926e

@@ -2,6 +2,14 @@
 #include <stdio.h>
 #include <stddef.h>
 
+// Golden values from the removed export-hash tables; these also require the
+// replacement to remain usable as a compile-time constant.
+static_assert(lep::HashExportName("") == 0, "empty export name");
+static_assert(lep::HashExportName("NtClose") == 0xB82DD68Cu, "NTDLL hash");
+static_assert(lep::HashExportName("LdrLoadDll") == 0x8F8ED6B0u, "loader hash");
+static_assert(lep::HashExportName("NtUserCreateWindowEx") == 0xD7126686u, "WIN32K hash");
+static_assert(lep::HashExportName("CreateFontIndirectExW") == 0xBF2C92A9u, "GDI hash");
+
 int main()
 {
 #define SIZE(type) printf("sizeof(" #type ")=%Iu\n", sizeof(type))
@@ -18,9 +26,9 @@ int main()
     SIZE(CPTABLEINFO);
     SIZE(NLSTABLEINFO);
     SIZE(TEB_ACTIVE_FRAME);
-    SIZE(NtFileDisk);
-    SIZE(ml::String);
-    SIZE(ml::GrowableArray<BYTE>);
+    SIZE(NativeFile);
+    SIZE(lep::String);
+    SIZE(lep::DynamicArray<BYTE>);
     OFFSET(PEB_BASE, Ldr);
     OFFSET(PEB_BASE, ProcessHeap);
     OFFSET(PEB_BASE, AnsiCodePageData);

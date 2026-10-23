@@ -1,3 +1,6 @@
+#pragma once
+#include "../native/Helpers.h"
+
 #ifndef _SUNDAY_H_067e925d_ef1c_4241_b685_578bcbcf26d4_
 #define _SUNDAY_H_067e925d_ef1c_4241_b685_578bcbcf26d4_
 

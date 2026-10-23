@@ -1,3 +1,7 @@
+#include "../base/Platform.h"
+#include "../runtime/MemoryPrimitives.h"
+#include "../base/Pointer.h"
+
 #ifndef _NATIVEAPI_H_536f1070_45de_44d7_9e53_6c5db2ff00d3
 #define _NATIVEAPI_H_536f1070_45de_44d7_9e53_6c5db2ff00d3
 
@@ -10,15 +14,8 @@ _ML_C_HEAD_
 #include "Debug.h"
 #include "Exception.h"
 #include "File.h"
-#include "Lpc.h"
 #include "Memory.h"
 #include "Process.h"
-#ifndef _NTMODULE_H_da9e04cd_9069_411f_8914_6b5fce052ca8_
-#define _NTMODULE_H_da9e04cd_9069_411f_8914_6b5fce052ca8_
-
-
-
-#endif // _NTMODULE_H_da9e04cd_9069_411f_8914_6b5fce052ca8_
 #include "Registry.h"
 #include "Loader.h"
 #include "String.h"

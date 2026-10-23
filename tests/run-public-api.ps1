@@ -16,7 +16,7 @@ foreach ($arch in @('x86','x64')) {
     if ($LASTEXITCODE -ne 0) { throw "Module compile failed: $arch" }
     $archDefine = if ($arch -eq 'x64') { '/D_WIN64' } else { '/DWIN32' }
     $coreObject = "$outputRoot\lepb-core-layout-$arch.obj"
-    & $compiler /nologo /c /O2 /EHsc /MT /D_NO_CRT_STDIO_INLINE /DML_DISABLE_THIRD_LIB=1 $archDefine $includes "$PSScriptRoot\lepb-core-layout.cpp" "/Fo$coreObject"
+    & $compiler /nologo /c /O2 /EHsc /MT /D_NO_CRT_STDIO_INLINE $archDefine $includes "$PSScriptRoot\lepb-core-layout.cpp" "/Fo$coreObject"
     if ($LASTEXITCODE -ne 0) { throw "Core layout compile failed: $arch" }
     & $compiler /nologo /std:c++20 /EHsc /MT $includes /reference "LocaleEmulatorPlus=$ifc" "$PSScriptRoot\lepb-public-layout.cpp" $coreObject $moduleObject "/Fo$outputRoot\lepb-public-layout-$arch.obj" "/Fe$outputRoot\lepb-public-layout-$arch.exe"
     if ($LASTEXITCODE -ne 0) { throw "Public layout compile failed: $arch" }

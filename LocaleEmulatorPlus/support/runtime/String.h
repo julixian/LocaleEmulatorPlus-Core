@@ -1,3 +1,11 @@
+#pragma once
+#include "Array.h"
+#include "File.h"
+#include "../native/Path.h"
+#include "../native/RegistrySupport.h"
+
+namespace lep
+{
 #ifndef _MLSTRING_H_252d9413_55ca_4d44_976f_c0dcecd5afd4_
 #define _MLSTRING_H_252d9413_55ca_4d44_976f_c0dcecd5afd4_
 
@@ -8,7 +16,7 @@
 #pragma warning(disable:4172)
 
 template<typename STRING_LENGTH_TYPE = USHORT, typename LARGE_LENGTH_TYPE = ULONG>
-class StringImplementT
+class WideStringStorage
 {
 protected:
 
@@ -62,7 +70,7 @@ protected:
     STRING_CHAR_TYPE    Buffer[4];
 
 protected:
-    StringImplementT()
+    WideStringStorage()
     {
         Reset();
     }
@@ -82,7 +90,7 @@ protected:
         return &this->String;
     }
 
-    LONG Compare(StringImplementT *Impl, BOOL CaseInSensitive = FALSE)
+    LONG Compare(WideStringStorage *Impl, BOOL CaseInSensitive = FALSE)
     {
         return Compare(*Impl, CaseInSensitive);
     }
@@ -235,7 +243,7 @@ protected:
         Name.MaximumLength  = Name.Length;
         Name.Buffer         = GetBuffer();
 
-        return Rtl::IsNameInExpression(&Expr, &Name, IgnoreCase);
+        return Native::Rtl::IsNameInExpression(&Expr, &Name, IgnoreCase);
     }
 
     VOID ToLower()
@@ -301,7 +309,7 @@ protected:
         *PtrAdd(GetBuffer(), GetLength()) = 0;
     }
 
-    VOID CopyBuffer(StringImplementT *Impl)
+    VOID CopyBuffer(WideStringStorage *Impl)
     {
         CopyString(Impl->GetBuffer(), Impl->GetCount(), FALSE);
     }
@@ -339,7 +347,7 @@ protected:
 };
 
 
-//typedef StringImplementT<> StringImplement;
+//typedef WideStringStorage<> StringImplement;
 
 #if USE_TEMPLATE
 template<typename STRING_LENGTH_TYPE = USHORT, typename LARGE_LENGTH_TYPE = ULONG>
@@ -349,8 +357,8 @@ class StringT
 {
 public:
 
-    typedef GrowableArray<StringT>  StringArray;
-    typedef GrowableArray<BYTE>     ByteArray;
+    typedef lep::DynamicArray<StringT>  StringArray;
+    typedef lep::DynamicArray<BYTE>     ByteArray;
 
     enum
     {
@@ -399,9 +407,9 @@ public:
 protected:
 
 #if USE_TEMPLATE
-    typedef StringImplementT<STRING_LENGTH_TYPE, LARGE_LENGTH_TYPE> StringImplement;
+    typedef WideStringStorage<STRING_LENGTH_TYPE, LARGE_LENGTH_TYPE> StringImplement;
 #else
-    typedef StringImplementT<> StringImplement;
+    typedef WideStringStorage<> StringImplement;
 #endif
 
     typedef typename StringImplement::STRING_LENGTH_TYPE             STRING_LENGTH_TYPE;
@@ -1100,7 +1108,7 @@ public:
                 break;
         }
 
-        NtFileMemory NlsFile;
+        MemoryFile NlsFile;
         CPTABLEINFO CodePageTable;
 
         Status = InitCodePageTable(&CodePageTable, NlsFile, Encoding);
@@ -1276,7 +1284,7 @@ public:
 
         PSTR            Buffer;
         ULONG           BytesInMultiByteString;
-        NtFileMemory    NlsFile;
+        MemoryFile    NlsFile;
         CPTABLEINFO     CodePageTable;
 
         Status = InitCodePageTable(&CodePageTable, NlsFile, Encoding);
@@ -1301,7 +1309,7 @@ public:
     }
 
 protected:
-    NoInline static NTSTATUS InitCodePageTable(PCPTABLEINFO CodePageTable, NtFileMemory &NlsFile, ULONG_PTR Encoding)
+    NoInline static NTSTATUS InitCodePageTable(PCPTABLEINFO CodePageTable, MemoryFile &NlsFile, ULONG_PTR Encoding)
     {
         NTSTATUS    Status;
         StringT     NlsFileName;
@@ -1429,12 +1437,12 @@ protected:
 
         NlsIndexBuffer[DigitCount] = 0;
 
-        Status = GetKeyValue(HKEY_LOCAL_MACHINE, SubKey, NlsIndexBuffer, &FileName);
+        Status = Native::Reg::GetKeyValue(HKEY_LOCAL_MACHINE, SubKey, NlsIndexBuffer, &FileName);
         FAIL_RETURN(Status);
 
         NlsFile.CopyFrom((PWSTR)FileName->Data, FileName->DataLength / sizeof(WCHAR));
 
-        FreeKeyInfo(FileName);
+        Native::Reg::FreeKeyInfo(FileName);
 
         return STATUS_SUCCESS;
     }
@@ -1689,3 +1697,5 @@ typedef String::ByteArray ByteArray;
 #pragma warning(pop)
 
 #endif // _MLSTRING_H_252d9413_55ca_4d44_976f_c0dcecd5afd4_
+
+}

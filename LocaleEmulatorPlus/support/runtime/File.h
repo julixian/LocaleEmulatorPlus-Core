@@ -1,3 +1,6 @@
+#pragma once
+#include "Heap.h"
+
 #ifndef _FILEIO_H_322e14b1_8a90_410b_bea8_1b39baddbd22
 #define _FILEIO_H_322e14b1_8a90_410b_bea8_1b39baddbd22
 
@@ -49,20 +52,20 @@ _ML_C_TAIL_
 /************************************************************************
   file disk
 ************************************************************************/
-class NtFileDisk
+class NativeFile
 {
 protected:
     HANDLE          m_FileHandle;
     LARGE_INTEGER   m_FileSize, m_Position;
 
 public:
-    ForceInline NtFileDisk() { m_FileHandle = nullptr; }
-    ForceInline NtFileDisk(const NtFileDisk &file) { *this = file; }
+    ForceInline NativeFile() { m_FileHandle = nullptr; }
+    ForceInline NativeFile(const NativeFile &file) { *this = file; }
     ForceInline operator HANDLE() const { return m_FileHandle; }
-    NtFileDisk& operator=(const NtFileDisk &file);
-    NtFileDisk& operator=(HANDLE Handle);
+    NativeFile& operator=(const NativeFile &file);
+    NativeFile& operator=(HANDLE Handle);
 
-    ~NtFileDisk()
+    ~NativeFile()
     {
         Close();
     }
@@ -1088,22 +1091,22 @@ public:
 /************************************************************************
   memory file
 ************************************************************************/
-class NtFileMemory
+class MemoryFile
 {
 protected:
     PVOID           m_BufferBase, m_BufferCurrent, m_BufferEnd;
     LARGE_INTEGER   m_FileSize;
-    MemoryAllocator m_Memory;
+    HeapAllocator m_Memory;
 
 public:
-    NtFileMemory()
+    MemoryFile()
     {
         m_BufferBase    = nullptr;
         m_BufferCurrent = nullptr;
         m_BufferEnd     = nullptr;
     }
 
-    ~NtFileMemory()
+    ~MemoryFile()
     {
         Close();
     }
@@ -1123,7 +1126,7 @@ public:
         ULONG_PTR   CreateOptions       = 0
     )
     {
-        NtFileDisk  File;
+        NativeFile  File;
         PVOID       Buffer;
         ULONG_PTR   Size;
         NTSTATUS    Status;

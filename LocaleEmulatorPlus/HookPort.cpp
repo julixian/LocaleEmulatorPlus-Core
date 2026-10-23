@@ -701,8 +701,8 @@ namespace
         PPS_ATTRIBUTE_LIST              AttributeList
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtCreateUserProcess);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtCreateUserProcess);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtCreateUserProcess"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtCreateUserProcess"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -761,8 +761,8 @@ namespace
 
     NTSTATUS NTAPI HpNtClose(HANDLE Handle)
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtClose);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtClose);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtClose"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtClose"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -783,8 +783,8 @@ namespace
         POBJECT_ATTRIBUTES ObjectAttributes
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtOpenKey);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtOpenKey);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtOpenKey"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtOpenKey"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -808,8 +808,8 @@ namespace
         PULONG ResultLength
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtEnumerateKey);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtEnumerateKey);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtEnumerateKey"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtEnumerateKey"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -833,8 +833,8 @@ namespace
         PULONG                      ResultLength
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtEnumerateValueKey);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtEnumerateValueKey);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtEnumerateValueKey"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtEnumerateValueKey"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -857,8 +857,8 @@ namespace
         PULONG ResultLength
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryKey);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryKey);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtQueryKey"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtQueryKey"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -880,8 +880,8 @@ namespace
         PULONG                   ReturnLength
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQuerySystemInformation);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtQuerySystemInformation);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtQuerySystemInformation"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtQuerySystemInformation"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -905,8 +905,8 @@ namespace
         PULONG                      ResultLength
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryValueKey);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryValueKey);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtQueryValueKey"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtQueryValueKey"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -929,8 +929,8 @@ namespace
         PULONG DataLength
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryLicenseValue);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryLicenseValue);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtQueryLicenseValue"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtQueryLicenseValue"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -951,8 +951,8 @@ namespace
         PLARGE_INTEGER  DefaultCasingTableSize
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtInitializeNlsFiles);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtInitializeNlsFiles);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtInitializeNlsFiles"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtInitializeNlsFiles"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -969,8 +969,8 @@ namespace
 
     NTSTATUS NTAPI HpNtQueryDefaultLocale(BOOLEAN UserProfile, PLCID DefaultLocaleId)
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryDefaultLocale);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryDefaultLocale);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtQueryDefaultLocale"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtQueryDefaultLocale"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -987,8 +987,8 @@ namespace
 
     NTSTATUS NTAPI HpNtQueryDefaultUILanguage(LANGID* DefaultUILanguageId)
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryDefaultUILanguage);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryDefaultUILanguage);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtQueryDefaultUILanguage"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtQueryDefaultUILanguage"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -1005,8 +1005,8 @@ namespace
 
     NTSTATUS NTAPI HpNtQueryInstallUILanguage(LANGID* InstallUILanguageId)
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtQueryInstallUILanguage);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtQueryInstallUILanguage);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtQueryInstallUILanguage"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtQueryInstallUILanguage"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -1023,8 +1023,8 @@ namespace
 
     NTSTATUS NTAPI HpNtContinue(PCONTEXT Context, BOOLEAN TestAlert)
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), NTDLL_NtContinue);
-        PVOID Original = LookupSyscallOriginal(NTDLL_NtContinue);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtContinue"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtContinue"));
 
         auto CallOriginal = [&]() -> NTSTATUS
         {
@@ -1049,8 +1049,8 @@ namespace
         ULONG        Flags
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserMessageCall);
-        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserMessageCall);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtUserMessageCall"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtUserMessageCall"));
 
         auto CallOriginal = [&]() -> LRESULT
         {
@@ -1067,8 +1067,8 @@ namespace
 
     BOOL NTAPI HpNtUserDefSetText(HWND hWnd, PLARGE_UNICODE_STRING Text)
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserDefSetText);
-        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserDefSetText);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtUserDefSetText"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtUserDefSetText"));
 
         auto CallOriginal = [&]() -> BOOL
         {
@@ -1087,8 +1087,8 @@ namespace
     {
         typedef HDC (NTAPI *PFN)(HWND);
 
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserGetDC);
-        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserGetDC);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtUserGetDC"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtUserGetDC"));
 
         auto CallOriginal = [&]() -> HDC
         {
@@ -1107,8 +1107,8 @@ namespace
     {
         typedef HDC (NTAPI *PFN)(HWND, HRGN, DWORD);
 
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserGetDCEx);
-        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserGetDCEx);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtUserGetDCEx"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtUserGetDCEx"));
 
         auto CallOriginal = [&]() -> HDC
         {
@@ -1127,8 +1127,8 @@ namespace
     {
         typedef HDC (NTAPI *PFN)(HWND);
 
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserGetWindowDC);
-        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserGetWindowDC);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtUserGetWindowDC"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtUserGetWindowDC"));
 
         auto CallOriginal = [&]() -> HDC
         {
@@ -1147,8 +1147,8 @@ namespace
     {
         typedef HDC (NTAPI *PFN)(HWND, LPPAINTSTRUCT);
 
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserBeginPaint);
-        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserBeginPaint);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtUserBeginPaint"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtUserBeginPaint"));
 
         auto CallOriginal = [&]() -> HDC
         {
@@ -1184,8 +1184,8 @@ namespace
         ULONG_PTR               Unknown3
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtUserCreateWindowEx);
-        PVOID Original = LookupSyscallOriginal(WIN32K_NtUserCreateWindowEx);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtUserCreateWindowEx"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtUserCreateWindowEx"));
 
         auto CallOriginal = [&]() -> HWND
         {
@@ -1307,8 +1307,8 @@ namespace
         PVOID               FreeListLocalFont
     )
     {
-        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), WIN32K_NtGdiHfontCreate);
-        PVOID Original = LookupSyscallOriginal(WIN32K_NtGdiHfontCreate);
+        PSYSCALL_INFO SysCall = HppLookupSystemCall(HppGetGlobalInfo(), lep::HashExportName("NtGdiHfontCreate"));
+        PVOID Original = LookupSyscallOriginal(lep::HashExportName("NtGdiHfontCreate"));
 
         auto CallOriginal = [&]() -> HFONT
         {
@@ -1329,21 +1329,21 @@ namespace
 
         switch (RoutineHash)
         {
-            case NTDLL_NtCreateUserProcess:       return HpNtCreateUserProcess;
-            case NTDLL_NtClose:                   return HpNtClose;
-            case NTDLL_NtOpenKey:                 return HpNtOpenKey;
-            case NTDLL_NtEnumerateKey:            return HpNtEnumerateKey;
-            case NTDLL_NtEnumerateValueKey:       return HpNtEnumerateValueKey;
-            case NTDLL_NtQueryKey:                return HpNtQueryKey;
-            case NTDLL_NtQuerySystemInformation:  return HpNtQuerySystemInformation;
-            case NTDLL_NtQueryValueKey:           return HpNtQueryValueKey;
-            case NTDLL_NtQueryLicenseValue:       return HpNtQueryLicenseValue;
-            case NTDLL_NtInitializeNlsFiles:      return HpNtInitializeNlsFiles;
-            case NTDLL_NtQueryDefaultLocale:      return HpNtQueryDefaultLocale;
-            case NTDLL_NtQueryDefaultUILanguage:  return HpNtQueryDefaultUILanguage;
-            case NTDLL_NtQueryInstallUILanguage:  return HpNtQueryInstallUILanguage;
-            case NTDLL_NtContinue:                return HpNtContinue;
-            case WIN32K_NtUserCreateWindowEx:
+            case lep::HashExportName("NtCreateUserProcess"):       return HpNtCreateUserProcess;
+            case lep::HashExportName("NtClose"):                   return HpNtClose;
+            case lep::HashExportName("NtOpenKey"):                 return HpNtOpenKey;
+            case lep::HashExportName("NtEnumerateKey"):            return HpNtEnumerateKey;
+            case lep::HashExportName("NtEnumerateValueKey"):       return HpNtEnumerateValueKey;
+            case lep::HashExportName("NtQueryKey"):                return HpNtQueryKey;
+            case lep::HashExportName("NtQuerySystemInformation"):  return HpNtQuerySystemInformation;
+            case lep::HashExportName("NtQueryValueKey"):           return HpNtQueryValueKey;
+            case lep::HashExportName("NtQueryLicenseValue"):       return HpNtQueryLicenseValue;
+            case lep::HashExportName("NtInitializeNlsFiles"):      return HpNtInitializeNlsFiles;
+            case lep::HashExportName("NtQueryDefaultLocale"):      return HpNtQueryDefaultLocale;
+            case lep::HashExportName("NtQueryDefaultUILanguage"):  return HpNtQueryDefaultUILanguage;
+            case lep::HashExportName("NtQueryInstallUILanguage"):  return HpNtQueryInstallUILanguage;
+            case lep::HashExportName("NtContinue"):                return HpNtContinue;
+            case lep::HashExportName("NtUserCreateWindowEx"):
                 if (!NT_SUCCESS(Nt_QueryOsVersion(&VersionInfo)))
                     return nullptr;
                 if (VersionInfo.dwMajorVersion == 6 && VersionInfo.dwMinorVersion < 2)
@@ -1351,13 +1351,13 @@ namespace
                 if (VersionInfo.dwMajorVersion == 6)
                     return HpNtUserCreateWindowEx_Win8;
                 return HpNtUserCreateWindowEx_Win10;
-            case WIN32K_NtUserMessageCall:        return HpNtUserMessageCall;
-            case WIN32K_NtUserDefSetText:         return HpNtUserDefSetText;
-            case WIN32K_NtUserGetDC:              return HpNtUserGetDC;
-            case WIN32K_NtUserGetDCEx:            return HpNtUserGetDCEx;
-            case WIN32K_NtUserGetWindowDC:        return HpNtUserGetWindowDC;
-            case WIN32K_NtUserBeginPaint:         return HpNtUserBeginPaint;
-            case WIN32K_NtGdiHfontCreate:         return HpNtGdiHfontCreate;
+            case lep::HashExportName("NtUserMessageCall"):        return HpNtUserMessageCall;
+            case lep::HashExportName("NtUserDefSetText"):         return HpNtUserDefSetText;
+            case lep::HashExportName("NtUserGetDC"):              return HpNtUserGetDC;
+            case lep::HashExportName("NtUserGetDCEx"):            return HpNtUserGetDCEx;
+            case lep::HashExportName("NtUserGetWindowDC"):        return HpNtUserGetWindowDC;
+            case lep::HashExportName("NtUserBeginPaint"):         return HpNtUserBeginPaint;
+            case lep::HashExportName("NtGdiHfontCreate"):         return HpNtGdiHfontCreate;
         }
 
         return nullptr;
@@ -1447,7 +1447,7 @@ NTSTATUS InstallHookPort(PLDR_MODULE SysCallModule, ULONG Flags)
     UNREFERENCED_PARAMETER(SysCallModule);
     UNREFERENCED_PARAMETER(Flags);
 
-    FAIL_RETURN(ml::MlInitialize());
+    FAIL_RETURN(lep::InitializeSupportHeap());
 
     GlobalInfo = HppGetGlobalInfo();
     if (GlobalInfo != nullptr)

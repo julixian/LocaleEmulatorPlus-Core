@@ -1,3 +1,8 @@
+#pragma once
+#include "Heap.h"
+
+namespace lep
+{
 #ifndef _VECTOR_HPP_
 #define _VECTOR_HPP_
 
@@ -18,7 +23,7 @@ _ML_CPP_HEAD_
 #define FOR_EACH_VEC_REVERSE(_Var, _MlGrowableArray) FOR_EACH_REVERSE(_Var, (_MlGrowableArray).GetData(), (_MlGrowableArray).GetSize())
 
 template<typename TYPE>
-class GrowableArray
+class DynamicArray
 {
 public:
     static const ULONG_PTR kInvalidIndex = ULONG_PTR_MAX;
@@ -31,17 +36,17 @@ protected:
 
     typedef const TYPE&             CONST_TYPE_REF;
     typedef TYPE&                   TYPE_REF;
-    typedef GrowableArray<TYPE>&    SELF_TYPE_REF;
+    typedef DynamicArray<TYPE>&    SELF_TYPE_REF;
 
 public:
-    GrowableArray()
+    DynamicArray()
     {
         m_Data      = nullptr;
         m_Size      = 0;
         m_MaxSize   = 0;
     }
 
-    GrowableArray(const GrowableArray<TYPE>& a)
+    DynamicArray(const DynamicArray<TYPE>& a)
     {
         m_Data      = nullptr;
         m_Size      = 0;
@@ -50,7 +55,7 @@ public:
         *this = a;
     }
 
-    GrowableArray(const TYPE* buf, ULONG_PTR Length)
+    DynamicArray(const TYPE* buf, ULONG_PTR Length)
     {
         m_Data = nullptr;
         m_Size = 0;
@@ -69,7 +74,7 @@ public:
         return STATUS_SUCCESS;
     }
 
-    ~GrowableArray()
+    ~DynamicArray()
     {
         RemoveAll();
     }
@@ -90,7 +95,7 @@ public:
         return *this;
     }
 
-    SELF_TYPE_REF operator=(const GrowableArray<TYPE>& a)
+    SELF_TYPE_REF operator=(const DynamicArray<TYPE>& a)
     {
         if (this == &a)
             return *this;
@@ -415,3 +420,5 @@ _ML_CPP_TAIL_
 #endif // CPP_DEFIEND
 
 #endif /* _VECTOR_HPP_ */
+
+}

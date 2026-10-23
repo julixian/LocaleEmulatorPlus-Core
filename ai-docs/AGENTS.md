@@ -10,6 +10,10 @@ Place new AI-generated documentation, including maintenance notes and analysis r
 
 Maintain `include/LocaleEmulatorPlus.ixx` as the standalone, copyable third-party ABI declaration for the latest version only; do not include legacy v2 declarations. When changing LEPB, time-zone structures, process information, or public calling signatures, update this declaration and its usage documentation together. Run `tests/run-public-api.ps1` to compare x86/x64 layouts with Core and verify an actual public caller.
 
+## Native support
+
+Internal support entry headers own their namespaces and include their dependencies; do not include them inside an open namespace. Use `lep::HashExportName` for export hashes instead of restoring generated DLL hash tables. When changing support header dependencies, run `tests/run-support-headers.ps1`; preserve the fixed numeric layout baseline checked by `tests/run-support-layout.ps1`. See [native-support.md](native-support.md) for module boundaries and verification.
+
 ## Local file inspection
 
 For reading, searching, and finding local files, prefer the FastCtx MCP

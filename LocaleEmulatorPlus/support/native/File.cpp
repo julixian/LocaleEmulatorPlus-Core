@@ -134,7 +134,7 @@ NTSTATUS QueryFirstFile(PHANDLE Handle, PCWSTR FileName, PML_FIND_DATA FindFileD
     FirstChar = *LocalFileName;
     *LocalFileName = 0;
 
-    Status = NtFileDisk::OpenDirectory(&DirectoryHandle, NtPath.Buffer, NFD_NOT_RESOLVE_PATH);
+    Status = NativeFile::OpenDirectory(&DirectoryHandle, NtPath.Buffer, NFD_NOT_RESOLVE_PATH);
     if (NT_FAILED(Status))
     {
         RtlFreeUnicodeString(&NtPath);
@@ -230,7 +230,7 @@ NTSTATUS QueryFileAttributesEx(PCWSTR FileName, PULONG_PTR FileAttributes)
     OBJECT_ATTRIBUTES       ObjectAttributes;
     FILE_BASIC_INFORMATION  FileBasic;
 
-    Status = NtFileDisk::QueryFullNtPath(FileName, &NtPath);
+    Status = NativeFile::QueryFullNtPath(FileName, &NtPath);
     FAIL_RETURN(Status);
 
     InitializeObjectAttributes(&ObjectAttributes, &NtPath, OBJ_CASE_INSENSITIVE, NULL, 0);
@@ -255,7 +255,7 @@ NTSTATUS ApplyFileAttributes(PCWSTR FileName, ULONG_PTR Attributes)
     OBJECT_ATTRIBUTES       ObjectAttributes;
     UNICODE_STRING          FilePath;
 
-    Status = NtFileDisk::QueryFullNtPath(FileName, &FilePath);
+    Status = NativeFile::QueryFullNtPath(FileName, &FilePath);
     FAIL_RETURN(Status);
 
     InitializeObjectAttributes(&ObjectAttributes, &FilePath, OBJ_CASE_INSENSITIVE, nullptr, nullptr);
@@ -296,7 +296,7 @@ NTSTATUS MoveFile(PCWSTR ExistingFileName, PCWSTR NewFileName, BOOL ReplaceIfExi
     PFILE_RENAME_INFORMATION    FileRename;
     IO_STATUS_BLOCK             IoStatus;
 
-    Status = NtFileDisk::Open(
+    Status = NativeFile::Open(
                 &FileHandle,
                 ExistingFileName,
                 0,
@@ -306,7 +306,7 @@ NTSTATUS MoveFile(PCWSTR ExistingFileName, PCWSTR NewFileName, BOOL ReplaceIfExi
     if (NT_FAILED(Status))
         return Status;
 
-    Status = NtFileDisk::QueryFullNtPath(NewFileName, &New);
+    Status = NativeFile::QueryFullNtPath(NewFileName, &New);
     if (NT_FAILED(Status))
     {
         NtClose(FileHandle);
@@ -344,7 +344,7 @@ NTSTATUS CopyFile(PCWSTR ExistingFileName, PCWSTR NewFileName, BOOL FailIfExists
     LARGE_INTEGER           FileSize;
     FILE_BASIC_INFORMATION  FileInformation;
     IO_STATUS_BLOCK         IoStatus;
-    NtFileDisk             SourceFile, DestinationFile;
+    NativeFile             SourceFile, DestinationFile;
 
     Status = SourceFile.Open(ExistingFileName);
     if (NT_FAILED(Status))
@@ -394,7 +394,7 @@ NTSTATUS DeleteFile(PCWSTR FileName)
     HANDLE      FileHandle;
     NTSTATUS    Status;
 
-    Status = NtFileDisk::Open(
+    Status = NativeFile::Open(
                 &FileHandle,
                 FileName,
                 0,
@@ -407,8 +407,8 @@ NTSTATUS DeleteFile(PCWSTR FileName)
     if (NT_FAILED(Status))
         return Status;
 
-    Status = NtFileDisk::Delete(FileHandle);
-    NtFileDisk::Close(FileHandle);
+    Status = NativeFile::Delete(FileHandle);
+    NativeFile::Close(FileHandle);
 
     return Status;
 }
@@ -418,7 +418,7 @@ NTSTATUS DeleteDirectory(PCWSTR DirectoryName)
     HANDLE      FileHandle;
     NTSTATUS    Status;
 
-    Status = NtFileDisk::Open(
+    Status = NativeFile::Open(
                 &FileHandle,
                 DirectoryName,
                 0,
@@ -431,8 +431,8 @@ NTSTATUS DeleteDirectory(PCWSTR DirectoryName)
     if (NT_FAILED(Status))
         return Status;
 
-    Status = NtFileDisk::Delete(FileHandle);
-    NtFileDisk::Close(FileHandle);
+    Status = NativeFile::Delete(FileHandle);
+    NativeFile::Close(FileHandle);
 
     return Status;
 }
@@ -448,7 +448,7 @@ QueryDosLetterFromVolumeDeviceName(
     PUNICODE_STRING NtDeviceName
 )
 {
-    NtFileDisk              MountPointManager;
+    NativeFile              MountPointManager;
     NTSTATUS                Status;
     PMOUNTMGR_VOLUME_PATHS  VolumePath;
     ULONG_PTR               DosVolLength, ReturnLength;
@@ -646,7 +646,7 @@ CreateNamedPipe(
 {
     NTSTATUS            Status;
     HANDLE              LocalReadPipe, LocalWritePipe;
-    NtFileDisk          NamedPipe;
+    NativeFile          NamedPipe;
     OBJECT_ATTRIBUTES   ObjectAttributes;
     IO_STATUS_BLOCK     IoStatus;
     LARGE_INTEGER       DefaultTimeout;

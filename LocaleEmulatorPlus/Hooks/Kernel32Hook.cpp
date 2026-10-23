@@ -32,7 +32,7 @@ NTSTATUS LepGlobalData::HackUserDefaultLCID(PVOID Kernel32)
     PLDR_MODULE Kernel;
     API_POINTER(GetUserDefaultLCID) GetUserDefaultLCID;
 
-    *(PVOID *)&GetUserDefaultLCID = LookupExportTable(Kernel32, KERNEL32_GetUserDefaultLCID);
+    *(PVOID *)&GetUserDefaultLCID = LookupExportTable(Kernel32, lep::HashExportName("GetUserDefaultLCID"));
     Lcid = GetUserDefaultLCID();
 
     Kernel = FindLdrModuleByName(&USTR(L"KERNELBASE.dll"));
@@ -93,7 +93,7 @@ PVOID FASTCALL LepGetNamedLocaleHashNode(PWSTR LocaleName, LANGID LangId)
 
     _InterlockedIncrement(&LepNamedLocalePrewarmHits);
 
-    *(PVOID *)&LCIDToLocaleName = LookupExportTable(Kernel->DllBase, KERNEL32_LCIDToLocaleName);
+    *(PVOID *)&LCIDToLocaleName = LookupExportTable(Kernel->DllBase, lep::HashExportName("LCIDToLocaleName"));
     if (LCIDToLocaleName == nullptr)
         return StubGetNamedLocaleHashNode(LocaleName, LangId);
 
@@ -138,7 +138,7 @@ NTSTATUS LepGlobalData::HackUserDefaultLCID2(PVOID Kernel32)
 
     *(PVOID *)&GetUserDefaultLCID = LookupExportTable(
         Kernel->DllBase,
-        KERNEL32_GetUserDefaultLCID
+        lep::HashExportName("GetUserDefaultLCID")
     );
     if (GetUserDefaultLCID == nullptr)
         return STATUS_PROCEDURE_NOT_FOUND;

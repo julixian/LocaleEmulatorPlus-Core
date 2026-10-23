@@ -217,27 +217,27 @@ _ML_C_TAIL_
 
 #define ADD_FILTER_(routine, HookRoutine, ...) \
             HpAddSystemCallFilter( \
-                NTDLL_##routine, \
+                lep::HashExportName(#routine), \
                 HookRoutine, \
                 __VA_ARGS__ \
             )
 
 #define ADD_W32_FILTER_(routine, HookRoutine, ...) \
             HpAddSystemCallFilter( \
-                WIN32K_##routine, \
+                lep::HashExportName(#routine), \
                 HookRoutine, \
                 __VA_ARGS__ \
             )
 
 #define DEL_FILTER_(routine, HookRoutine, ...) \
             HpRemoveSystemCallFilter( \
-                NTDLL_##routine, \
+                lep::HashExportName(#routine), \
                 HookRoutine \
             )
 
 #define DEL_W32_FILTER_(routine, HookRoutine, ...) \
             HpRemoveSystemCallFilter( \
-                WIN32K_##routine, \
+                lep::HashExportName(#routine), \
                 HookRoutine \
             )
 

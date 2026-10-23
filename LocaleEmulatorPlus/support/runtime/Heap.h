@@ -1,3 +1,6 @@
+#pragma once
+#include "../native/Helpers.h"
+
 #ifndef _MEMORYALLOCATOR_H_bdd5f64b_fcd1_41d9_8f33_e4eeae67f3c8
 #define _MEMORYALLOCATOR_H_bdd5f64b_fcd1_41d9_8f33_e4eeae67f3c8
 
@@ -8,7 +11,7 @@
 
 #define MM_NOT_FREE     0x80000000
 
-class NOVTABLE MemoryAllocator
+class NOVTABLE HeapAllocator
 {
 protected:
 
@@ -56,7 +59,7 @@ protected:
 
 
 public:
-    NoInline MemoryAllocator(HANDLE hHeap = NULL)
+    NoInline HeapAllocator(HANDLE hHeap = NULL)
     {
         if (hHeap != NULL)
         {
@@ -82,12 +85,12 @@ public:
 
     }
 
-    MemoryAllocator(const MemoryAllocator &mem)
+    HeapAllocator(const HeapAllocator &mem)
     {
         *this = mem;
     }
 
-    NoInline ~MemoryAllocator()
+    NoInline ~HeapAllocator()
     {
 
         if (IsHeapPrivate())
@@ -300,11 +303,11 @@ private:
 };
 
 
-DECL_SELECTANY HANDLE       MemoryAllocator::m_hHeapGlobal = NULL;
-DECL_SELECTANY ULONG_PTR    MemoryAllocator::m_ObjectCount = 0;
+DECL_SELECTANY HANDLE       HeapAllocator::m_hHeapGlobal = NULL;
+DECL_SELECTANY ULONG_PTR    HeapAllocator::m_ObjectCount = 0;
 
 
-// typedef MemoryAllocator CMem;
+// typedef HeapAllocator CMem;
 
 
 #endif // CPP_DEFINED
@@ -367,3 +370,9 @@ FreeVirtualMemory(
 _ML_C_TAIL_
 
 #endif // _MEMORYALLOCATOR_H_bdd5f64b_fcd1_41d9_8f33_e4eeae67f3c8
+
+namespace lep
+{
+    LONG_PTR InitializeSupportHeap();
+    LONG_PTR UninitializeSupportHeap();
+}

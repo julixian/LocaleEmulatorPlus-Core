@@ -1,3 +1,5 @@
+#include "../base/Platform.h"
+
 #ifndef _MEMORY_H_38900f05_7a34_48ee_8cd6_84300c9b8f1f
 #define _MEMORY_H_38900f05_7a34_48ee_8cd6_84300c9b8f1f
 

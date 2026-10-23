@@ -123,15 +123,7 @@
     #define CPP_CLI_DEFINED 0
 #endif // cpp cli
 
-#if !ML_DISABLE_THIRD_LIB
 
-    #define INCLUDE_LIB(_lib) comment(lib, #_lib)
-
-#else
-
-    #define INCLUDE_LIB(_lib) once
-
-#endif // ML_DISABLE_THIRD_LIB
 
 #define USE_STACK_FRAME_POINTER   "y", off
 #define UNUSE_STACK_FRAME_POINTER "y", on
@@ -243,7 +235,7 @@
     #define DEFAULT_VALUE(type, var, value) type var
 #endif /* _ML_C_HEAD_ */
 
-#define ML_NAMESPACE ML_NAMESPACE_BEGIN(ml)
+#define ML_NAMESPACE ML_NAMESPACE_BEGIN(lep)
 
 #define MY_NAMESPACE_BEGIN  ML_NAMESPACE_BEGIN
 #define MY_NAMESPACE_END    ML_NAMESPACE_END

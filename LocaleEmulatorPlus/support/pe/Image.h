@@ -1,3 +1,8 @@
+#pragma once
+#include "../native/Helpers.h"
+#include "../patch/Decoder.h"
+#include "ExportHash.h"
+
 #ifndef _PEIMAGE_H_52a4aaa3_0a38_4bb7_9a33_3072037589e2
 #define _PEIMAGE_H_52a4aaa3_0a38_4bb7_9a33_3072037589e2
 
@@ -47,9 +52,7 @@ IsValidImage(
 
 EXTC IMAGE_DOS_HEADER __ImageBase;
 
-#if ENABLE_LOG
-BOOL LepGetModuleLogDirectory(PWSTR Path, ULONG Capacity);
-#endif
+
 
 #endif // _MY_STATIC_LIB_
 
@@ -750,55 +753,6 @@ inline NTSTATUS WalkDelayImportT(PVOID ImageBase, CallbackRoutine Callback, Call
     }
 
     return STATUS_INVALID_IMAGE_FORMAT;
-}
-
-#define WalkOpCodeM(Buffer, OpLength, Ret) \
-            [&] (PBYTE Buffer, ULONG_PTR OpLength, PVOID &Ret) -> NTSTATUS
-
-template<typename T>
-PVOID WalkOpCode64T(PVOID Buffer, LONG_PTR Size, T Callback)
-{
-    PVOID ret = nullptr;
-
-    PBYTE _Buffer = (PBYTE)Buffer;
-
-    for (; Size > 0; )
-    {
-        ULONG_PTR Length;
-
-        Length = GetOpCodeSize64(_Buffer);
-
-        if (NT_SUCCESS(Callback(_Buffer, Length, ret)))
-            break;
-
-        _Buffer += Length;
-        Size -= Length;
-    }
-
-    return ret;
-}
-
-template<typename T>
-PVOID WalkOpCodeT(PVOID Buffer, LONG_PTR Size, T Callback)
-{
-    PVOID ret = nullptr;
-
-    PBYTE _Buffer = (PBYTE)Buffer;
-
-    for (; Size > 0; )
-    {
-        ULONG_PTR Length;
-
-        Length = GetOpCodeSize(_Buffer);
-
-        if (NT_SUCCESS(Callback(_Buffer, Length, ret)))
-            break;
-
-        _Buffer += Length;
-        Size -= Length;
-    }
-
-    return ret;
 }
 
 #endif // cpp

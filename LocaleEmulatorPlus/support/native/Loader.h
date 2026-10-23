@@ -473,23 +473,6 @@ LdrUnlockLoaderLock(
     IN OUT  PVOID Cookie
 );
 
-/************************************************************************
-  ml C interface
-************************************************************************/
-PIMAGE_RESOURCE_DATA_ENTRY
-Nt_FindResource(
-    PVOID   Module,
-    PCWSTR  Name,
-    PCWSTR  Type
-);
-
-PVOID
-Nt_LoadResource(
-    PVOID                       Module,
-    PIMAGE_RESOURCE_DATA_ENTRY  ResourceDataEntry,
-    PULONG                      DEF_VAL(Size, NULL)
-);
-
 #endif // _NTLDR_H_f6018b26_f2d3_44a1_b76f_f79cb5ff59dc_
 
 typedef

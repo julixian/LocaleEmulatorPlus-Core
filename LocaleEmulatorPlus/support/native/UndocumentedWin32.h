@@ -1,7 +1,6 @@
 #ifndef _UNDOCUMENTEDAPI_H_b221130a_bdd5_4b40_9da0_d44c29e1d279
 #define _UNDOCUMENTEDAPI_H_b221130a_bdd5_4b40_9da0_d44c29e1d279
 
-#pragma INCLUDE_LIB(undoc_k32.lib)
 
 #if !MY_NT_DDK
 

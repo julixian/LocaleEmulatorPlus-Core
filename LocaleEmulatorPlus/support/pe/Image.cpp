@@ -109,7 +109,7 @@ ReadRelocFromDisk(
 {
     PVOID                       RelocBuffer;
     NTSTATUS                    Status;
-    NtFileDisk                  file;
+    NativeFile                  file;
     IMAGE_DOS_HEADER            DosHeader;
     IMAGE_NT_HEADERS32          NtHeaders32;
     IMAGE_NT_HEADERS64          NtHeaders64;
@@ -304,7 +304,7 @@ RelocateAddress(
         ++Address;
     }
 
-    MemoryAllocator::FreeMemory(RelocationBase);
+    HeapAllocator::FreeMemory(RelocationBase);
 
     return STATUS_SUCCESS;
 }
@@ -378,7 +378,7 @@ ULONG_PTR IATLookupRoutineRVAByHashNoFix(PVOID ImageBase, ULONG_PTR Hash)
 
             FunctionName += (LONG_PTR)PtrAdd(ImageBase, 2);
 
-            if ((HashAPI((PCSTR)FunctionName) ^ Hash) == 0)
+            if ((lep::HashExportName((PCSTR)FunctionName) ^ Hash) == 0)
             {
                 return PtrOffset(&FirstThunk->u1.Function, ImageBase);
             }
@@ -413,7 +413,7 @@ PSTR EATLookupNameByHashNoFix(PVOID ImageBase, ULONG_PTR Hash)
 
     do
     {
-        if (!(HashAPI(PtrAdd((PCSTR)(ImageBase), *AddressOfNames)) ^ Hash))
+        if (!(lep::HashExportName(PtrAdd((PCSTR)(ImageBase), *AddressOfNames)) ^ Hash))
         {
             return PtrAdd((PSTR)(ImageBase), *AddressOfNames);
         }
@@ -427,7 +427,7 @@ PSTR EATLookupNameByHashNoFix(PVOID ImageBase, ULONG_PTR Hash)
 
 PSTR EATLookupNameByNameNoFix(PVOID ImageBase, PSTR Name)
 {
-    return EATLookupNameByHashNoFix(ImageBase, HashAPI(Name));
+    return EATLookupNameByHashNoFix(ImageBase, lep::HashExportName(Name));
 }
 
 PVOID EATLookupRoutineByHashNoFix(PVOID ImageBase, ULONG_PTR Hash)
@@ -471,7 +471,7 @@ PVOID EATLookupRoutineByHashNoFix(PVOID ImageBase, ULONG_PTR Hash)
 
     do
     {
-        if (!(HashAPI(PtrAdd((PCSTR)(ImageBase), *AddressOfNames)) ^ Hash))
+        if (!(lep::HashExportName(PtrAdd((PCSTR)(ImageBase), *AddressOfNames)) ^ Hash))
         {
             return AddressOfFuntions + *AddressOfNameOrdinals;
         }
@@ -534,7 +534,7 @@ PVOID EATLookupRoutineByHashNoFix64(PVOID ImageBase, ULONG_PTR Hash)
 
     do
     {
-        if (!(HashAPI(PtrAdd((PCSTR)(ImageBase), *AddressOfNames)) ^ Hash))
+        if (!(lep::HashExportName(PtrAdd((PCSTR)(ImageBase), *AddressOfNames)) ^ Hash))
         {
             return AddressOfFuntions + *AddressOfNameOrdinals;
         }
@@ -592,7 +592,7 @@ PVOID LookupImportTable(PVOID ImageBase, PCSTR DllName, ULONG Hash)
             if (Data->FunctionName == nullptr)
                 return STATUS_SUCCESS;
 
-            if (HashAPI(Data->FunctionName) == Hash)
+            if (lep::HashExportName(Data->FunctionName) == Hash)
             {
                 IATVA = Data->ThunkData;
                 return STATUS_NO_MORE_MATCHES;
@@ -608,7 +608,7 @@ PVOID LookupImportTable(PVOID ImageBase, PCSTR DllName, ULONG Hash)
 
 PVOID LookupImportTable(PVOID ImageBase, PCSTR DllName, PCSTR RoutineName)
 {
-    return LookupImportTable(ImageBase, DllName, HashAPI(RoutineName));
+    return LookupImportTable(ImageBase, DllName, lep::HashExportName(RoutineName));
 }
 
 PVOID LookupExportTable(PVOID ImageBase, ULONG Hash)
@@ -621,7 +621,7 @@ PVOID LookupExportTable(PVOID ImageBase, ULONG Hash)
             if (Data->FunctionName == nullptr)
                 return STATUS_NO_MORE_MATCHES;
 
-            if (HashAPI(Data->FunctionName) == Hash)
+            if (lep::HashExportName(Data->FunctionName) == Hash)
             {
                 RoutineRVA = *Data->AddressOfFunction;
                 return STATUS_NO_MORE_MATCHES;
@@ -636,7 +636,7 @@ PVOID LookupExportTable(PVOID ImageBase, ULONG Hash)
 
 PVOID LookupExportTable(PVOID ImageBase, PCSTR RoutineName)
 {
-    return LookupExportTable(ImageBase, HashAPI(RoutineName));
+    return LookupExportTable(ImageBase, lep::HashExportName(RoutineName));
 }
 
 _ML_CPP_TAIL_
@@ -1019,13 +1019,13 @@ LoadDllFromMemory(
         return Status;
     }
 
-    *(PVOID *)&NtQueryAttributesFile    = LookupExportTable(ShadowNtdll, NTDLL_NtQueryAttributesFile);
-    *(PVOID *)&NtOpenFile               = LookupExportTable(ShadowNtdll, NTDLL_NtOpenFile);
-    *(PVOID *)&NtCreateSection          = LookupExportTable(ShadowNtdll, NTDLL_NtCreateSection);
-    *(PVOID *)&NtMapViewOfSection       = LookupExportTable(ShadowNtdll, NTDLL_NtMapViewOfSection);
-    *(PVOID *)&NtClose                  = LookupExportTable(ShadowNtdll, NTDLL_NtClose);
-    *(PVOID *)&NtQuerySection           = LookupExportTable(ShadowNtdll, NTDLL_NtQuerySection);
-    *(PVOID *)&LdrLoadDll               = LookupExportTable(ShadowNtdll, NTDLL_LdrLoadDll);
+    *(PVOID *)&NtQueryAttributesFile    = LookupExportTable(ShadowNtdll, lep::HashExportName("NtQueryAttributesFile"));
+    *(PVOID *)&NtOpenFile               = LookupExportTable(ShadowNtdll, lep::HashExportName("NtOpenFile"));
+    *(PVOID *)&NtCreateSection          = LookupExportTable(ShadowNtdll, lep::HashExportName("NtCreateSection"));
+    *(PVOID *)&NtMapViewOfSection       = LookupExportTable(ShadowNtdll, lep::HashExportName("NtMapViewOfSection"));
+    *(PVOID *)&NtClose                  = LookupExportTable(ShadowNtdll, lep::HashExportName("NtClose"));
+    *(PVOID *)&NtQuerySection           = LookupExportTable(ShadowNtdll, lep::HashExportName("NtQuerySection"));
+    *(PVOID *)&LdrLoadDll               = LookupExportTable(ShadowNtdll, lep::HashExportName("LdrLoadDll"));
 
     ZeroMemory(&MemDllInfo, sizeof(MemDllInfo));
     MemDllInfo.Context = LOAD_MEM_DLL_INFO_MAGIC;

@@ -931,7 +931,7 @@ LepHpNtGdiHfontCreate(
 
     HpSetFilterAction(BlockSystemCall);
 
-    Original = HpGetSystemCallOriginal(WIN32K_NtGdiHfontCreate);
+    Original = HpGetSystemCallOriginal(lep::HashExportName("NtGdiHfontCreate"));
     if (Original == nullptr)
         return nullptr;
 
@@ -1082,7 +1082,7 @@ PVOID FindNtGdiHfontCreate(PVOID Gdi32)
 {
     PVOID CreateFontIndirectExW, NtGdiHfontCreate;
 
-    CreateFontIndirectExW = LookupExportTable(Gdi32, GDI32_CreateFontIndirectExW);
+    CreateFontIndirectExW = LookupExportTable(Gdi32, lep::HashExportName("CreateFontIndirectExW"));
 
     NtGdiHfontCreate = WalkOpCodeT(CreateFontIndirectExW, 0xA0,
                             WalkOpCodeM(Buffer, OpLength, Ret)
@@ -1191,10 +1191,10 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
         PVOID Gdi32Full = Nt_GetModuleHandle(L"gdi32full.dll");
 
         if (Gdi32Full != nullptr)
-            QueryFontAssocStatus = LookupExportTable(Gdi32Full, GDI32_QueryFontAssocStatus);
+            QueryFontAssocStatus = LookupExportTable(Gdi32Full, lep::HashExportName("QueryFontAssocStatus"));
 
         if (QueryFontAssocStatus == nullptr)
-            QueryFontAssocStatus = LookupExportTable(Gdi32, GDI32_QueryFontAssocStatus);
+            QueryFontAssocStatus = LookupExportTable(Gdi32, lep::HashExportName("QueryFontAssocStatus"));
 
         if (QueryFontAssocStatus == nullptr)
             return STATUS_NOT_FOUND;
@@ -1215,13 +1215,13 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
     //LdrAddRefDll(LDR_ADDREF_DLL_PIN, Fms);
 
 #if ML_AMD64
-    Status = CheckX64GdiSyscallRoutine(NtGdiHfontCreate, WIN32K_NtGdiHfontCreate);
+    Status = CheckX64GdiSyscallRoutine(NtGdiHfontCreate, lep::HashExportName("NtGdiHfontCreate"));
     FAIL_RETURN(Status);
 
-    Status = HpAddSystemCallByRoutine(NtGdiHfontCreate, WIN32K_NtGdiHfontCreate);
+    Status = HpAddSystemCallByRoutine(NtGdiHfontCreate, lep::HashExportName("NtGdiHfontCreate"));
     FAIL_RETURN(Status);
 
-    Status = HpAddSystemCallFilter(WIN32K_NtGdiHfontCreate, LepHpNtGdiHfontCreate, this);
+    Status = HpAddSystemCallFilter(lep::HashExportName("NtGdiHfontCreate"), LepHpNtGdiHfontCreate, this);
     FAIL_RETURN(Status);
 
     if (QueryFontAssocStatus != nullptr)
@@ -1243,20 +1243,20 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
     if (EnumFontModule == nullptr)
         EnumFontModule = Gdi32;
 
-#define LepHookEnumFontFromEAT(_Base, _Name) Mp::FunctionJumpVa(LookupExportTable(_Base, GDI32_##_Name), Lep##_Name, &HookStub.Stub##_Name, Mp::OpJumpIndirect)
+#define LepHookEnumFontFromEAT(_Base, _Name) Mp::FunctionJumpVa(LookupExportTable(_Base, lep::HashExportName(#_Name)), Lep##_Name, &HookStub.Stub##_Name, Mp::OpJumpIndirect)
 
     Mp::PATCH_MEMORY_DATA p[] =
     {
-        LepHookFromEAT(Gdi32, GDI32, GetStockObject),
+        LepHookFromEAT(Gdi32, GetStockObject),
         // Disabled: these broad GDI hooks were exploratory fallbacks for the
         // default EDIT charset issue.  The confirmed fix now patches the
         // user32 default-font cache directly, so keep the implementations for
         // reference without expanding the process-wide hook surface.
-        // LepHookFromEAT(Gdi32, GDI32, GetTextCharset),
-        // Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_GdiGetCharDimensions), LepGdiGetCharDimensions, &HookStub.StubGdiGetCharDimensions, LEP_FUNCTION_JUMP_OP),
-        LepHookFromEAT(Gdi32, GDI32, DeleteObject),
-        LepHookFromEAT(Gdi32, GDI32, CreateCompatibleDC),
-        // Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_SelectObject), LepSelectObject, &StubSelectObject, LEP_FUNCTION_JUMP_OP),
+        // LepHookFromEAT(Gdi32, GetTextCharset),
+        // Mp::FunctionJumpVa(LookupExportTable(Gdi32, lep::HashExportName("GdiGetCharDimensions")), LepGdiGetCharDimensions, &HookStub.StubGdiGetCharDimensions, LEP_FUNCTION_JUMP_OP),
+        LepHookFromEAT(Gdi32, DeleteObject),
+        LepHookFromEAT(Gdi32, CreateCompatibleDC),
+        // Mp::FunctionJumpVa(LookupExportTable(Gdi32, lep::HashExportName("SelectObject")), LepSelectObject, &StubSelectObject, LEP_FUNCTION_JUMP_OP),
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontsW),
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontsA),
         LepHookEnumFontFromEAT(EnumFontModule, EnumFontFamiliesA),
@@ -1281,20 +1281,20 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
     Mp::PATCH_MEMORY_DATA p[14];
     ULONG_PTR Count = 0;
 
-    p[Count++] = LepHookFromEAT(Gdi32, GDI32, GetStockObject);
+    p[Count++] = LepHookFromEAT(Gdi32, GetStockObject);
     // Disabled for the same reason as x64 above: these exploratory hooks are
     // not part of the confirmed default EDIT cache fix.
-    // p[Count++] = LepHookFromEAT(Gdi32, GDI32, GetTextCharset);
-    // p[Count++] = Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_GdiGetCharDimensions), LepGdiGetCharDimensions, &HookStub.StubGdiGetCharDimensions, LEP_FUNCTION_JUMP_OP);
-    p[Count++] = LepHookFromEAT(Gdi32, GDI32, DeleteObject);
-    p[Count++] = LepHookFromEAT(Gdi32, GDI32, CreateCompatibleDC);
-    // p[Count++] = Mp::FunctionJumpVa(LookupExportTable(Gdi32, GDI32_SelectObject), LepSelectObject, &StubSelectObject, LEP_FUNCTION_JUMP_OP);
-    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontsW);
-    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontsA);
-    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontFamiliesA);
-    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontFamiliesW);
-    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontFamiliesExA);
-    p[Count++] = LepHookFromEAT(EnumFontModule, GDI32, EnumFontFamiliesExW);
+    // p[Count++] = LepHookFromEAT(Gdi32, GetTextCharset);
+    // p[Count++] = Mp::FunctionJumpVa(LookupExportTable(Gdi32, lep::HashExportName("GdiGetCharDimensions")), LepGdiGetCharDimensions, &HookStub.StubGdiGetCharDimensions, LEP_FUNCTION_JUMP_OP);
+    p[Count++] = LepHookFromEAT(Gdi32, DeleteObject);
+    p[Count++] = LepHookFromEAT(Gdi32, CreateCompatibleDC);
+    // p[Count++] = Mp::FunctionJumpVa(LookupExportTable(Gdi32, lep::HashExportName("SelectObject")), LepSelectObject, &StubSelectObject, LEP_FUNCTION_JUMP_OP);
+    p[Count++] = LepHookFromEAT(EnumFontModule, EnumFontsW);
+    p[Count++] = LepHookFromEAT(EnumFontModule, EnumFontsA);
+    p[Count++] = LepHookFromEAT(EnumFontModule, EnumFontFamiliesA);
+    p[Count++] = LepHookFromEAT(EnumFontModule, EnumFontFamiliesW);
+    p[Count++] = LepHookFromEAT(EnumFontModule, EnumFontFamiliesExA);
+    p[Count++] = LepHookFromEAT(EnumFontModule, EnumFontFamiliesExW);
     p[Count++] = LepFunctionJump(NtGdiHfontCreate);
 #endif
 
@@ -1321,7 +1321,7 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
 NTSTATUS LepGlobalData::UnHookGdi32Routines()
 {
 #if ML_AMD64
-    HpRemoveSystemCallFilter(WIN32K_NtGdiHfontCreate, LepHpNtGdiHfontCreate);
+    HpRemoveSystemCallFilter(lep::HashExportName("NtGdiHfontCreate"), LepHpNtGdiHfontCreate);
 #endif
 
     // Paired with the disabled exploratory hooks in HookGdi32Routines().

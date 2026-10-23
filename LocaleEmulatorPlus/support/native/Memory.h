@@ -748,23 +748,4 @@ RtlUnlockHeap(
 );
 
 
-/************************************************************************
-  C interface
-************************************************************************/
-
-NTSTATUS
-Nt_AllocateMemory(
-    HANDLE      ProcessHandle,
-    PVOID*      BaseAddress,
-    ULONG_PTR   Size,
-    ULONG       DEF_VAL(Protect, PAGE_EXECUTE_READWRITE),
-    ULONG       DEF_VAL(AllocationType, MEM_RESERVE | MEM_COMMIT)
-);
-
-NTSTATUS
-Nt_FreeMemory(
-    HANDLE  ProcessHandle,
-    PVOID   BaseAddress
-);
-
 #endif // _NTMEMORY_H_d4d5c9b1_7569_4859_b25a_cc5cadd2b166_

@@ -13,13 +13,7 @@ if "%TARGET%"=="" set "TARGET=all"
 if not defined EXTRA_CL set "EXTRA_CL=/DENABLE_LOG=1"
 if not defined LEP_DEPLOY_DIR set "LEP_DEPLOY_DIR=D:\GALGAME\GALGAMETOOLS\LocaleEmulatorPlus"
 
-if /I "%TARGET%"=="all" (
-  call "%~f0" x86
-  if errorlevel 1 exit /b !errorlevel!
-  call "%~f0" x64
-  if errorlevel 1 exit /b !errorlevel!
-  exit /b 0
-)
+if /I "%TARGET%"=="all" goto build_all
 
 if /I not "%TARGET%"=="x86" if /I not "%TARGET%"=="x64" if /I not "%TARGET%"=="all" (
   echo Usage: build.bat [x86^|x64^|all]
@@ -168,4 +162,11 @@ echo.
 echo [%TARGET%] Build succeeded.
 echo   "%OUT%\%LEP_DLL%"
 echo   "%OUT%\%LOADER_DLL%"
+exit /b 0
+
+:build_all
+call "%~f0" x86
+if errorlevel 1 exit /b 1
+call "%~f0" x64
+if errorlevel 1 exit /b 1
 exit /b 0

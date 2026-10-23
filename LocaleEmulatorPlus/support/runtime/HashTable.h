@@ -1,8 +1,14 @@
+#pragma once
+#include "TypeTraits.h"
+#include "String.h"
+
+namespace lep
+{
 #ifndef _HASHTABLE_H_f92cdc12_70f0_4679_aa3d_d9e1a22117ed_
 #define _HASHTABLE_H_f92cdc12_70f0_4679_aa3d_d9e1a22117ed_
 
 template<typename TYPE, ULONG_PTR INITIAL_TABLE_SIZE = 521>
-class HashTableT
+class HashTable
 {
     typedef TypeTraits<TYPE> VALUE_TYPE;
 
@@ -53,7 +59,7 @@ class HashTableT
     class Hasher
     {
     public:
-        static HASH_VALUE Hash(HashTableT* thiz, typename TypeTraits<KEY_TYPE>::CONST_REF_TYPE Key);
+        static HASH_VALUE Hash(HashTable* thiz, typename TypeTraits<KEY_TYPE>::CONST_REF_TYPE Key);
     };
 
 #define HASHER_END };
@@ -61,7 +67,7 @@ class HashTableT
     template<> class Hasher<type> \
     { \
     public: \
-        static HASH_VALUE Hash(HashTableT* thiz, argtype Key)
+        static HASH_VALUE Hash(HashTable* thiz, argtype Key)
 
     HASHER(PWSTR, PWSTR)
     {
@@ -112,7 +118,7 @@ class HashTableT
     HASHER_END
 
 public:
-    NoInline HashTableT()
+    NoInline HashTable()
     {
         this->Entries = nullptr;
         this->CalcTable = nullptr;
@@ -122,7 +128,7 @@ public:
         this->GrowthFactor = 1.3;
     }
 
-    NoInline ~HashTableT()
+    NoInline ~HashTable()
     {
         SafeDeleteT(this->CalcTable);
         SafeDeleteArrayT(this->Entries);
@@ -132,7 +138,7 @@ public:
     {
         HashTableEntry *Entry;
 
-        ml::MlInitialize();
+        lep::InitializeSupportHeap();
         this->CalcTable = new ULONG[this->CalcTableSize];
         if (this->CalcTable == nullptr)
             return STATUS_NO_MEMORY;
@@ -468,3 +474,5 @@ protected:
 };
 
 #endif // _HASHTABLE_H_f92cdc12_70f0_4679_aa3d_d9e1a22117ed_
+
+}

@@ -1,3 +1,7 @@
+#pragma once
+#include "../pe/Image.h"
+#include "../runtime/Heap.h"
+
 #ifndef _PATCHMEMORY_H_99edde6e_777d_4444_9611_1ae8abbe5e02_
 #define _PATCHMEMORY_H_99edde6e_777d_4444_9611_1ae8abbe5e02_
 
@@ -370,25 +374,6 @@ CopyOneOpCode(
     ULONG_PTR   BackwardSize,
     PVOID       TargetIp = IMAGE_INVALID_VA
 );
-
-MP_INLINE ULONG_PTR GetOpCodeSize32(PVOID Buffer)
-{
-    return LdeGetOpCodeSize32(Buffer);
-}
-
-MP_INLINE ULONG_PTR GetOpCodeSize64(PVOID Buffer)
-{
-    return LdeGetOpCodeSize64(Buffer);
-}
-
-MP_INLINE ULONG_PTR GetOpCodeSize(PVOID Buffer)
-{
-#if ML_AMD64
-    return GetOpCodeSize64(Buffer);
-#elif ML_X86
-    return GetOpCodeSize32(Buffer);
-#endif
-}
 
 //#pragma pop_macro("MP_CALL")
 #pragma pop_macro("MP_INLINE")

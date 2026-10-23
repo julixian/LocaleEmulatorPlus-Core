@@ -1,3 +1,5 @@
+#pragma once
+
 #ifndef _NATIVEAPIHELPER_H_146120be_f089_49ef_bfd3_82c455e90ba3
 #define _NATIVEAPIHELPER_H_146120be_f089_49ef_bfd3_82c455e90ba3
 
@@ -585,53 +587,6 @@ Nt_GetProcAddress(
 /************************************************************************
   process api
 ************************************************************************/
-
-#define INJECT_THREAD_SUSPENDED     (1u << 0)
-#define INJECT_ISSUE_REMOTE_BREAKIN (1u << 1)
-#define INJECT_POINT_TO_SHELL_CODE  (1u << 2)
-#define INJECT_ISSUE_BREAKIN        (1u << 3)
-#define INJECT_PREALLOC_BUFFER      (1u << 4)
-#define INJECT_DONT_CHANGE_IP       (1u << 5)
-#define INJECT_ISSUE_BREAKIN_ONLY   (1u << 6)
-
-NTSTATUS
-InjectDllToRemoteProcess(
-    HANDLE          ProcessHandle,
-    HANDLE          ThreadHandle,
-    PUNICODE_STRING DllFullPath,
-    ULONG_PTR       Flags,
-    PVOID*          DEF_VAL(InjectBuffer, NULL),
-    ULONG_PTR       DEF_VAL(Timeout, 500)
-);
-
-NTSTATUS
-Nt_CreateProcess(
-    HANDLE                  Token,
-    PCWSTR                  ApplicationName,
-    PWSTR                   DEF_VAL(CommandLine, NULL),
-    PCWSTR                  DEF_VAL(CurrentDirectory, NULL),
-    ULONG                   DEF_VAL(CreationFlags, 0),
-    LPSTARTUPINFOW          DEF_VAL(StartupInfo, NULL),
-    LPPROCESS_INFORMATION   DEF_VAL(ProcessInformation, NULL),
-    LPSECURITY_ATTRIBUTES   DEF_VAL(ProcessAttributes, NULL),
-    LPSECURITY_ATTRIBUTES   DEF_VAL(ThreadAttributes, NULL),
-    PVOID                   DEF_VAL(Environment, NULL)
-);
-
-NTSTATUS
-Nt_CreateProcess2(
-    CreateProcessInternal2Routine   Routine,
-    HANDLE                          Token,
-    PCWSTR                          ApplicationName,
-    PWSTR                           DEF_VAL(CommandLine, NULL),
-    PCWSTR                          DEF_VAL(CurrentDirectory, NULL),
-    ULONG                           DEF_VAL(CreationFlags, 0),
-    LPSTARTUPINFOW                  DEF_VAL(StartupInfo, NULL),
-    LPPROCESS_INFORMATION           DEF_VAL(ProcessInformation, NULL),
-    LPSECURITY_ATTRIBUTES           DEF_VAL(ProcessAttributes, NULL),
-    LPSECURITY_ATTRIBUTES           DEF_VAL(ThreadAttributes, NULL),
-    PVOID                           DEF_VAL(Environment, NULL)
-);
 
 ULONG
 Nt_WaitForSingleObjectEx(

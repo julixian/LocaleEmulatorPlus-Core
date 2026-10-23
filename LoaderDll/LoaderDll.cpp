@@ -331,7 +331,7 @@ static NTSTATUS LepBrokerInject(ULONG ProcessId, LPCWSTR MappingName)
     if (NT_FAILED(Status))
         goto BROKER_FINISH_NEW;
 
-    LdrLoadDllAddress = EATLookupRoutineByHashPNoFix(GetNtdllHandle(), NTDLL_LdrLoadDll);
+    LdrLoadDllAddress = EATLookupRoutineByHashPNoFix(GetNtdllHandle(), lep::HashExportName("LdrLoadDll"));
     if (LdrLoadDllAddress == nullptr)
     {
         Status = STATUS_ENTRYPOINT_NOT_FOUND;
@@ -512,7 +512,7 @@ static NTSTATUS LepCreateProcessWithHook(
 		return Status;
 	}
 
-	LdrLoadDllAddress = EATLookupRoutineByHashPNoFix(GetNtdllHandle(), NTDLL_LdrLoadDll);
+	LdrLoadDllAddress = EATLookupRoutineByHashPNoFix(GetNtdllHandle(), lep::HashExportName("LdrLoadDll"));
 	ProcInfo.FirstCallLdrLoadDll = LdrLoadDllAddress;
 	if (LdrLoadDllAddress == nullptr)
 	{

@@ -68,7 +68,7 @@ DestroyHandleTable(
 
 #if CPP_DEFINED
 
-class MlHandleTable : public MemoryAllocator
+class MlHandleTable : public HeapAllocator
 {
 protected:
     PML_HANDLE_TABLE HandleTable;

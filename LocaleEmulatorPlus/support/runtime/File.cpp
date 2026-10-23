@@ -6,7 +6,7 @@
 
 #if CPP_DEFINED
 
-NtFileDisk& NtFileDisk::operator=(const NtFileDisk &file)
+NativeFile& NativeFile::operator=(const NativeFile &file)
 {
     if (this == &file)
         return *this;
@@ -26,7 +26,7 @@ NtFileDisk& NtFileDisk::operator=(const NtFileDisk &file)
     return *this;
 }
 
-NtFileDisk& NtFileDisk::operator=(HANDLE Handle)
+NativeFile& NativeFile::operator=(HANDLE Handle)
 {
     if (m_FileHandle == Handle)
         return *this;
@@ -46,7 +46,7 @@ NtFileDisk& NtFileDisk::operator=(HANDLE Handle)
     return *this;
 }
 
-NTSTATUS NtFileDisk::QueryFullNtPath(PCWSTR FileName, PUNICODE_STRING NtFilePath, ULONG_PTR Flags)
+NTSTATUS NativeFile::QueryFullNtPath(PCWSTR FileName, PUNICODE_STRING NtFilePath, ULONG_PTR Flags)
 {
 
     WCHAR ExpandBuffer[MAX_NTPATH];
@@ -79,7 +79,7 @@ NTSTATUS NtFileDisk::QueryFullNtPath(PCWSTR FileName, PUNICODE_STRING NtFilePath
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 CreateFileInternalWithFullPath(
     PHANDLE         FileHandle,
     PUNICODE_STRING FileName,
@@ -143,7 +143,7 @@ CreateFileInternalWithFullPath(
 
         PLDR_MODULE Nt = FindLdrModuleByName(&USTR(L"ntdll.dll"));
 
-        XCreateFile = (API_POINTER(ZwCreateFile))LookupExportTable(Nt->DllBase, NTDLL_NtCreateFile);
+        XCreateFile = (API_POINTER(ZwCreateFile))LookupExportTable(Nt->DllBase, lep::HashExportName("NtCreateFile"));
     }
 
     Status = XCreateFile(
@@ -164,7 +164,7 @@ CreateFileInternalWithFullPath(
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 CreateFileInternal(
     PHANDLE     FileHandle,
     LPCWSTR     FileName,
@@ -207,7 +207,7 @@ CreateFileInternal(
     return Status;
 }
 
-NTSTATUS NtFileDisk::GetSizeInternal(HANDLE FileHandle, PLARGE_INTEGER pFileSize)
+NTSTATUS NativeFile::GetSizeInternal(HANDLE FileHandle, PLARGE_INTEGER pFileSize)
 {
     NTSTATUS Status;
     IO_STATUS_BLOCK IoStatus;
@@ -240,7 +240,7 @@ NTSTATUS NtFileDisk::GetSizeInternal(HANDLE FileHandle, PLARGE_INTEGER pFileSize
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 SeekInternal(
     HANDLE          FileHandle,
     LARGE_INTEGER   Offset,
@@ -315,7 +315,7 @@ SeekInternal(
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 ReadInternal(
     HANDLE          FileHandle,
     PVOID           Buffer,
@@ -364,7 +364,7 @@ ReadInternal(
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 WriteInternal(
     HANDLE          FileHandle,
     PVOID           Buffer,
@@ -413,7 +413,7 @@ WriteInternal(
     return Status;
 }
 
-NTSTATUS NtFileDisk::DeleteInternal(HANDLE FileHandle)
+NTSTATUS NativeFile::DeleteInternal(HANDLE FileHandle)
 {
     NTSTATUS Status;
     IO_STATUS_BLOCK  IoStatus;
@@ -435,7 +435,7 @@ NTSTATUS NtFileDisk::DeleteInternal(HANDLE FileHandle)
     return Status;
 }
 
-NTSTATUS NtFileDisk::SetEndOfFileInternal(HANDLE FileHandle, LARGE_INTEGER EndPosition)
+NTSTATUS NativeFile::SetEndOfFileInternal(HANDLE FileHandle, LARGE_INTEGER EndPosition)
 {
     NTSTATUS        Status;
     IO_STATUS_BLOCK IoStatus;
@@ -479,7 +479,7 @@ NTSTATUS NtFileDisk::SetEndOfFileInternal(HANDLE FileHandle, LARGE_INTEGER EndPo
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 QuerySymbolicTargetInternal(
     HANDLE                  FileHandle,
     PREPARSE_DATA_BUFFER    ReparseBuffer,
@@ -516,7 +516,7 @@ QuerySymbolicTargetInternal(
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 QuerySymbolicTargetInternal(
     HANDLE                  FileHandle,
     PWSTR                   PrintNameBuffer,
@@ -591,7 +591,7 @@ QuerySymbolicTargetInternal(
     return Status;
 }
 
-NTSTATUS NtFileDisk::Close()
+NTSTATUS NativeFile::Close()
 {
     NTSTATUS Status;
 
@@ -611,7 +611,7 @@ NTSTATUS NtFileDisk::Close()
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 Create(
     LPCWSTR FileName,
     ULONG_PTR   Flags               /* = 0 */,
@@ -650,7 +650,7 @@ Create(
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 OpenDevice(
     PCWSTR      FileName,
     ULONG_PTR   Flags               /* = 0 */,
@@ -676,7 +676,7 @@ OpenDevice(
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 DeviceIoControl(
     ULONG_PTR   IoControlCode,
     PVOID       InputBuffer,
@@ -715,7 +715,7 @@ DeviceIoControl(
     return Status;
 }
 
-NTSTATUS NtFileDisk::GetSize(PLARGE_INTEGER FileSize)
+NTSTATUS NativeFile::GetSize(PLARGE_INTEGER FileSize)
 {
     if (FileSize == nullptr)
         return STATUS_INVALID_PARAMETER;
@@ -725,7 +725,7 @@ NTSTATUS NtFileDisk::GetSize(PLARGE_INTEGER FileSize)
     return STATUS_SUCCESS;
 }
 
-NTSTATUS NtFileDisk::GetPosition(PLARGE_INTEGER Position)
+NTSTATUS NativeFile::GetPosition(PLARGE_INTEGER Position)
 {
     if (Position == nullptr)
         return STATUS_INVALID_PARAMETER;
@@ -736,7 +736,7 @@ NTSTATUS NtFileDisk::GetPosition(PLARGE_INTEGER Position)
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 Seek(
     LARGE_INTEGER   Offset,
     ULONG_PTR       MoveMethod,
@@ -779,7 +779,7 @@ Seek(
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 Read(
     PVOID           Buffer,
     ULONG_PTR       Size        /* = 0 */,
@@ -805,7 +805,7 @@ Read(
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 Write(
     PVOID           Buffer,
     ULONG_PTR           Size,
@@ -833,7 +833,7 @@ Write(
 }
 
 NTSTATUS
-NtFileDisk::
+NativeFile::
 Print(
     PLARGE_INTEGER  BytesWritten,
     PWSTR           Format,
@@ -854,7 +854,7 @@ Print(
     return Write(Buffer, Length * sizeof(WCHAR), BytesWritten);
 }
 
-NTSTATUS NtFileDisk::MapView(PVOID *BaseAddress, HANDLE ProcessHandle)
+NTSTATUS NativeFile::MapView(PVOID *BaseAddress, HANDLE ProcessHandle)
 {
     NTSTATUS    Status;
     HANDLE      SectionHandle;
@@ -890,7 +890,7 @@ NTSTATUS NtFileDisk::MapView(PVOID *BaseAddress, HANDLE ProcessHandle)
     return Status;
 }
 
-NTSTATUS NtFileDisk::UnMapView(PVOID BaseAddress, HANDLE ProcessHandle)
+NTSTATUS NativeFile::UnMapView(PVOID BaseAddress, HANDLE ProcessHandle)
 {
     if (BaseAddress == nullptr)
         return STATUS_INVALID_PARAMETER;
@@ -901,7 +901,7 @@ NTSTATUS NtFileDisk::UnMapView(PVOID BaseAddress, HANDLE ProcessHandle)
 }
 
 
-NTSTATUS NtFileDisk::SetEndOfFile()
+NTSTATUS NativeFile::SetEndOfFile()
 {
     NTSTATUS Status;
 
@@ -914,7 +914,7 @@ NTSTATUS NtFileDisk::SetEndOfFile()
     return Status;
 }
 
-NTSTATUS NtFileDisk::SetEndOfFile(LARGE_INTEGER EndPosition)
+NTSTATUS NativeFile::SetEndOfFile(LARGE_INTEGER EndPosition)
 {
     NTSTATUS Status;
 
@@ -932,7 +932,7 @@ NTSTATUS NtFileDisk::SetEndOfFile(LARGE_INTEGER EndPosition)
   static ver
 ************************************************************************/
 
-NTSTATUS NtFileDisk::SetEndOfFile(HANDLE FileHandle)
+NTSTATUS NativeFile::SetEndOfFile(HANDLE FileHandle)
 {
     NTSTATUS                    Status;
     FILE_POSITION_INFORMATION   FilePosition;

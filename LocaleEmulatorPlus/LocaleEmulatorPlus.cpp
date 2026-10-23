@@ -24,7 +24,7 @@ EXTC ULONG NTAPI FuckStupid2DJGame(PCSTR FileName)
     if (PtrOffset(Rubbish, Garbage->EntryPoint) < 100 && StrCompareA(FileName, "2djgame.txt") == 0)
         return FILE_ATTRIBUTE_NORMAL;
 
-    return Io::QueryFileAttributes(ml::String::Decode(FileName, StrLengthA(FileName), CP_ACP));
+    return Io::QueryFileAttributes(lep::String::Decode(FileName, StrLengthA(FileName), CP_ACP));
 */
 }
 
@@ -153,7 +153,7 @@ NTSTATUS GetLangFile(PUNICODE_STRING LangFile, ULONG LangIndex, PCWSTR SubKey)
     return Success ? STATUS_SUCCESS : STATUS_NO_MEMORY;
 }
 
-NTSTATUS ReadFileInSystemDirectory(NtFileMemory &File, PUNICODE_STRING Path)
+NTSTATUS ReadFileInSystemDirectory(MemoryFile &File, PUNICODE_STRING Path)
 {
     PWSTR       Buffer;
     ULONG_PTR   Length;
@@ -236,7 +236,7 @@ NTSTATUS LepGlobalData::Initialize(PLEP_BOOTSTRAP_PAYLOAD Payload, BOOL OwnPaylo
 #endif
         return STATUS_DLL_INIT_FAILED;
     }
-    RuntimeState.LdrLoadDllAddress = EATLookupRoutineByHashPNoFix(Ntdll->DllBase, NTDLL_LdrLoadDll);
+    RuntimeState.LdrLoadDllAddress = EATLookupRoutineByHashPNoFix(Ntdll->DllBase, lep::HashExportName("LdrLoadDll"));
     if (RuntimeState.LdrLoadDllAddress == nullptr)
         return STATUS_ENTRYPOINT_NOT_FOUND;
     LEP_DIAG_HERE_IF(DiagVerbose, L"GetNtdllLdrModule ok");
@@ -284,7 +284,7 @@ NTSTATUS LepGlobalData::Initialize(PLEP_BOOTSTRAP_PAYLOAD Payload, BOOL OwnPaylo
         LEP_DIAG_FAIL_RETURN(L"RtlDuplicateUnicodeString(SystemDirectory)", RtlDuplicateUnicodeString(RTL_DUPSTR_ADD_NULL, &SystemDirectory, &this->SystemDirectory));
         WriteLog(L"init stage RtlDuplicateUnicodeString end");
 
-        ml::String Win32U_Path(SystemDirectory);
+        lep::String Win32U_Path(SystemDirectory);
         Win32U_Path += L"\\win32u.dll";
         this->HasWin32U = Nt_GetFileAttributes(Win32U_Path.GetBuffer()) != INVALID_FILE_ATTRIBUTES;
         WriteLog(L"win32u: %ws, has:%d", Win32U_Path.GetBuffer(), this->HasWin32U);
@@ -317,7 +317,7 @@ NTSTATUS LepGlobalData::Initialize(PLEP_BOOTSTRAP_PAYLOAD Payload, BOOL OwnPaylo
         //FAIL_RETURN(Status);
         RtlCreateUnicodeString(&LangFileName, L"l_intl.nls");
 
-        NtFileMemory AnsiFile, OemFile, LangFile;
+        MemoryFile AnsiFile, OemFile, LangFile;
 
         WriteLog(L"init stage ReadFileInSystemDirectory ACP begin");
         LEP_DIAG_FAIL_RETURN(L"ReadFileInSystemDirectory(ACP)", ReadFileInSystemDirectory(AnsiFile, &NlsFileName));
@@ -763,11 +763,11 @@ NTSTATUS LepGlobalData::UnInitialize()
 inline BOOL UnInitialize(PVOID BaseAddress)
 {
     LepReleaseGlobalData();
-    ml::MlUnInitialize();
+    lep::UninitializeSupportHeap();
     return FALSE;
 }
 
-VOID GenerateModuleList(ml::String &ModuleNames)
+VOID GenerateModuleList(lep::String &ModuleNames)
 {
     PVOID                               Address, BaseAddress, LastAllocationBase;
     ULONG_PTR                           Size, Need, BufferSize;
@@ -781,7 +781,7 @@ VOID GenerateModuleList(ml::String &ModuleNames)
         BYTE MappedFileBuffer[0x2000];
     };
 
-    auto AppendHexPointer = [] (ml::String &String, ULONG_PTR Value)
+    auto AppendHexPointer = [] (lep::String &String, ULONG_PTR Value)
     {
         BOOL LeadingZero = TRUE;
         WCHAR Buffer[bitsof(Value) / 4];
@@ -853,7 +853,7 @@ BOOL Initialize(PVOID BaseAddress, PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload = nul
     BOOL                BootstrapPayloadPresent;
     PTEB_ACTIVE_FRAME   LoaderFrame;
 
-    ml::MlInitialize();
+    lep::InitializeSupportHeap();
 
     LoaderFrame = FindThreadFrame(LEP_LOADER_PROCESS);
     IsLoader = LoaderFrame != nullptr;
@@ -874,7 +874,7 @@ BOOL Initialize(PVOID BaseAddress, PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload = nul
         Kernel32 = GetKernel32Ldr();
         if (Kernel32 != nullptr && FLAG_ON(Kernel32->Flags, LDRP_PROCESS_ATTACH_CALLED))
         {
-            ml::String ModuleList = L"kernel32 has been loaded before the initialization of LEP\n\nModule list:\n\n";
+            lep::String ModuleList = L"kernel32 has been loaded before the initialization of LEP\n\nModule list:\n\n";
             GenerateModuleList(ModuleList);
             ExceptionBox(ModuleList);
             LEP_DIAG_HERE(L"kernel32 loaded before LEP");

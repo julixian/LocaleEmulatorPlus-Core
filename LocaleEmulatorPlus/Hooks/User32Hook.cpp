@@ -1845,7 +1845,7 @@ LepHpNtUserGetDC(
 
     HpSetFilterAction(BlockSystemCall);
 
-    Original = HpGetSystemCallOriginal(WIN32K_NtUserGetDC);
+    Original = HpGetSystemCallOriginal(lep::HashExportName("NtUserGetDC"));
     if (Original == nullptr)
         return nullptr;
 
@@ -1871,7 +1871,7 @@ LepHpNtUserGetDCEx(
 
     HpSetFilterAction(BlockSystemCall);
 
-    Original = HpGetSystemCallOriginal(WIN32K_NtUserGetDCEx);
+    Original = HpGetSystemCallOriginal(lep::HashExportName("NtUserGetDCEx"));
     if (Original == nullptr)
         return nullptr;
 
@@ -1895,7 +1895,7 @@ LepHpNtUserGetWindowDC(
 
     HpSetFilterAction(BlockSystemCall);
 
-    Original = HpGetSystemCallOriginal(WIN32K_NtUserGetWindowDC);
+    Original = HpGetSystemCallOriginal(lep::HashExportName("NtUserGetWindowDC"));
     if (Original == nullptr)
         return nullptr;
 
@@ -1920,7 +1920,7 @@ LepHpNtUserBeginPaint(
 
     HpSetFilterAction(BlockSystemCall);
 
-    Original = HpGetSystemCallOriginal(WIN32K_NtUserBeginPaint);
+    Original = HpGetSystemCallOriginal(lep::HashExportName("NtUserBeginPaint"));
     if (Original == nullptr)
         return nullptr;
 
@@ -2020,7 +2020,7 @@ HWND LepNtUserCreateWindowExWorker(PUSER_CREATE_WINDOW Parameters, HWND (*Invoke
 
 #if ML_AMD64
     GlobalData = LepGetGlobalData();
-    OriginalRoutine = GlobalData->GetNtUserSystemCallOriginal(WIN32K_NtUserCreateWindowEx);
+    OriginalRoutine = GlobalData->GetNtUserSystemCallOriginal(lep::HashExportName("NtUserCreateWindowEx"));
     if (OriginalRoutine == nullptr)
         return nullptr;
 #else
@@ -2642,8 +2642,8 @@ static PVOID FindX64NtUserMessageCallNoWin32U(PVOID User32)
 {
     PVOID Routines[] =
     {
-        LookupExportTable(User32, USER32_SendNotifyMessageW),
-        LookupExportTable(User32, USER32_SendNotifyMessageA),
+        LookupExportTable(User32, lep::HashExportName("SendNotifyMessageW")),
+        LookupExportTable(User32, lep::HashExportName("SendNotifyMessageA")),
     };
 
     for (ULONG_PTR i = 0; i != countof(Routines); ++i)
@@ -2660,8 +2660,8 @@ static PVOID FindX64InternalCreateWindowEx(PVOID User32)
 {
     PVOID Routines[] =
     {
-        LookupExportTable(User32, USER32_CreateWindowExW),
-        LookupExportTable(User32, USER32_CreateWindowExA),
+        LookupExportTable(User32, lep::HashExportName("CreateWindowExW")),
+        LookupExportTable(User32, lep::HashExportName("CreateWindowExA")),
     };
 
     for (ULONG_PTR i = 0; i != countof(Routines); ++i)
@@ -2979,7 +2979,7 @@ static PVOID FindX64NtUserDefSetTextNoWin32U(PVOID User32)
 PVOID FindNtUserMessageCall(PVOID User32)
 {
     PVOID NtUserMessageCall = nullptr;
-    PVOID SendNotifyMessageW = LookupExportTable(User32, USER32_SendNotifyMessageW);
+    PVOID SendNotifyMessageW = LookupExportTable(User32, lep::HashExportName("SendNotifyMessageW"));
 
     NtUserMessageCall = WalkOpCodeT(SendNotifyMessageW, 0x40,
         WalkOpCodeM(Buffer, OpLength, Ret)
@@ -3012,9 +3012,9 @@ PVOID FindNtUserMessageCall2(PVOID User32)
     PVOID GlobalRoutines[3];
     PVOID fnCOPYGLOBALDATA[3];
 
-    GlobalRoutines[0] = IATLookupRoutineByHash(User32, KERNEL32_GlobalLock);
-    GlobalRoutines[1] = IATLookupRoutineByHash(User32, KERNEL32_GlobalUnlock);
-    GlobalRoutines[2] = IATLookupRoutineByHash(User32, KERNEL32_GlobalFree);
+    GlobalRoutines[0] = IATLookupRoutineByHash(User32, lep::HashExportName("GlobalLock"));
+    GlobalRoutines[1] = IATLookupRoutineByHash(User32, lep::HashExportName("GlobalUnlock"));
+    GlobalRoutines[2] = IATLookupRoutineByHash(User32, lep::HashExportName("GlobalFree"));
 
     NtUserMessageCall = nullptr;
 
@@ -3086,7 +3086,7 @@ PVOID FindNtUserCreateWindowEx(PVOID User32)
 {
     PVOID NtUserCreateWindowEx, IATRtlQueryInformationActiveActivationContext;
 
-    IATRtlQueryInformationActiveActivationContext = IATLookupRoutineByHash(User32, NTDLL_RtlQueryInformationActiveActivationContext);
+    IATRtlQueryInformationActiveActivationContext = IATLookupRoutineByHash(User32, lep::HashExportName("RtlQueryInformationActiveActivationContext"));
     if (IATRtlQueryInformationActiveActivationContext == nullptr)
         return nullptr;
 
@@ -3161,7 +3161,7 @@ PVOID FindNtUserDefSetText(PVOID User32)
     DefSetText                      = nullptr;
     NtUserDefSetText                = nullptr;
 
-    *(PVOID *)&NotifyWinEvent = LookupExportTable(User32, USER32_NotifyWinEvent);
+    *(PVOID *)&NotifyWinEvent = LookupExportTable(User32, lep::HashExportName("NotifyWinEvent"));
 
     Module = FindLdrModuleByHandle(User32);
 
@@ -3296,14 +3296,14 @@ PVOID FindSendMessageWorker(PVOID User32)
     LONG_PTR    WndProc;
     PVOID       SendMessageWorker;
 
-    *(PVOID *)&CreateWindowExA      = LookupExportTable(User32, USER32_CreateWindowExA);
+    *(PVOID *)&CreateWindowExA      = LookupExportTable(User32, lep::HashExportName("CreateWindowExA"));
 #if ML_AMD64
-    *(PVOID *)&SetWindowLongPtrA    = LookupExportTable(User32, USER32_SetWindowLongPtrA);
+    *(PVOID *)&SetWindowLongPtrA    = LookupExportTable(User32, lep::HashExportName("SetWindowLongPtrA"));
 #else
-    *(PVOID *)&SetWindowLongPtrA    = LookupExportTable(User32, USER32_SetWindowLongA);
+    *(PVOID *)&SetWindowLongPtrA    = LookupExportTable(User32, lep::HashExportName("SetWindowLongA"));
 #endif
-    *(PVOID *)&SendMessageA         = LookupExportTable(User32, USER32_SendMessageA);
-    *(PVOID *)&DestroyWindow        = LookupExportTable(User32, USER32_DestroyWindow);
+    *(PVOID *)&SendMessageA         = LookupExportTable(User32, lep::HashExportName("SendMessageA"));
+    *(PVOID *)&DestroyWindow        = LookupExportTable(User32, lep::HashExportName("DestroyWindow"));
 
     ProbeButton         = CreateWindowExA(0, WC_BUTTONA, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     WndProc             = SetWindowLongPtrA(ProbeButton, GWLP_WNDPROC, (LONG_PTR)SendMessageWorkerProbe);
@@ -3461,30 +3461,30 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
             if (Win32uMod == nullptr)
                 return STATUS_NOT_FOUND;
 
-            Status = GetX64SyscallExportByName(Win32uMod, "NtUserGetDC", WIN32K_NtUserGetDC, &NtUserGetDC);
+            Status = GetX64SyscallExportByName(Win32uMod, "NtUserGetDC", lep::HashExportName("NtUserGetDC"), &NtUserGetDC);
             FAIL_RETURN(Status);
 
-            Status = GetX64SyscallExportByName(Win32uMod, "NtUserGetDCEx", WIN32K_NtUserGetDCEx, &NtUserGetDCEx);
+            Status = GetX64SyscallExportByName(Win32uMod, "NtUserGetDCEx", lep::HashExportName("NtUserGetDCEx"), &NtUserGetDCEx);
             FAIL_RETURN(Status);
 
-            Status = GetX64SyscallExportByName(Win32uMod, "NtUserGetWindowDC", WIN32K_NtUserGetWindowDC, &NtUserGetWindowDC);
+            Status = GetX64SyscallExportByName(Win32uMod, "NtUserGetWindowDC", lep::HashExportName("NtUserGetWindowDC"), &NtUserGetWindowDC);
             FAIL_RETURN(Status);
 
-            Status = GetX64SyscallExportByName(Win32uMod, "NtUserBeginPaint", WIN32K_NtUserBeginPaint, &NtUserBeginPaint);
+            Status = GetX64SyscallExportByName(Win32uMod, "NtUserBeginPaint", lep::HashExportName("NtUserBeginPaint"), &NtUserBeginPaint);
             FAIL_RETURN(Status);
         }
         else
         {
-            Status = GetX64SyscallExport(User32, USER32_GetDC, &NtUserGetDC);
+            Status = GetX64SyscallExport(User32, lep::HashExportName("GetDC"), &NtUserGetDC);
             FAIL_RETURN(Status);
 
-            Status = GetX64SyscallExport(User32, USER32_GetDCEx, &NtUserGetDCEx);
+            Status = GetX64SyscallExport(User32, lep::HashExportName("GetDCEx"), &NtUserGetDCEx);
             FAIL_RETURN(Status);
 
-            Status = GetX64SyscallExport(User32, USER32_GetWindowDC, &NtUserGetWindowDC);
+            Status = GetX64SyscallExport(User32, lep::HashExportName("GetWindowDC"), &NtUserGetWindowDC);
             FAIL_RETURN(Status);
 
-            Status = GetX64SyscallExport(User32, USER32_BeginPaint, &NtUserBeginPaint);
+            Status = GetX64SyscallExport(User32, lep::HashExportName("BeginPaint"), &NtUserBeginPaint);
             FAIL_RETURN(Status);
         }
 
@@ -3493,49 +3493,49 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
         ULONG_PTR RoutineCount = 0;
 
         Routines[RoutineCount] = NtUserCreateWindowEx;
-        Hashes[RoutineCount++] = WIN32K_NtUserCreateWindowEx;
+        Hashes[RoutineCount++] = lep::HashExportName("NtUserCreateWindowEx");
         Routines[RoutineCount] = NtUserMessageCall;
-        Hashes[RoutineCount++] = WIN32K_NtUserMessageCall;
+        Hashes[RoutineCount++] = lep::HashExportName("NtUserMessageCall");
         Routines[RoutineCount] = NtUserDefSetText;
-        Hashes[RoutineCount++] = WIN32K_NtUserDefSetText;
+        Hashes[RoutineCount++] = lep::HashExportName("NtUserDefSetText");
         Routines[RoutineCount] = NtUserGetDC;
-        Hashes[RoutineCount++] = WIN32K_NtUserGetDC;
+        Hashes[RoutineCount++] = lep::HashExportName("NtUserGetDC");
         Routines[RoutineCount] = NtUserGetDCEx;
-        Hashes[RoutineCount++] = WIN32K_NtUserGetDCEx;
+        Hashes[RoutineCount++] = lep::HashExportName("NtUserGetDCEx");
         Routines[RoutineCount] = NtUserGetWindowDC;
-        Hashes[RoutineCount++] = WIN32K_NtUserGetWindowDC;
+        Hashes[RoutineCount++] = lep::HashExportName("NtUserGetWindowDC");
         Routines[RoutineCount] = NtUserBeginPaint;
-        Hashes[RoutineCount++] = WIN32K_NtUserBeginPaint;
+        Hashes[RoutineCount++] = lep::HashExportName("NtUserBeginPaint");
 
         Status = HpAddSystemCallByRoutineRange(Routines, Hashes, RoutineCount);
         WriteLog(L"user32 add syscall routines: %08X", Status);
         FAIL_RETURN(Status);
 
-        Status = HpAddSystemCallFilter(WIN32K_NtUserCreateWindowEx, LepHpNtUserCreateWindowEx, this);
+        Status = HpAddSystemCallFilter(lep::HashExportName("NtUserCreateWindowEx"), LepHpNtUserCreateWindowEx, this);
         WriteLog(L"user32 hook NtUserCreateWindowEx: %08X", Status);
         FAIL_RETURN(Status);
 
-        Status = HpAddSystemCallFilter(WIN32K_NtUserMessageCall, LepHpNtUserMessageCall, this);
+        Status = HpAddSystemCallFilter(lep::HashExportName("NtUserMessageCall"), LepHpNtUserMessageCall, this);
         WriteLog(L"user32 hook NtUserMessageCall: %08X", Status);
         FAIL_RETURN(Status);
 
-        Status = HpAddSystemCallFilter(WIN32K_NtUserDefSetText, LepHpNtUserDefSetText, this);
+        Status = HpAddSystemCallFilter(lep::HashExportName("NtUserDefSetText"), LepHpNtUserDefSetText, this);
         WriteLog(L"user32 hook NtUserDefSetText: %08X", Status);
         FAIL_RETURN(Status);
 
-        Status = HpAddSystemCallFilter(WIN32K_NtUserGetDC, LepHpNtUserGetDC, this);
+        Status = HpAddSystemCallFilter(lep::HashExportName("NtUserGetDC"), LepHpNtUserGetDC, this);
         WriteLog(L"user32 hook NtUserGetDC: %08X", Status);
         FAIL_RETURN(Status);
 
-        Status = HpAddSystemCallFilter(WIN32K_NtUserGetDCEx, LepHpNtUserGetDCEx, this);
+        Status = HpAddSystemCallFilter(lep::HashExportName("NtUserGetDCEx"), LepHpNtUserGetDCEx, this);
         WriteLog(L"user32 hook NtUserGetDCEx: %08X", Status);
         FAIL_RETURN(Status);
 
-        Status = HpAddSystemCallFilter(WIN32K_NtUserGetWindowDC, LepHpNtUserGetWindowDC, this);
+        Status = HpAddSystemCallFilter(lep::HashExportName("NtUserGetWindowDC"), LepHpNtUserGetWindowDC, this);
         WriteLog(L"user32 hook NtUserGetWindowDC: %08X", Status);
         FAIL_RETURN(Status);
 
-        Status = HpAddSystemCallFilter(WIN32K_NtUserBeginPaint, LepHpNtUserBeginPaint, this);
+        Status = HpAddSystemCallFilter(lep::HashExportName("NtUserBeginPaint"), LepHpNtUserBeginPaint, this);
         WriteLog(L"user32 hook NtUserBeginPaint: %08X", Status);
         FAIL_RETURN(Status);
 
@@ -3549,19 +3549,19 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
         Mp::PATCH_MEMORY_DATA p[10];
         ULONG_PTR Count = 0;
 
-        p[Count++] = LepHookFromEATOp(User32, USER32, SetWindowLongA, SetWindowLongHookOp);
-        p[Count++] = LepHookFromEAT(User32, USER32, GetWindowLongA);
-        p[Count++] = LepHookFromEATOp(User32, USER32, SetWindowLongPtrA, SetWindowLongHookOp);
-        p[Count++] = LepHookFromEAT(User32, USER32, GetWindowLongPtrA);
-        p[Count++] = LepHookFromEAT(User32, USER32, IsWindowUnicode);
+        p[Count++] = LepHookFromEATOp(User32, SetWindowLongA, SetWindowLongHookOp);
+        p[Count++] = LepHookFromEAT(User32, GetWindowLongA);
+        p[Count++] = LepHookFromEATOp(User32, SetWindowLongPtrA, SetWindowLongHookOp);
+        p[Count++] = LepHookFromEAT(User32, GetWindowLongPtrA);
+        p[Count++] = LepHookFromEAT(User32, IsWindowUnicode);
 
-        p[Count++] = LepHookFromEAT(User32, USER32, GetClipboardData);
-        p[Count++] = LepHookFromEAT(User32, USER32, SetClipboardData);
+        p[Count++] = LepHookFromEAT(User32, GetClipboardData);
+        p[Count++] = LepHookFromEAT(User32, SetClipboardData);
 
         if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
         {
-            p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoA);
-            p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoW);
+            p[Count++] = LepHookFromEAT(User32, SystemParametersInfoA);
+            p[Count++] = LepHookFromEAT(User32, SystemParametersInfoW);
         }
 
         if (DefaultEditDpiServerInfoGetter != nullptr)
@@ -3642,17 +3642,17 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
             LEP_FUNCTION_JUMP_OP);
     }
 
-    p[Count++] = LepHookFromEAT(User32, USER32, SetWindowLongA);
-    p[Count++] = LepHookFromEAT(User32, USER32, GetWindowLongA);
-    p[Count++] = LepHookFromEAT(User32, USER32, IsWindowUnicode);
+    p[Count++] = LepHookFromEAT(User32, SetWindowLongA);
+    p[Count++] = LepHookFromEAT(User32, GetWindowLongA);
+    p[Count++] = LepHookFromEAT(User32, IsWindowUnicode);
 
-    p[Count++] = LepHookFromEAT(User32, USER32, GetClipboardData);
-    p[Count++] = LepHookFromEAT(User32, USER32, SetClipboardData);
+    p[Count++] = LepHookFromEAT(User32, GetClipboardData);
+    p[Count++] = LepHookFromEAT(User32, SetClipboardData);
 
     if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
     {
-        p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoA);
-        p[Count++] = LepHookFromEAT(User32, USER32, SystemParametersInfoW);
+        p[Count++] = LepHookFromEAT(User32, SystemParametersInfoA);
+        p[Count++] = LepHookFromEAT(User32, SystemParametersInfoW);
     }
 
     if (HookNativeDC)
@@ -3664,10 +3664,10 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     }
     else
     {
-        p[Count++] = LepHookFromEAT(User32, USER32, GetDC);
-        p[Count++] = LepHookFromEAT(User32, USER32, GetDCEx);
-        p[Count++] = LepHookFromEAT(User32, USER32, GetWindowDC);
-        p[Count++] = LepHookFromEAT(User32, USER32, BeginPaint);
+        p[Count++] = LepHookFromEAT(User32, GetDC);
+        p[Count++] = LepHookFromEAT(User32, GetDCEx);
+        p[Count++] = LepHookFromEAT(User32, GetWindowDC);
+        p[Count++] = LepHookFromEAT(User32, BeginPaint);
     }
 
     Status = Mp::PatchMemory(p, Count);
@@ -3683,13 +3683,13 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
 NTSTATUS LepGlobalData::UnHookUser32Routines()
 {
 #if ML_AMD64
-    HpRemoveSystemCallFilter(WIN32K_NtUserCreateWindowEx, LepHpNtUserCreateWindowEx);
-    HpRemoveSystemCallFilter(WIN32K_NtUserMessageCall, LepHpNtUserMessageCall);
-    HpRemoveSystemCallFilter(WIN32K_NtUserDefSetText, LepHpNtUserDefSetText);
-    HpRemoveSystemCallFilter(WIN32K_NtUserGetDC, LepHpNtUserGetDC);
-    HpRemoveSystemCallFilter(WIN32K_NtUserGetDCEx, LepHpNtUserGetDCEx);
-    HpRemoveSystemCallFilter(WIN32K_NtUserGetWindowDC, LepHpNtUserGetWindowDC);
-    HpRemoveSystemCallFilter(WIN32K_NtUserBeginPaint, LepHpNtUserBeginPaint);
+    HpRemoveSystemCallFilter(lep::HashExportName("NtUserCreateWindowEx"), LepHpNtUserCreateWindowEx);
+    HpRemoveSystemCallFilter(lep::HashExportName("NtUserMessageCall"), LepHpNtUserMessageCall);
+    HpRemoveSystemCallFilter(lep::HashExportName("NtUserDefSetText"), LepHpNtUserDefSetText);
+    HpRemoveSystemCallFilter(lep::HashExportName("NtUserGetDC"), LepHpNtUserGetDC);
+    HpRemoveSystemCallFilter(lep::HashExportName("NtUserGetDCEx"), LepHpNtUserGetDCEx);
+    HpRemoveSystemCallFilter(lep::HashExportName("NtUserGetWindowDC"), LepHpNtUserGetWindowDC);
+    HpRemoveSystemCallFilter(lep::HashExportName("NtUserBeginPaint"), LepHpNtUserBeginPaint);
 #endif
 
     Mp::RestoreMemory(HookStub.StubGetDpiServerInfoForCurrentThread);

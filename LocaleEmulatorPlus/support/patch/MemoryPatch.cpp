@@ -28,7 +28,7 @@ VOID PatchNop(PVOID Address, ULONG_PTR BytesToPatch)
 class MemoryPatchManager
 {
 protected:
-    GrowableArray<PTRAMPOLINE_DATA> TrampolineList;
+    lep::DynamicArray<PTRAMPOLINE_DATA> TrampolineList;
     HANDLE ExecutableHeap;
 
 public:
@@ -1325,7 +1325,7 @@ public:
 public:
     static NoInline NTSTATUS CreateInstance(MemoryPatchManager **Manager)
     {
-        ml::MlInitialize();
+        lep::InitializeSupportHeap();
 
         *Manager = (MemoryPatchManager *)AllocateMemory(sizeof(**Manager));
         if (*Manager == nullptr)
