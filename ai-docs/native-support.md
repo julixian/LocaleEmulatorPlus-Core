@@ -84,4 +84,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 
 其余测试覆盖 34 个 LEPB/子进程场景、10 个 broker 句柄场景、两个架构的公开声明布局和实际第三方调用。关闭日志时使用 `python .\build.py all --no-log --no-deploy`。构建脚本的参数、失败传播、部署和预览行为通过 `python -m unittest discover -s tests -p test_build.py` 验证。Core 仍只能普通静态导入 `ntdll.dll`，其他依赖保留 delay-load；不得因整理头文件引入全局动态初始化或 TLS。
 
+`build-nolog.py` 是强制追加 `--no-log` 的快捷入口，其余参数、构建逻辑和退出状态复用 `build.py`，例如 `python .\build-nolog.py all --no-deploy`。
+
 本轮对开启、关闭日志两种配置分别构建并运行启动回归，与对应原版产物比较普通导入、延迟导入、导出名/序号及 TLS 目录。自动测试不能替代具体游戏的人工兼容性验证。

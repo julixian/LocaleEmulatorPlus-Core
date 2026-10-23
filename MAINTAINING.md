@@ -91,6 +91,8 @@ python .\build.py x86 --vs-root D:\VisualStudio2026 --msvc-version 14.44.35207 -
 python .\build.py all --no-log --no-deploy
 ```
 
+也可以使用快捷入口 `python .\build-nolog.py all --no-deploy`；它复用 `build.py`，强制关闭日志，其余参数和退出状态保持一致。省略架构时同样构建 x86/x64。
+
 `ENABLE_LOG=1` 会启用 `WriteLog`。日志位于 LEP DLL 同目录下的 `Log` 子目录，普通运行日志形如 `<目标进程模块名>.<pid>.log.txt`，broker 日志记录跨架构注入阶段。日志会改变早期执行路径和时序，定位完问题后可关闭。
 
 如果目标进程在 log 建立前失败，可以使用弹框阶段诊断；使用等号传入以 `/` 或 `-` 开头的额外编译参数：
