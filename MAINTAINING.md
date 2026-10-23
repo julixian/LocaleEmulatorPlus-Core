@@ -58,6 +58,10 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 - `LocaleEmulatorPlus_x86.dll` 普通 import 只应有 `ntdll.dll`；`KERNEL32.dll`/`USER32.dll`/`GDI32.dll`/`DBGHELP.dll` 是 delay-load。
 - `LocaleEmulatorPlus_x64.dll` 普通 import 只应有 `ntdll.dll`；`USER32.dll`/`GDI32.dll`/`DBGHELP.dll` 是 delay-load。
 
+## 在 Visual Studio 中编辑
+
+打开 [`LocaleEmulatorPlus-Core.slnx`](LocaleEmulatorPlus-Core.slnx)，使用 Core 和 Loader 两个项目浏览代码和 IntelliSense。可切换 `Log` / `NoLog`、`Win32` / `x64` 查看不同宏分支。VS 项目只用于编辑，构建命令仅显示提示；实际构建继续使用下方的 Python 入口。包含路径和文件清单维护方式见 [VS 编辑配置](ai-docs/visual-studio.md)。
+
 ## 构建
 
 构建入口为 [`build.py`](build.py)，需要 Windows、Python 3.10+，只使用 Python 标准库。原两个 bat 已移除。默认构建两个架构，也可以单独选择：

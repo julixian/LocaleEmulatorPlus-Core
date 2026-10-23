@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
+  <Import Project="..\ide\Editor.Configuration.props" />
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{0232964D-BAAF-5DF2-BD52-794D98CF3D81}</ProjectGuid>
+    <RootNamespace>LoaderDll</RootNamespace>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup>
+    <LepProjectDefinitions>LEP_LOADER_DLL=1</LepProjectDefinitions>
+  </PropertyGroup>
+  <Import Project="..\ide\Editor.IntelliSense.props" />
+  <ItemGroup>
+    <ClCompile Include="LoaderDll.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="BrokerProtocol.h" />
+    <ClInclude Include="LoaderDll.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="LoaderDll.def" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

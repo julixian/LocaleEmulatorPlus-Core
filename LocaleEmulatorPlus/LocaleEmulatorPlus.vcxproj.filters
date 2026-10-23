@@ -1,0 +1,297 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <ItemGroup>
+    <Filter Include="Build support">
+      <UniqueIdentifier>{6AABEB76-439D-58B7-AE0E-181B548D2136}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Hooks">
+      <UniqueIdentifier>{4F0E1986-3DA6-548F-966D-28B572749758}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Project files">
+      <UniqueIdentifier>{B02885E4-6534-5BB7-97E4-555779038CC7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Utility">
+      <UniqueIdentifier>{D56CEC72-1439-5436-B1A4-3BB784BA6E61}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="support">
+      <UniqueIdentifier>{16F37A68-036B-5F38-AC06-D490807A896B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="support\base">
+      <UniqueIdentifier>{7B4E9768-9C07-5142-A2FE-FE27BE66FC71}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="support\native">
+      <UniqueIdentifier>{A5E5C101-247F-596C-AEED-7AA91057B1B5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="support\patch">
+      <UniqueIdentifier>{3264D5E6-4285-542F-8DCF-8EA8365FD084}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="support\pe">
+      <UniqueIdentifier>{90E899B9-5754-51F9-9FF0-051920F3091B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="support\runtime">
+      <UniqueIdentifier>{BC8D7B54-5836-5DBC-A806-B4AF12B82A4F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="support\search">
+      <UniqueIdentifier>{A91B8DB8-08A2-540E-B06C-9DB3CE5BFE34}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\include\LocaleEmulatorPlus.ixx">
+      <Filter>Project files</Filter>
+    </ClCompile>
+    <ClCompile Include="HandleTable.cpp" />
+    <ClCompile Include="HookPort.cpp" />
+    <ClCompile Include="Hooks\Gdi32Hook.cpp">
+      <Filter>Hooks</Filter>
+    </ClCompile>
+    <ClCompile Include="Hooks\Kernel32Hook.cpp">
+      <Filter>Hooks</Filter>
+    </ClCompile>
+    <ClCompile Include="Hooks\NtdllHook.cpp">
+      <Filter>Hooks</Filter>
+    </ClCompile>
+    <ClCompile Include="Hooks\User32Hook.cpp">
+      <Filter>Hooks</Filter>
+    </ClCompile>
+    <ClCompile Include="LocaleEmulatorPlus.cpp" />
+    <ClCompile Include="stdafx.cpp" />
+    <ClCompile Include="support\native\File.cpp">
+      <Filter>support\native</Filter>
+    </ClCompile>
+    <ClCompile Include="support\native\Loader.cpp">
+      <Filter>support\native</Filter>
+    </ClCompile>
+    <ClCompile Include="support\native\Memory.cpp">
+      <Filter>support\native</Filter>
+    </ClCompile>
+    <ClCompile Include="support\native\Nls.cpp">
+      <Filter>support\native</Filter>
+    </ClCompile>
+    <ClCompile Include="support\native\NtHelpers.cpp">
+      <Filter>support\native</Filter>
+    </ClCompile>
+    <ClCompile Include="support\native\Path.cpp">
+      <Filter>support\native</Filter>
+    </ClCompile>
+    <ClCompile Include="support\native\Process.cpp">
+      <Filter>support\native</Filter>
+    </ClCompile>
+    <ClCompile Include="support\native\Registry.cpp">
+      <Filter>support\native</Filter>
+    </ClCompile>
+    <ClCompile Include="support\patch\Decoder.cpp">
+      <Filter>support\patch</Filter>
+    </ClCompile>
+    <ClCompile Include="support\patch\MemoryPatch.cpp">
+      <Filter>support\patch</Filter>
+    </ClCompile>
+    <ClCompile Include="support\pe\Image.cpp">
+      <Filter>support\pe</Filter>
+    </ClCompile>
+    <ClCompile Include="support\runtime\Diagnostics.cpp">
+      <Filter>support\runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="support\runtime\File.cpp">
+      <Filter>support\runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="support\runtime\Heap.cpp">
+      <Filter>support\runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="support\runtime\String.cpp">
+      <Filter>support\runtime</Filter>
+    </ClCompile>
+    <ClCompile Include="Utility\Utility.cpp">
+      <Filter>Utility</Filter>
+    </ClCompile>
+    <ClCompile Include="..\dep\libs\LepCrtShim_x64.cpp">
+      <Filter>Build support</Filter>
+    </ClCompile>
+    <ClCompile Include="..\dep\libs\LepDelayLoad_x86_x64.cpp">
+      <Filter>Build support</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="HandleTable.h" />
+    <ClInclude Include="HookPort.h" />
+    <ClInclude Include="Hooks\Gdi32Hook.h">
+      <Filter>Hooks</Filter>
+    </ClInclude>
+    <ClInclude Include="Hooks\MessageTable.h">
+      <Filter>Hooks</Filter>
+    </ClInclude>
+    <ClInclude Include="Hooks\NtdllHook.h">
+      <Filter>Hooks</Filter>
+    </ClInclude>
+    <ClInclude Include="Hooks\User32Hook.h">
+      <Filter>Hooks</Filter>
+    </ClInclude>
+    <ClInclude Include="LocaleEmulatorPlus.h" />
+    <ClInclude Include="ml.h" />
+    <ClInclude Include="SectionProtector.h" />
+    <ClInclude Include="stdafx.h" />
+    <ClInclude Include="support\base\Constexpr.h">
+      <Filter>support\base</Filter>
+    </ClInclude>
+    <ClInclude Include="support\base\Macros.h">
+      <Filter>support\base</Filter>
+    </ClInclude>
+    <ClInclude Include="support\base\Platform.h">
+      <Filter>support\base</Filter>
+    </ClInclude>
+    <ClInclude Include="support\base\Pointer.h">
+      <Filter>support\base</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Debug.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Declarations.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Exception.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\File.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Font.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Helpers.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Loader.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Memory.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Nls.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Operations.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Path.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Process.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Registry.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\RegistrySupport.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Runtime.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\String.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Synchronization.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Timer.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Token.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\Types.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\UndocumentedWin32.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\native\User.h">
+      <Filter>support\native</Filter>
+    </ClInclude>
+    <ClInclude Include="support\patch\Decoder.h">
+      <Filter>support\patch</Filter>
+    </ClInclude>
+    <ClInclude Include="support\patch\MemoryPatch.h">
+      <Filter>support\patch</Filter>
+    </ClInclude>
+    <ClInclude Include="support\pe\ExportHash.h">
+      <Filter>support\pe</Filter>
+    </ClInclude>
+    <ClInclude Include="support\pe\Image.h">
+      <Filter>support\pe</Filter>
+    </ClInclude>
+    <ClInclude Include="support\runtime\Array.h">
+      <Filter>support\runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="support\runtime\Diagnostics.h">
+      <Filter>support\runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="support\runtime\File.h">
+      <Filter>support\runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="support\runtime\HashTable.h">
+      <Filter>support\runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="support\runtime\Heap.h">
+      <Filter>support\runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="support\runtime\MemoryPrimitives.h">
+      <Filter>support\runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="support\runtime\String.h">
+      <Filter>support\runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="support\runtime\TypeTraits.h">
+      <Filter>support\runtime</Filter>
+    </ClInclude>
+    <ClInclude Include="support\search\Pattern.h">
+      <Filter>support\search</Filter>
+    </ClInclude>
+    <ClInclude Include="support\search\Sunday.h">
+      <Filter>support\search</Filter>
+    </ClInclude>
+    <ClInclude Include="support\Support.h">
+      <Filter>support</Filter>
+    </ClInclude>
+    <ClInclude Include="Utility\Utility.h">
+      <Filter>Utility</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Hooks\genmsgtbl.py">
+      <Filter>Hooks</Filter>
+    </None>
+    <None Include="..\dep\libs\lep_k32_x64.def">
+      <Filter>Build support</Filter>
+    </None>
+    <None Include="..\dep\libs\lep_k32_x86.def">
+      <Filter>Build support</Filter>
+    </None>
+    <None Include="..\dep\libs\lep_ntdll_x64.def">
+      <Filter>Build support</Filter>
+    </None>
+    <None Include="..\dep\libs\lep_ntdll_x86.def">
+      <Filter>Build support</Filter>
+    </None>
+    <None Include="..\build.py">
+      <Filter>Project files</Filter>
+    </None>
+    <None Include="..\build-nolog.py">
+      <Filter>Project files</Filter>
+    </None>
+    <None Include="..\MAINTAINING.md">
+      <Filter>Project files</Filter>
+    </None>
+    <None Include="..\ai-docs\native-support.md">
+      <Filter>Project files</Filter>
+    </None>
+    <None Include="..\ai-docs\visual-studio.md">
+      <Filter>Project files</Filter>
+    </None>
+    <None Include="..\ide\Editor.Configuration.props">
+      <Filter>Project files</Filter>
+    </None>
+    <None Include="..\ide\Editor.IntelliSense.props">
+      <Filter>Project files</Filter>
+    </None>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
+  <Import Project="..\ide\Editor.Configuration.props" />
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{FF5CBD8A-6BCE-53B8-9FFF-4C31F2A1BA32}</ProjectGuid>
+    <RootNamespace>LocaleEmulatorPlus</RootNamespace>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <Import Project="..\ide\Editor.IntelliSense.props" />
+  <ItemGroup>
+    <ClCompile Include="..\include\LocaleEmulatorPlus.ixx">
+      <AdditionalOptions>$(AdditionalOptions) /std:c++20</AdditionalOptions>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="HandleTable.cpp" />
+    <ClCompile Include="HookPort.cpp" />
+    <ClCompile Include="Hooks\Gdi32Hook.cpp" />
+    <ClCompile Include="Hooks\Kernel32Hook.cpp" />
+    <ClCompile Include="Hooks\NtdllHook.cpp" />
+    <ClCompile Include="Hooks\User32Hook.cpp" />
+    <ClCompile Include="LocaleEmulatorPlus.cpp" />
+    <ClCompile Include="stdafx.cpp" />
+    <ClCompile Include="support\native\File.cpp" />
+    <ClCompile Include="support\native\Loader.cpp" />
+    <ClCompile Include="support\native\Memory.cpp" />
+    <ClCompile Include="support\native\Nls.cpp" />
+    <ClCompile Include="support\native\NtHelpers.cpp" />
+    <ClCompile Include="support\native\Path.cpp" />
+    <ClCompile Include="support\native\Process.cpp" />
+    <ClCompile Include="support\native\Registry.cpp" />
+    <ClCompile Include="support\patch\Decoder.cpp" />
+    <ClCompile Include="support\patch\MemoryPatch.cpp" />
+    <ClCompile Include="support\pe\Image.cpp" />
+    <ClCompile Include="support\runtime\Diagnostics.cpp" />
+    <ClCompile Include="support\runtime\File.cpp" />
+    <ClCompile Include="support\runtime\Heap.cpp" />
+    <ClCompile Include="support\runtime\String.cpp" />
+    <ClCompile Include="Utility\Utility.cpp" />
+    <ClCompile Include="..\dep\libs\LepCrtShim_x64.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)' == 'Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\dep\libs\LepDelayLoad_x86_x64.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="HandleTable.h" />
+    <ClInclude Include="HookPort.h" />
+    <ClInclude Include="Hooks\Gdi32Hook.h" />
+    <ClInclude Include="Hooks\MessageTable.h" />
+    <ClInclude Include="Hooks\NtdllHook.h" />
+    <ClInclude Include="Hooks\User32Hook.h" />
+    <ClInclude Include="LocaleEmulatorPlus.h" />
+    <ClInclude Include="ml.h" />
+    <ClInclude Include="SectionProtector.h" />
+    <ClInclude Include="stdafx.h" />
+    <ClInclude Include="support\base\Constexpr.h" />
+    <ClInclude Include="support\base\Macros.h" />
+    <ClInclude Include="support\base\Platform.h" />
+    <ClInclude Include="support\base\Pointer.h" />
+    <ClInclude Include="support\native\Debug.h" />
+    <ClInclude Include="support\native\Declarations.h" />
+    <ClInclude Include="support\native\Exception.h" />
+    <ClInclude Include="support\native\File.h" />
+    <ClInclude Include="support\native\Font.h" />
+    <ClInclude Include="support\native\Helpers.h" />
+    <ClInclude Include="support\native\Loader.h" />
+    <ClInclude Include="support\native\Memory.h" />
+    <ClInclude Include="support\native\Nls.h" />
+    <ClInclude Include="support\native\Operations.h" />
+    <ClInclude Include="support\native\Path.h" />
+    <ClInclude Include="support\native\Process.h" />
+    <ClInclude Include="support\native\Registry.h" />
+    <ClInclude Include="support\native\RegistrySupport.h" />
+    <ClInclude Include="support\native\Runtime.h" />
+    <ClInclude Include="support\native\String.h" />
+    <ClInclude Include="support\native\Synchronization.h" />
+    <ClInclude Include="support\native\Timer.h" />
+    <ClInclude Include="support\native\Token.h" />
+    <ClInclude Include="support\native\Types.h" />
+    <ClInclude Include="support\native\UndocumentedWin32.h" />
+    <ClInclude Include="support\native\User.h" />
+    <ClInclude Include="support\patch\Decoder.h" />
+    <ClInclude Include="support\patch\MemoryPatch.h" />
+    <ClInclude Include="support\pe\ExportHash.h" />
+    <ClInclude Include="support\pe\Image.h" />
+    <ClInclude Include="support\runtime\Array.h" />
+    <ClInclude Include="support\runtime\Diagnostics.h" />
+    <ClInclude Include="support\runtime\File.h" />
+    <ClInclude Include="support\runtime\HashTable.h" />
+    <ClInclude Include="support\runtime\Heap.h" />
+    <ClInclude Include="support\runtime\MemoryPrimitives.h" />
+    <ClInclude Include="support\runtime\String.h" />
+    <ClInclude Include="support\runtime\TypeTraits.h" />
+    <ClInclude Include="support\search\Pattern.h" />
+    <ClInclude Include="support\search\Sunday.h" />
+    <ClInclude Include="support\Support.h" />
+    <ClInclude Include="Utility\Utility.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Hooks\genmsgtbl.py" />
+    <None Include="..\dep\libs\lep_k32_x64.def" />
+    <None Include="..\dep\libs\lep_k32_x86.def" />
+    <None Include="..\dep\libs\lep_ntdll_x64.def" />
+    <None Include="..\dep\libs\lep_ntdll_x86.def" />
+    <None Include="..\build.py" />
+    <None Include="..\build-nolog.py" />
+    <None Include="..\MAINTAINING.md" />
+    <None Include="..\ai-docs\native-support.md" />
+    <None Include="..\ai-docs\visual-studio.md" />
+    <None Include="..\ide\Editor.Configuration.props" />
+    <None Include="..\ide\Editor.IntelliSense.props" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

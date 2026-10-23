@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <OutDir>$(LepRepoRoot)out\ide\$(MSBuildProjectName)\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(OutDir)obj\</IntDir>
+    <NMakeBuildCommandLine>echo Editor-only project. Use python build.py to build the DLLs.</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(NMakeBuildCommandLine)</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>echo Editor-only project. No build outputs were removed.</NMakeCleanCommandLine>
+    <NMakeCompileFileCommandLine>$(NMakeBuildCommandLine)</NMakeCompileFileCommandLine>
+    <LepLogEnabled Condition="'$(Configuration)' == 'NoLog'">0</LepLogEnabled>
+    <LepLogEnabled Condition="'$(LepLogEnabled)' == ''">1</LepLogEnabled>
+    <NMakePreprocessorDefinitions>NDEBUG;_NO_CRT_STDIO_INLINE;ENABLE_LOG=$(LepLogEnabled);$(LepProjectDefinitions);$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+    <NMakePreprocessorDefinitions Condition="'$(Platform)' == 'Win32'">WIN32;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+    <NMakePreprocessorDefinitions Condition="'$(Platform)' == 'x64'">WIN64;_WIN64;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+    <NMakeIncludeSearchPath>$(LepRepoRoot)LocaleEmulatorPlus;$(LepRepoRoot)LoaderDll;$(LepRepoRoot)include;$(WindowsSdkDir)Include\$(WindowsTargetPlatformVersion)\km;$(NMakeIncludeSearchPath)</NMakeIncludeSearchPath>
+    <AdditionalOptions>/std:c++14 /MT /Zc:wchar_t /GR- /EHs-c- /GS- $(AdditionalOptions)</AdditionalOptions>
+    <AdditionalOptions Condition="'$(Platform)' == 'Win32'">/Gr /arch:SSE $(AdditionalOptions)</AdditionalOptions>
+  </PropertyGroup>
+</Project>

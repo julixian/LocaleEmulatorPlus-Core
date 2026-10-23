@@ -1,0 +1,10 @@
+<Solution>
+  <Configurations>
+    <BuildType Name="Log" />
+    <BuildType Name="NoLog" />
+    <Platform Name="Win32" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="LocaleEmulatorPlus/LocaleEmulatorPlus.vcxproj" />
+  <Project Path="LoaderDll/LoaderDll.vcxproj" />
+</Solution>
