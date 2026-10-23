@@ -21,7 +21,7 @@ out\x64\LoaderDll_x64.dll
 out\x64\LocaleEmulatorPlus_x64.dll
 ```
 
-原 `ml.h` / `ml.cpp` 中的支持代码已拆到 `LocaleEmulatorPlus/support/`，独立编译为 `LepSupport.lib`，供 Core 和 Loader 分别静态链接。查找声明、实现及运行布局回归的方法见 [原生支持层维护](docs/native-support.md)。
+原 `ml.h` / `ml.cpp` 中的支持代码已拆到 `LocaleEmulatorPlus/support/`，独立编译为 `LepSupport.lib`，供 Core 和 Loader 分别静态链接。查找声明、实现及运行布局回归的方法见 [原生支持层维护](ai-docs/native-support.md)。
 
 ## 转区原理
 
