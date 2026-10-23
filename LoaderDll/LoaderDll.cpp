@@ -1,7 +1,7 @@
 ﻿#pragma comment(linker, "/SECTION:.text,ERW /MERGE:.rdata=.text /MERGE:.data=.text")
 #pragma comment(linker, "/SECTION:.Asuna,ERW /MERGE:.text=.Asuna")
 
-#include "ml.cpp"
+#include "../LocaleEmulatorPlus/support/Support.h"
 #include "LoaderDll.h"
 
 #if LEP_LOADER_DLL

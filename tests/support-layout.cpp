@@ -1,0 +1,38 @@
+// The runner force-includes the selected support header before this file.
+#include <stdio.h>
+#include <stddef.h>
+
+int main()
+{
+#define SIZE(type) printf("sizeof(" #type ")=%Iu\n", sizeof(type))
+#define OFFSET(type, member) printf("offsetof(" #type "," #member ")=%Iu\n", offsetof(type, member))
+    SIZE(UNICODE_STRING);
+    SIZE(OBJECT_ATTRIBUTES);
+    SIZE(OBJECT_BASIC_INFORMATION);
+    SIZE(PEB_BASE);
+    SIZE(TEB_BASE);
+    SIZE(PS_CREATE_INFO);
+    SIZE(PS_ATTRIBUTE_LIST);
+    SIZE(TIME_FIELDS);
+    SIZE(RTL_TIME_ZONE_INFORMATION);
+    SIZE(CPTABLEINFO);
+    SIZE(NLSTABLEINFO);
+    SIZE(TEB_ACTIVE_FRAME);
+    SIZE(NtFileDisk);
+    SIZE(ml::String);
+    SIZE(ml::GrowableArray<BYTE>);
+    OFFSET(PEB_BASE, Ldr);
+    OFFSET(PEB_BASE, ProcessHeap);
+    OFFSET(PEB_BASE, AnsiCodePageData);
+    OFFSET(PEB_BASE, OemCodePageData);
+    OFFSET(PEB_BASE, UnicodeCaseTableData);
+    OFFSET(TEB_BASE, ProcessEnvironmentBlock);
+    OFFSET(TEB_BASE, CurrentLocale);
+    OFFSET(OBJECT_BASIC_INFORMATION, DesiredAccess);
+    OFFSET(RTL_TIME_ZONE_INFORMATION, StandardStart);
+    OFFSET(RTL_TIME_ZONE_INFORMATION, DaylightStart);
+    OFFSET(PS_ATTRIBUTE_LIST, Attributes);
+#undef SIZE
+#undef OFFSET
+    return 0;
+}

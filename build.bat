@@ -87,7 +87,7 @@ set "COMMON_INC=/I"%ROOT%\LocaleEmulatorPlus" /I"%VC_TOOLS%\include" /I"%SDK_INC
 set "COMMON_CL=/nologo /c /O2 /Ob1 /GF /Gy /GR- /EHs-c- /GS- %COMMON_ARCH_CL% /DNDEBUG %EXTRA_CL% /D_NO_CRT_STDIO_INLINE /Zc:wchar_t"
 set "LIBPATHS=/libpath:"%SDK_LIB%\um\%SDK_ARCH%" /libpath:"%SDK_LIB%\ucrt\%SDK_ARCH%" /libpath:"%VC_TOOLS%\lib\%VC_ARCH%""
 
-echo [%TARGET% 1/5] Generating import libraries
+echo [%TARGET% 1/6] Generating import libraries
 if /I "%TARGET%"=="x86" (
   "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_ntdll_x86.def" /out:"%LIBOUT%\%NTDLL_IMPORT_LIB%" || exit /b 1
   "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_k32_x86.def" /out:"%LIBOUT%\%K32_IMPORT_LIB%" || exit /b 1
@@ -95,7 +95,7 @@ if /I "%TARGET%"=="x86" (
   "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_ntdll_x64.def" /out:"%LIBOUT%\%NTDLL_IMPORT_LIB%" || exit /b 1
   "%LIB%" /nologo /machine:%MACHINE% /def:"%DEP%\libs\lep_k32_x64.def" /out:"%LIBOUT%\%K32_IMPORT_LIB%" || exit /b 1
 )
-echo [%TARGET% 2/5] Building LEP delay-load helper
+echo [%TARGET% 2/6] Building LEP delay-load helper
 "%CL_EXE%" %COMMON_CL% /Fo"%OBJ%\LepDelayLoad.obj" %COMMON_INC% "%DEP%\libs\LepDelayLoad_x86_x64.cpp" || exit /b 1
 if /I "%TARGET%"=="x64" (
   "%CL_EXE%" %COMMON_CL% /Oi- /Fo"%OBJ%\LepCrtShim.obj" %COMMON_INC% "%DEP%\libs\LepCrtShim_x64.cpp" || exit /b 1
@@ -104,7 +104,19 @@ if /I "%TARGET%"=="x64" (
   "%LIB%" /nologo /out:"%LIBOUT%\LepMyLib.lib" "%OBJ%\LepDelayLoad.obj" || exit /b 1
 )
 
-echo [%TARGET% 3/5] Compiling LocaleEmulatorPlus
+echo [%TARGET% 3/6] Building native support library
+set "SUPPORT_OBJECTS="
+pushd "%ROOT%\LocaleEmulatorPlus" || exit /b 1
+for %%D in (runtime native pe patch) do (
+  for %%F in (support\%%D\*.cpp) do (
+    "%CL_EXE%" %COMMON_CL% /Fo"%OBJ%\Support_%%D_%%~nF.obj" %COMMON_INC% "%%F" || exit /b 1
+    set "SUPPORT_OBJECTS=!SUPPORT_OBJECTS! "%OBJ%\Support_%%D_%%~nF.obj""
+  )
+)
+popd
+"%LIB%" /nologo /out:"%LIBOUT%\LepSupport.lib" %SUPPORT_OBJECTS% || exit /b 1
+
+echo [%TARGET% 4/6] Compiling LocaleEmulatorPlus
 pushd "%ROOT%\LocaleEmulatorPlus" || exit /b 1
 for %%F in (
   HandleTable.cpp
@@ -113,7 +125,6 @@ for %%F in (
   Hooks\NtdllHook.cpp
   Hooks\User32Hook.cpp
   LocaleEmulatorPlus.cpp
-  ml.cpp
   stdafx.cpp
   Utility\Utility.cpp
 ) do (
@@ -122,8 +133,8 @@ for %%F in (
 "%CL_EXE%" %COMMON_CL% /Fo"%OBJ%\LEP_HookPort.obj" %COMMON_INC% "HookPort.cpp" || exit /b 1
 popd
 
-echo [%TARGET% 4/5] Linking %LEP_DLL%
-set "LEP_OBJECTS="%OBJ%\LEP_HandleTable.obj" "%OBJ%\LEP_Gdi32Hook.obj" "%OBJ%\LEP_Kernel32Hook.obj" "%OBJ%\LEP_NtdllHook.obj" "%OBJ%\LEP_User32Hook.obj" "%OBJ%\LEP_LocaleEmulatorPlus.obj" "%OBJ%\LEP_ml.obj" "%OBJ%\LEP_stdafx.obj" "%OBJ%\LEP_Utility.obj""
+echo [%TARGET% 5/6] Linking %LEP_DLL%
+set "LEP_OBJECTS="%OBJ%\LEP_HandleTable.obj" "%OBJ%\LEP_Gdi32Hook.obj" "%OBJ%\LEP_Kernel32Hook.obj" "%OBJ%\LEP_NtdllHook.obj" "%OBJ%\LEP_User32Hook.obj" "%OBJ%\LEP_LocaleEmulatorPlus.obj" "%OBJ%\LEP_stdafx.obj" "%OBJ%\LEP_Utility.obj""
 set "LEP_OBJECTS=%LEP_OBJECTS% "%OBJ%\LEP_HookPort.obj""
 
 "%LINK_EXE%" /nologo /dll /out:"%OUT%\%LEP_DLL%" /implib:"%OUT%\LocaleEmulatorPlus_%SUFFIX%.lib" ^
@@ -132,9 +143,9 @@ set "LEP_OBJECTS=%LEP_OBJECTS% "%OBJ%\LEP_HookPort.obj""
   /export:LoadFirstDll ^
   /delayload:KERNEL32.dll /delayload:USER32.dll /delayload:GDI32.dll /delayload:DBGHELP.dll ^
   %ALT_UNDOC% ^
-  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" kernel32.lib user32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
+  "%LIBOUT%\LepSupport.lib" "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" kernel32.lib user32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
 
-echo [%TARGET% 5/5] Building %LOADER_DLL%
+echo [%TARGET% 6/6] Building %LOADER_DLL%
 pushd "%ROOT%" || exit /b 1
 "%CL_EXE%" %COMMON_CL% /DLEP_LOADER_DLL=1 /Fo"%OBJ%\LoaderDll.obj" %COMMON_INC% "%ROOT%\LoaderDll\LoaderDll.cpp" || exit /b 1
 popd
@@ -143,7 +154,7 @@ popd
   "%OBJ%\LoaderDll.obj" ^
   %LIBPATHS% /nodefaultlib /debug:none /opt:ref /ignore:4254 %SAFESEH% /manifest:no /machine:%MACHINE% /subsystem:windows ^
   %ALT_UNDOC% ^
-  "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" kernel32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
+  "%LIBOUT%\LepSupport.lib" "%LIBOUT%\LepMyLib.lib" ntdll.lib "%LIBOUT%\%NTDLL_IMPORT_LIB%" "%LIBOUT%\%K32_IMPORT_LIB%" kernel32.lib gdi32.lib dbghelp.lib libcmt.lib oldnames.lib libvcruntime.lib || exit /b 1
 
 if exist "%LEP_DEPLOY_DIR%\." (
   copy /y "%OUT%\%LEP_DLL%" "%LEP_DEPLOY_DIR%\%LEP_DLL%" >nul || exit /b 1
