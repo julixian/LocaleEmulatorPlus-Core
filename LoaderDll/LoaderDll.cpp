@@ -3,6 +3,7 @@
 
 #include "../LocaleEmulatorPlus/support/Support.h"
 #include "LoaderDll.h"
+#include "Environment.h"
 
 #if LEP_LOADER_DLL
 
@@ -144,28 +145,11 @@ static NTSTATUS LepCreateBootstrapPayload(
 {
     if (Environment == nullptr || DllPath == nullptr || Payload == nullptr || PayloadSize == nullptr)
         return STATUS_INVALID_PARAMETER;
-    if (!LepValidateEnvironment(Environment))
-        return STATUS_INVALID_PARAMETER;
-    ULONG EnvironmentSize = Environment->Size;
-
-    if (Environment->Version == LEP_ENVIRONMENT_VERSION && Environment->TimeZoneId[0] != 0)
-    {
-        // Validate the stable Windows ID once at the public API boundary.
-        // The ID is copied inline with LEPB, never passed as a remote pointer.
-        static const WCHAR Prefix[] = L"\\Registry\\Machine\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\";
-        WCHAR Path[countof(Prefix) + countof(Environment->TimeZoneId)];
-        CopyMemory(Path, Prefix, sizeof(Prefix) - sizeof(WCHAR));
-        CopyMemory(Path + countof(Prefix) - 1, Environment->TimeZoneId, sizeof(Environment->TimeZoneId));
-        UNICODE_STRING KeyName;
-        OBJECT_ATTRIBUTES Attributes;
-        HANDLE Key;
-        RtlInitUnicodeString(&KeyName, Path);
-        InitializeObjectAttributes(&Attributes, &KeyName, OBJ_CASE_INSENSITIVE, nullptr, nullptr);
-        NTSTATUS IdStatus = NtOpenKey(&Key, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &Attributes);
-        if (NT_FAILED(IdStatus))
-            return IdStatus;
-        NtClose(Key);
-    }
+    LEP_RUNTIME_ENVIRONMENT Resolved;
+    NTSTATUS Status = LepResolveEnvironment(Environment, &Resolved);
+    if (NT_FAILED(Status))
+        return Status;
+    ULONG EnvironmentSize = sizeof(Resolved);
 
     WCHAR DirPath[MAX_NTPATH];
     ULONG_PTR Length = StrLengthW(DllPath);
@@ -194,7 +178,7 @@ static NTSTATUS LepCreateBootstrapPayload(
         return STATUS_NO_MEMORY;
     }
 
-    NTSTATUS Status = LepBuildBootstrapPayload(LocalPayload, Required, Environment, EnvironmentSize,
+    Status = LepBuildBootstrapPayload(LocalPayload, Required, &Resolved, EnvironmentSize,
                                       DllPath, DirPath);
     if (NT_FAILED(Status))
     {
@@ -482,7 +466,7 @@ static NTSTATUS LepCreateProcessWithHook(
 	PCWSTR                  CurrentDirectory,
 	ULONG                   CreationFlags,
 	LPSTARTUPINFOW          StartupInfo,
-	PML_PROCESS_INFORMATION ProcessInformation,
+	LPPROCESS_INFORMATION ProcessInformation,
 	LPSECURITY_ATTRIBUTES   ProcessAttributes,
 	LPSECURITY_ATTRIBUTES   ThreadAttributes,
 	PVOID                   Environment,
@@ -495,7 +479,7 @@ static NTSTATUS LepCreateProcessWithHook(
 	if (NT_FAILED(Status))
 		return Status;
 
-	ML_PROCESS_INFORMATION ProcInfo = {};
+	PROCESS_INFORMATION ProcInfo = {};
 	PVOID LocalImage = nullptr;
 	PVOID RemoteImage = nullptr;
 	PVOID LdrLoadDllAddress = nullptr;
@@ -503,7 +487,7 @@ static NTSTATUS LepCreateProcessWithHook(
 	BOOL LdrLoadDllWritable = FALSE;
 	BYTE Backup[LDR_LOAD_DLL_BACKUP_SIZE];
 
-	Status = CreateProcess(ApplicationName, CommandLine, CurrentDirectory,
+	Status = Ps::CreateProcess(ApplicationName, CommandLine, CurrentDirectory,
 		CreationFlags | CREATE_SUSPENDED, StartupInfo, &ProcInfo,
 		ProcessAttributes, ThreadAttributes, Environment, Token);
 	if (NT_FAILED(Status))
@@ -513,7 +497,6 @@ static NTSTATUS LepCreateProcessWithHook(
 	}
 
 	LdrLoadDllAddress = EATLookupRoutineByHashPNoFix(GetNtdllHandle(), lep::HashExportName("LdrLoadDll"));
-	ProcInfo.FirstCallLdrLoadDll = LdrLoadDllAddress;
 	if (LdrLoadDllAddress == nullptr)
 	{
 		Status = STATUS_ENTRYPOINT_NOT_FOUND;
@@ -621,7 +604,7 @@ LepCreateProcess2(
 	PCWSTR                  CurrentDirectory,
 	ULONG                   CreationFlags,
 	LPSTARTUPINFOW          StartupInfo,
-	PML_PROCESS_INFORMATION ProcessInformation,
+	LPPROCESS_INFORMATION ProcessInformation,
 	LPSECURITY_ATTRIBUTES   ProcessAttributes,
 	LPSECURITY_ATTRIBUTES   ThreadAttributes,
 	PVOID                   Environment,
@@ -632,7 +615,7 @@ LepCreateProcess2(
 	PWSTR                   DllFullPath;
 	PLDR_MODULE             Module;
 	NTSTATUS                Status;
-	ML_PROCESS_INFORMATION  ProcessInfo;
+	PROCESS_INFORMATION     ProcessInfo;
 
 	static WCHAR Dll[] = LEP_CORE_DLL_NAME;
 
@@ -693,7 +676,7 @@ LepCreateProcess(
 	PCWSTR                  CurrentDirectory,
 	ULONG                   CreationFlags,
 	LPSTARTUPINFOW          StartupInfo,
-	PML_PROCESS_INFORMATION ProcessInformation,
+	LPPROCESS_INFORMATION ProcessInformation,
 	LPSECURITY_ATTRIBUTES   ProcessAttributes,
 	LPSECURITY_ATTRIBUTES   ThreadAttributes,
 	PVOID                   Environment,

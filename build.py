@@ -108,7 +108,7 @@ class NativeBuild:
         self.environment["PATH"] = os.pathsep.join((
             str(self.host), str(config.linker.parent), self.environment.get("PATH", "")))
         self.compiler_flags = [
-            "/nologo", "/c", "/O2", "/Ob1", "/GF", "/Gy", "/GR-", "/EHs-c-", "/GS-",
+            "/nologo", "/utf-8", "/c", "/O2", "/Ob1", "/GF", "/Gy", "/GR-", "/EHs-c-", "/GS-",
             *(["/Gr", "/arch:SSE", "/DWIN32"] if arch == "x86" else ["/DWIN64", "/D_WIN64"]),
             "/DNDEBUG", f"/DENABLE_LOG={int(config.log_enabled)}", f"/DLEP_DIAG_INIT={int(config.diag_init)}",
             "/D_NO_CRT_STDIO_INLINE", "/Zc:wchar_t",
@@ -211,10 +211,11 @@ class NativeBuild:
         loader_name = f"LoaderDll_{self.arch}"
         self.stage(6, f"Building {loader_name}.dll")
         loader_object = self.compile(self.root / "LoaderDll/LoaderDll.cpp", "LoaderDll.obj", "/DLEP_LOADER_DLL=1")
+        environment_object = self.compile(self.root / "LoaderDll/Environment.cpp", "Environment.obj", "/DLEP_LOADER_DLL=1")
         self.run(self.config.linker, "/nologo", "/dll", "/noentry",
                  f"/out:{self.output / (loader_name + '.dll')}",
                  f"/implib:{self.output / (loader_name + '.lib')}",
-                 f"/def:{self.root / 'LoaderDll/LoaderDll.def'}", loader_object,
+                 f"/def:{self.root / 'LoaderDll/LoaderDll.def'}", loader_object, environment_object,
                  *self.library_paths, *self.linker_flags,
                  *self.import_aliases(), *self.link_libraries(core=False))
 

@@ -13,7 +13,7 @@
     <NMakePreprocessorDefinitions Condition="'$(Platform)' == 'Win32'">WIN32;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
     <NMakePreprocessorDefinitions Condition="'$(Platform)' == 'x64'">WIN64;_WIN64;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
     <NMakeIncludeSearchPath>$(LepRepoRoot)LocaleEmulatorPlus;$(LepRepoRoot)LoaderDll;$(LepRepoRoot)include;$(WindowsSdkDir)Include\$(WindowsTargetPlatformVersion)\km;$(NMakeIncludeSearchPath)</NMakeIncludeSearchPath>
-    <AdditionalOptions>/std:c++14 /MT /Zc:wchar_t /GR- /EHs-c- /GS- $(AdditionalOptions)</AdditionalOptions>
+    <AdditionalOptions>/std:c++14 /utf-8 /MT /Zc:wchar_t /GR- /EHs-c- /GS- $(AdditionalOptions)</AdditionalOptions>
     <AdditionalOptions Condition="'$(Platform)' == 'Win32'">/Gr /arch:SSE $(AdditionalOptions)</AdditionalOptions>
   </PropertyGroup>
 </Project>

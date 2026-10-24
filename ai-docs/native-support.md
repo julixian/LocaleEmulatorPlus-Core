@@ -70,6 +70,7 @@ python -m unittest discover -s tests -p test_build.py
 .\tests\run-lepb-compat.ps1
 .\tests\run-broker-handle.ps1
 .\tests\run-public-api.ps1
+.\tests\run-timezone.ps1
 ```
 
 - `run-support-headers.ps1` 检查 22 个入口头文件能独立、重复包含。
@@ -77,3 +78,4 @@ python -m unittest discover -s tests -p test_build.py
 - `run-lepb-compat.ps1` 覆盖 LEPB 格式、参数校验及同架构、跨架构子进程传播。
 - `run-broker-handle.ps1` 检查 broker 句柄传递、权限和 PID 校验。
 - `run-public-api.ps1` 对照公开声明与 Core 布局，并运行第三方调用示例。
+- `run-timezone.ps1` 验证 v4 时区解析、名称覆盖、切换日期、只读输入及同架构、跨架构多代传播，覆盖两个启动导出。

@@ -120,7 +120,7 @@ static PBYTE NTAPI LepGetDpiServerInfoForCurrentThread()
         "Unexpected TEXTMETRICW layout");
     RtlCopyMemory(Shadow, Info, sizeof(Tlb->DpiServerInfoShadow));
     TEXTMETRICW *Metric = (TEXTMETRICW *)(Shadow + 40);
-    BYTE TargetCharset = (BYTE)GlobalData->GetLepb()->DefaultCharset;
+    BYTE TargetCharset = (BYTE)GlobalData->GetEnvironment()->DefaultCharset;
     Metric->tmCharSet = TargetCharset;
 
     return Shadow;
@@ -344,7 +344,7 @@ static ULONG NTAPI LepDefaultEditSetFont(PVOID Edit, HGDIOBJ Font, ULONG Redraw)
     {
         PBYTE Charset = (PBYTE)PtrAdd(Edit, GlobalData->DefaultEditCharsetOffset);
         BYTE OriginalCharset = *Charset;
-        BYTE TargetCharset = (BYTE)GlobalData->GetLepb()->DefaultCharset;
+        BYTE TargetCharset = (BYTE)GlobalData->GetEnvironment()->DefaultCharset;
         *Charset = TargetCharset;
 
 #if ENABLE_LOG
@@ -3442,7 +3442,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
 
 #if ENABLE_LOG
     WriteLog(L"user32 default EDIT DPI server-info getter=%p target=%u",
-        DefaultEditDpiServerInfoGetter, GetLepb()->DefaultCharset);
+        DefaultEditDpiServerInfoGetter, GetEnvironment()->DefaultCharset);
     WriteLog(L"user32 Win7 default EDIT ECSetFont=%p charset-offset=%u",
         DefaultEditSetFont.Routine, (ULONG)DefaultEditSetFont.CharsetOffset);
 #endif
@@ -3558,7 +3558,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
         p[Count++] = LepHookFromEAT(User32, GetClipboardData);
         p[Count++] = LepHookFromEAT(User32, SetClipboardData);
 
-        if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
+        if (GetEnvironment()->AnsiCodePage == CP_SHIFTJIS)
         {
             p[Count++] = LepHookFromEAT(User32, SystemParametersInfoA);
             p[Count++] = LepHookFromEAT(User32, SystemParametersInfoW);
@@ -3649,7 +3649,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     p[Count++] = LepHookFromEAT(User32, GetClipboardData);
     p[Count++] = LepHookFromEAT(User32, SetClipboardData);
 
-    if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
+    if (GetEnvironment()->AnsiCodePage == CP_SHIFTJIS)
     {
         p[Count++] = LepHookFromEAT(User32, SystemParametersInfoA);
         p[Count++] = LepHookFromEAT(User32, SystemParametersInfoW);

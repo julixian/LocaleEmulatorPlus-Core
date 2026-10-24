@@ -6,7 +6,7 @@
 
 ### 初始化顺序
 
-`LocaleEmulatorPlus` 初始化时先校验并挂接 `LEP_BOOTSTRAP_PAYLOAD`，从其中读取定长 `LEPB` 配置，再构造注册表映射、初始化 HookPort、安装 ntdll hook，随后注册 `LdrRegisterDllNotification()` 处理后加载模块。若 kernel32/kernelbase 已经加载，会主动调用 `HookKernel32Routines()`；USER32/GDI32 则通常由 DLL notification 触发。
+`LocaleEmulatorPlus` 初始化时先校验并挂接 `LEP_BOOTSTRAP_PAYLOAD`，从其中读取 Loader 已解析的 `LEP_RUNTIME_ENVIRONMENT` 配置，再构造注册表映射、初始化 HookPort、安装 ntdll hook，随后注册 `LdrRegisterDllNotification()` 处理后加载模块。若 kernel32/kernelbase 已经加载，会主动调用 `HookKernel32Routines()`；USER32/GDI32 则通常由 DLL notification 触发。
 
 ### Inline Hook
 
@@ -132,7 +132,7 @@ x64 syscall 入口 patch 策略：
 
 跨架构传播：父进程不能把本架构的指针、Payload 内部地址或 DLL 镜像直接交给另一位数进程。父进程先用 `CreateFileMappingW(INVALID_HANDLE_VALUE, ...)` 创建一个按名称访问的、由系统分页文件提供后备存储的临时 section，再用 `MapViewOfFile` 写入 broker 配置。这个 `Local\LEP_BROKER_<childPid>_<parentPid>` 映射只是父进程和 broker 之间的传输邮包。
 
-邮包中的 `LEP_BOOTSTRAP_PAYLOAD` 使用架构无关的固定宽度字段：指针不跨进程传递，字符串和重定向数据都使用相对于 Payload 内部 `LEPB` 起点的偏移。父进程随后启动目标位数的 `rundll32.exe`，调用 `LoaderDll_*!LepBrokerEntry`；broker 校验邮包中的 Payload，从磁盘加载对应位数的 LEP DLL，重新把同一份 Payload 序列化后写入目标 shadow 尾部，保存并 patch 子进程的 `LdrLoadDll`。broker 将最终状态写回邮包的 `Result` 字段，父进程等待 broker 退出后读取结果。
+邮包中的 `LEP_BOOTSTRAP_PAYLOAD` 使用架构无关的固定宽度字段：指针不跨进程传递，字符串和重定向数据都使用相对于 Payload 起点的偏移，内部环境使用 `LEP_RUNTIME_ENVIRONMENT`。父进程随后启动目标位数的 `rundll32.exe`，调用 `LoaderDll_*!LepBrokerEntry`；broker 校验邮包中的 Payload，从磁盘加载对应位数的 LEP DLL，重新把同一份 Payload 序列化后写入目标 shadow 尾部，保存并 patch 子进程的 `LdrLoadDll`。broker 将最终状态写回邮包的 `Result` 字段，父进程等待 broker 退出后读取结果。
 
 broker 启动使用线程级的 `TEB_ACTIVE_FRAME` 标记。父进程准备通过 `CreateProcessW` 启动 broker 时把 `LEP_BROKER_LAUNCH_CONTEXT` frame 压入当前线程，`CreateProcessW` 返回后弹出；因为父进程自己的 `NtCreateUserProcess` hook 也会在这条线程调用链上看到 broker 创建，`InjectSelfToChildProcess()` 发现该 frame 就跳过注入。这样不会影响其他线程同时创建的普通子进程，也只阻止“启动 broker → 又给 broker 注入 → broker 再启动 broker”的递归重入。
 
@@ -156,7 +156,7 @@ x64：不再扫描 `LdrInitializeThunk`，也不安装 x86 使用的 loader call
 
 函数：
 
-- `NtQuerySystemInformation`：改写系统时区信息。
+- `NtQuerySystemInformation`：对 `SystemCurrentTimeZoneInformation` 返回配置快照中的完整时区数据。时区 ID 解析、东京默认名称和用户名称覆盖均在 Loader 入口完成，查询 hook 不再改写名称。
 - `NtInitializeNlsFiles`：提供目标 NLS 文件映射和 locale 信息。
 - `NtQueryDefaultLocale`：返回目标 LCID。
 

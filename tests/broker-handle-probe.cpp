@@ -6,7 +6,6 @@ struct Environment {
     ULONG Size, Version, AnsiCodePage, OemCodePage, LocaleID, DefaultCharset;
     ULONG RegistryRedirectionMode, HookUILanguageMode;
     TIME_ZONE_INFORMATION Timezone;
-    WCHAR TimeZoneId[128];
 };
 struct Payload {
     ULONG Magic, Version, HeaderSize, TotalSize, EnvironmentOffset, EnvironmentSize;
@@ -18,7 +17,7 @@ struct Config {
     ULONG GrantedAccess, Reserved;
     BYTE Data[1];
 };
-static_assert(sizeof(Environment) == 460, "environment ABI");
+static_assert(sizeof(Environment) == 204, "runtime environment ABI");
 static_assert(offsetof(Config, Data) == 48, "broker ABI");
 static ULONG Tag(char a, char b, char c, char d) {
     return (ULONG)a | ((ULONG)b << 8) | ((ULONG)c << 16) | ((ULONG)d << 24);
@@ -28,7 +27,7 @@ int wmain(int argc, wchar_t **argv) {
     if (argc == 2 && wcscmp(argv[1], L"--child") == 0) {
         TIME_ZONE_INFORMATION zone = {};
         return GetACP() == 932 && GetTimeZoneInformation(&zone) != TIME_ZONE_ID_INVALID &&
-            wcscmp(zone.StandardName, L"\u6771\u4eac\u6a19\u6e96\u6642") == 0 ? 0 : 1;
+            wcscmp(zone.StandardName, L"東京標準時") == 0 ? 0 : 1;
     }
     if (argc != 3) return 2;
     bool fallback = wcscmp(argv[2], L"fallback") == 0;
@@ -75,16 +74,17 @@ int wmain(int argc, wchar_t **argv) {
         config->ProcessHandleValue = (ULONGLONG)(ULONG_PTR)transferred;
     }
     auto payload = (Payload *)config->Data;
-    payload->Magic = Tag('L','B','P','1'); payload->Version = 2;
+    payload->Magic = Tag('L','B','P','1'); payload->Version = 3;
     payload->HeaderSize = sizeof(Payload); payload->TotalSize = payloadSize;
     payload->EnvironmentOffset = sizeof(Payload); payload->EnvironmentSize = sizeof(Environment);
     auto environment = (Environment *)(config->Data + payload->EnvironmentOffset);
-    environment->Size = sizeof(Environment); environment->Version = 3;
+    environment->Size = sizeof(Environment); environment->Version = 1;
     environment->AnsiCodePage = environment->OemCodePage = 932;
     environment->LocaleID = 0x411; environment->DefaultCharset = 128;
     environment->RegistryRedirectionMode = 2; environment->HookUILanguageMode = 1;
     environment->Timezone.Bias = -540;
-    wcscpy_s(environment->TimeZoneId, L"Tokyo Standard Time");
+    wcscpy_s(environment->Timezone.StandardName, L"東京標準時");
+    wcscpy_s(environment->Timezone.DaylightName, L"東京標準時");
     payload->FullPathOffset = sizeof(Payload) + sizeof(Environment);
     payload->FullPathLength = (ULONG)(wcslen(core) * 2);
     memcpy(config->Data + payload->FullPathOffset, core, payload->FullPathLength + 2);

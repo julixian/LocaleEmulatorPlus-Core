@@ -235,19 +235,39 @@ typedef struct
     ULONG                           DefaultCharset;
     ULONG                           RegistryRedirectionMode;
     ULONG                           HookUILanguageMode;
-    RTL_TIME_ZONE_INFORMATION       Timezone;
     WCHAR                           TimeZoneId[128];
+    WCHAR                           StandardNameOverride[32];
+    WCHAR                           DaylightNameOverride[32];
 
 } LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK, *PLOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK, LEPB, *PLEPB;
 
-#define LEP_ENVIRONMENT_VERSION 3
-#define LEP_ENVIRONMENT_V2_VERSION 2
-#define LEP_ENVIRONMENT_V2_SIZE 204
+#define LEP_ENVIRONMENT_VERSION 4
 #define LEP_UI_LANGUAGE_MODE_MAX 2
 #define LEP_REGISTRY_REDIRECTION_MODE_MAX 2
 
-static_assert(sizeof(LEPB) == 460, "LEPB ABI v3 size mismatch");
-static_assert(offsetof(LEPB, TimeZoneId) == LEP_ENVIRONMENT_V2_SIZE, "LEPB v2 prefix changed");
+static_assert(sizeof(LEPB) == 416, "LEPB ABI v4 size mismatch");
+static_assert(offsetof(LEPB, TimeZoneId) == 32, "LEPB time-zone ID offset mismatch");
+static_assert(offsetof(LEPB, StandardNameOverride) == 288, "LEPB standard-name offset mismatch");
+static_assert(offsetof(LEPB, DaylightNameOverride) == 352, "LEPB daylight-name offset mismatch");
+
+// Serialized configuration consumed by Core and inherited by every child.
+// Public LEPB versions are resolved into this format only at the Loader boundary.
+typedef struct
+{
+    ULONG Size;
+    ULONG Version;
+    ULONG AnsiCodePage;
+    ULONG OemCodePage;
+    ULONG LocaleID;
+    ULONG DefaultCharset;
+    ULONG RegistryRedirectionMode;
+    ULONG HookUILanguageMode;
+    RTL_TIME_ZONE_INFORMATION Timezone;
+} LEP_RUNTIME_ENVIRONMENT, *PLEP_RUNTIME_ENVIRONMENT;
+typedef const LEP_RUNTIME_ENVIRONMENT* PCLEP_RUNTIME_ENVIRONMENT;
+
+#define LEP_RUNTIME_ENVIRONMENT_VERSION 1
+static_assert(sizeof(LEP_RUNTIME_ENVIRONMENT) == 204, "Runtime environment layout mismatch");
 
 #if ML_AMD64
 #define LDR_LOAD_DLL_BACKUP_SIZE 14
@@ -268,7 +288,7 @@ enum LEP_CHILD_INJECTION_FLAGS
 #define LEP_FIRST_DLL_BOOTSTRAP_MAGIC TAG4('L1DB')
 #define LEP_FIRST_DLL_BOOTSTRAP_EXPORT "LepFirstDllBootstrapData"
 #define LEP_BOOTSTRAP_PAYLOAD_MAGIC TAG4('LBP1')
-#define LEP_BOOTSTRAP_PAYLOAD_VERSION 2
+#define LEP_BOOTSTRAP_PAYLOAD_VERSION 3
 #define LEP_BOOTSTRAP_PAYLOAD_MAX_SIZE 0x1000000
 #define LEP_BOOTSTRAP_IMAGE_MAX_SIZE 0x10000000
 
@@ -360,36 +380,23 @@ inline BOOL LepPayloadRangeValid(ULONG Offset, ULONG Size, ULONG TotalSize)
     return Offset <= TotalSize && Size <= TotalSize - Offset;
 }
 
-inline BOOL LepValidateEnvironment(PLEPB Environment)
+inline BOOL LepStringTerminated(PCWSTR String, ULONG Capacity)
 {
-    if (Environment == nullptr ||
-        !((Environment->Size == LEP_ENVIRONMENT_V2_SIZE && Environment->Version == LEP_ENVIRONMENT_V2_VERSION) ||
-          (Environment->Size == sizeof(LEPB) && Environment->Version == LEP_ENVIRONMENT_VERSION)) ||
-        Environment->RegistryRedirectionMode > LEP_REGISTRY_REDIRECTION_MODE_MAX ||
-        Environment->HookUILanguageMode > LEP_UI_LANGUAGE_MODE_MAX)
-    {
-        return FALSE;
-    }
-
-    // Do not read beyond the 204-byte buffer supplied by a v2 caller.
-    if (Environment->Version == LEP_ENVIRONMENT_V2_VERSION)
-        return TRUE;
-
-    for (ULONG Index = 0; Index != countof(Environment->TimeZoneId); ++Index)
-    {
-        if (Environment->TimeZoneId[Index] == 0)
-        {
-            if (StrICompareW(Environment->TimeZoneId, L"Tokyo Standard Time") == 0 &&
-                (Environment->Timezone.Bias != -540 || Environment->Timezone.StandardBias != 0))
-            {
-                return FALSE;
-            }
+    for (ULONG Index = 0; Index != Capacity; ++Index)
+        if (String[Index] == 0)
             return TRUE;
-        }
-        if (Environment->TimeZoneId[Index] == L'\\' || Environment->TimeZoneId[Index] == L'/')
-            return FALSE;
-    }
     return FALSE;
+}
+
+inline BOOL LepValidateRuntimeEnvironment(PCLEP_RUNTIME_ENVIRONMENT Environment)
+{
+    return Environment != nullptr &&
+        Environment->Size == sizeof(*Environment) &&
+        Environment->Version == LEP_RUNTIME_ENVIRONMENT_VERSION &&
+        Environment->RegistryRedirectionMode <= LEP_REGISTRY_REDIRECTION_MODE_MAX &&
+        Environment->HookUILanguageMode <= LEP_UI_LANGUAGE_MODE_MAX &&
+        LepStringTerminated(Environment->Timezone.StandardName, countof(Environment->Timezone.StandardName)) &&
+        LepStringTerminated(Environment->Timezone.DaylightName, countof(Environment->Timezone.DaylightName));
 }
 
 inline BOOL LepValidateBootstrapPayload(PLEP_BOOTSTRAP_PAYLOAD Payload)
@@ -406,7 +413,7 @@ inline BOOL LepValidateBootstrapPayload(PLEP_BOOTSTRAP_PAYLOAD Payload)
         Payload->LepDllFullPathLength > Payload->TotalSize - sizeof(WCHAR) ||
         Payload->LepDllDirPathLength > Payload->TotalSize - sizeof(WCHAR) ||
         !LepPayloadRangeValid(Payload->EnvironmentOffset, Payload->EnvironmentSize, Payload->TotalSize) ||
-        (Payload->EnvironmentSize != LEP_ENVIRONMENT_V2_SIZE && Payload->EnvironmentSize != sizeof(LEPB)) ||
+        Payload->EnvironmentSize != sizeof(LEP_RUNTIME_ENVIRONMENT) ||
         !LepPayloadRangeValid(Payload->LepDllFullPathOffset, Payload->LepDllFullPathLength + sizeof(WCHAR), Payload->TotalSize) ||
         !LepPayloadRangeValid(Payload->LepDllDirPathOffset, Payload->LepDllDirPathLength + sizeof(WCHAR), Payload->TotalSize) ||
         (Payload->LepDllFullPathLength & (sizeof(WCHAR) - 1)) != 0 ||
@@ -415,9 +422,9 @@ inline BOOL LepValidateBootstrapPayload(PLEP_BOOTSTRAP_PAYLOAD Payload)
         return FALSE;
     }
 
-    PLEPB Environment = (PLEPB)PtrAdd(Payload, Payload->EnvironmentOffset);
-    // Check the advertised length before validating any optional fields.
-    if (Environment->Size != Payload->EnvironmentSize || !LepValidateEnvironment(Environment))
+    PCLEP_RUNTIME_ENVIRONMENT Environment = (PCLEP_RUNTIME_ENVIRONMENT)PtrAdd(Payload, Payload->EnvironmentOffset);
+    // Validate the fixed internal format only after checking its stored length.
+    if (Environment->Size != Payload->EnvironmentSize || !LepValidateRuntimeEnvironment(Environment))
         return FALSE;
 
     PCWSTR FullPath = (PCWSTR)PtrAdd(Payload, Payload->LepDllFullPathOffset);
@@ -426,10 +433,10 @@ inline BOOL LepValidateBootstrapPayload(PLEP_BOOTSTRAP_PAYLOAD Payload)
            DirPath[Payload->LepDllDirPathLength / sizeof(WCHAR)] == 0;
 }
 
-inline PLEPB LepBootstrapEnvironment(PLEP_BOOTSTRAP_PAYLOAD Payload)
+inline PCLEP_RUNTIME_ENVIRONMENT LepBootstrapEnvironment(PLEP_BOOTSTRAP_PAYLOAD Payload)
 {
     return LepValidateBootstrapPayload(Payload)
-        ? (PLEPB)PtrAdd(Payload, Payload->EnvironmentOffset)
+        ? (PCLEP_RUNTIME_ENVIRONMENT)PtrAdd(Payload, Payload->EnvironmentOffset)
         : nullptr;
 }
 
@@ -470,14 +477,14 @@ inline ULONG LepBootstrapPayloadSize(ULONG EnvironmentSize, PCWSTR FullPath, PCW
 inline NTSTATUS LepBuildBootstrapPayload(
     PLEP_BOOTSTRAP_PAYLOAD Payload,
     ULONG Capacity,
-    PLEPB Environment,
+    PCLEP_RUNTIME_ENVIRONMENT Environment,
     ULONG EnvironmentSize,
     PCWSTR FullPath,
     PCWSTR DirPath
 )
 {
     if (Payload == nullptr || Environment == nullptr || FullPath == nullptr || DirPath == nullptr ||
-        !LepValidateEnvironment(Environment) || EnvironmentSize != Environment->Size)
+        !LepValidateRuntimeEnvironment(Environment) || EnvironmentSize != Environment->Size)
         return STATUS_INVALID_PARAMETER;
 
     ULONG TotalSize = LepBootstrapPayloadSize(EnvironmentSize, FullPath, DirPath);
@@ -912,11 +919,11 @@ public:
         return &RuntimeState;
     }
 
-    PLEPB GetLepb()
+    PCLEP_RUNTIME_ENVIRONMENT GetEnvironment() const
     {
         return BootstrapPayload == nullptr
             ? nullptr
-            : (PLEPB)PtrAdd(BootstrapPayload, BootstrapPayload->EnvironmentOffset);
+            : (PCLEP_RUNTIME_ENVIRONMENT)PtrAdd(BootstrapPayload, BootstrapPayload->EnvironmentOffset);
     }
 
     PCWSTR GetLepDllFullPath()
@@ -941,7 +948,7 @@ public:
         DC = HookStub.StubGetDC == nullptr ? ::GetDC(nullptr) : this->GetDC(nullptr);
         GetRuntimeState()->OriginalCharset = GetTextCharset(DC);
 
-        lf.lfCharSet = GetLepb()->DefaultCharset;
+        lf.lfCharSet = GetEnvironment()->DefaultCharset;
         lf.lfFaceName[0] = 0;
 
         auto EnumFontCallback = [] (CONST LOGFONTW *lf, CONST TEXTMETRICW *, DWORD, LPARAM Param)

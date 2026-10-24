@@ -25,7 +25,7 @@ foreach ($arch in @('x86', 'x64')) {
     foreach ($header in $headers) {
         $source = Join-Path $outputRoot "$arch.cpp"
         [IO.File]::WriteAllText($source, "#include `"$header`"`n#include `"$header`"`n")
-        & $compiler /nologo /Zs /MT /DENABLE_LOG=1 /D_NO_CRT_STDIO_INLINE $includes $source
+        & $compiler /nologo /utf-8 /Zs /MT /DENABLE_LOG=1 /D_NO_CRT_STDIO_INLINE $includes $source
         if ($LASTEXITCODE -ne 0) { throw "Header is not self-contained: $arch/$header" }
     }
     Write-Output "${arch}: $($headers.Count) support entry headers compile independently and tolerate repeated inclusion"

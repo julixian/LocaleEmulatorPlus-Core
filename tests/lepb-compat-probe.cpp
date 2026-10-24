@@ -1,4 +1,4 @@
-// Native public-API ABI probe. Build as x86 and x64; see ai-docs/lepb-v3.md.
+// Native public-API ABI probe. Build as x86 and x64; see ai-docs/lepb-v4.md.
 #include <windows.h>
 #include <stdio.h>
 #include <wchar.h>
@@ -6,16 +6,19 @@
 struct EnvironmentV2 {
     ULONG Size, Version, AnsiCodePage, OemCodePage, LocaleID, DefaultCharset;
     ULONG RegistryRedirectionMode, HookUILanguageMode;
-    TIME_ZONE_INFORMATION Timezone;
+    struct {
+        LONG Bias;
+        WCHAR StandardName[32];
+        SHORT StandardStart[8];
+        LONG StandardBias;
+        WCHAR DaylightName[32];
+        SHORT DaylightStart[8];
+        LONG DaylightBias;
+    } Timezone;
 };
 struct EnvironmentV3 { EnvironmentV2 Base; WCHAR TimeZoneId[128]; };
-struct ProcessInformation {
-    HANDLE hProcess, hThread;
-    ULONG dwProcessId, dwThreadId;
-    void *FirstCallLdrLoadDll;
-};
 typedef LONG (WINAPI *CreateWithLocale)(void *, PCWSTR, PWSTR, PCWSTR,
-    ULONG, LPSTARTUPINFOW, ProcessInformation *, void *, void *, void *, HANDLE);
+    ULONG, LPSTARTUPINFOW, LPPROCESS_INFORMATION, void *, void *, void *, HANDLE);
 static_assert(sizeof(EnvironmentV2) == 204, "v2 ABI");
 static_assert(sizeof(EnvironmentV3) == 460, "v3 ABI");
 
@@ -31,12 +34,17 @@ int wmain(int argc, wchar_t **argv) {
     if (argc == 5 && wcscmp(argv[1], L"--child") == 0) {
         TIME_ZONE_INFORMATION tzi = {};
         DWORD result = GetTimeZoneInformation(&tzi);
-        bool normalized = wcscmp(tzi.StandardName, L"\u6771\u4eac\u6a19\u6e96\u6642") == 0;
+        bool normalized = wcscmp(tzi.StandardName, L"東京標準時") == 0;
         bool expected = wcscmp(argv[2], L"normalized") == 0;
+        bool dst = wcscmp(argv[2], L"dst") == 0;
         if (result == TIME_ZONE_ID_INVALID || GetACP() != 932 || normalized != expected ||
-            tzi.Bias != -540 || tzi.StandardBias != 0 || tzi.DaylightBias != 0 ||
+            tzi.Bias != (dst ? 480 : -540) || tzi.StandardBias != 0 || tzi.DaylightBias != (dst ? -60 : 0) ||
             wcscmp(tzi.StandardName, tzi.DaylightName) != 0) return 30;
         if (!expected && wcscmp(tzi.StandardName, L"Host language name") != 0) return 31;
+        if (dst && (tzi.StandardDate.wMonth != 11 || tzi.StandardDate.wDay != 1 ||
+            tzi.StandardDate.wDayOfWeek != 0 || tzi.StandardDate.wHour != 2 ||
+            tzi.DaylightDate.wMonth != 3 || tzi.DaylightDate.wDay != 2 ||
+            tzi.DaylightDate.wDayOfWeek != 0 || tzi.DaylightDate.wHour != 2)) return 35;
         int depth = _wtoi(argv[3]);
         if (depth == 0) return 0;
         // A second generation exercises Core's child-payload serialization.
@@ -68,15 +76,26 @@ int wmain(int argc, wchar_t **argv) {
     wcscpy_s(environment.Base.Timezone.DaylightName, L"Host language name");
     wcscpy_s(environment.TimeZoneId, L"Tokyo Standard Time");
     bool expectNormalized = true, reject = false;
-    if (wcscmp(argv[2], L"v2") == 0 || wcscmp(argv[2], L"v2-nested") == 0) {
+    if (wcscmp(argv[2], L"v2") == 0 || wcscmp(argv[2], L"v2-nested") == 0 ||
+        wcsncmp(argv[2], L"v2-dst", 6) == 0) {
         environment.Base.Size = sizeof(EnvironmentV2); environment.Base.Version = 2;
         expectNormalized = false;
     }
     if (wcscmp(argv[2], L"empty") == 0) { environment.TimeZoneId[0] = 0; expectNormalized = false; }
     if (wcscmp(argv[2], L"korea") == 0) { wcscpy_s(environment.TimeZoneId, L"Korea Standard Time"); expectNormalized = false; }
     if (wcscmp(argv[2], L"uppercase") == 0) wcscpy_s(environment.TimeZoneId, L"TOKYO STANDARD TIME");
+    bool dst = wcsstr(argv[2], L"-dst") != nullptr;
+    if (dst) {
+        expectNormalized = false;
+        environment.Base.Timezone.Bias = 480;
+        environment.Base.Timezone.DaylightBias = -60;
+        SHORT standard[] = {0,11,1,2,0,0,0,0}, daylight[] = {0,3,2,2,0,0,0,0};
+        memcpy(environment.Base.Timezone.StandardStart, standard, sizeof(standard));
+        memcpy(environment.Base.Timezone.DaylightStart, daylight, sizeof(daylight));
+        wcscpy_s(environment.TimeZoneId, L"Pacific Standard Time");
+    }
     if (wcscmp(argv[2], L"bad-size") == 0) { environment.Base.Size = 459; reject = true; }
-    if (wcscmp(argv[2], L"bad-version") == 0) { environment.Base.Version = 4; reject = true; }
+    if (wcscmp(argv[2], L"bad-version") == 0) { environment.Base.Version = 99; reject = true; }
     if (wcscmp(argv[2], L"v3-short") == 0) { environment.Base.Size = 204; reject = true; }
     if (wcscmp(argv[2], L"v2-long") == 0) { environment.Base.Version = 2; reject = true; }
     if (wcscmp(argv[2], L"unterminated") == 0) { for (auto &ch : environment.TimeZoneId) ch = L'x'; reject = true; }
@@ -96,14 +115,15 @@ int wmain(int argc, wchar_t **argv) {
     ULONG suppliedSize = environment.Base.Size <= 460 ? environment.Base.Size : 460;
     void *buffer = memory + system.dwPageSize - suppliedSize;
     memcpy(buffer, &environment, suppliedSize);
+    VirtualProtect(memory, system.dwPageSize, PAGE_READONLY, &oldProtect);
     wchar_t command[2048], directory[MAX_PATH];
     wcscpy_s(directory, executable); *wcsrchr(directory, L'\\') = 0;
-    int depth = wcscmp(argv[2], L"nested") == 0 || wcscmp(argv[2], L"v2-nested") == 0 || argc == 4 ? 1 : 0;
+    int depth = wcsstr(argv[2], L"nested") != nullptr || argc == 4 ? 1 : 0;
     const wchar_t *grandchild = argc == 4 ? argv[3] : executable;
     swprintf_s(command, L"\"%s\" --child %s %d \"%s\"", executable,
-        expectNormalized ? L"normalized" : L"preserved", depth, grandchild);
+        dst ? L"dst" : expectNormalized ? L"normalized" : L"preserved", depth, grandchild);
     STARTUPINFOW startup = {}; startup.cb = sizeof(startup);
-    ProcessInformation process = {};
+    PROCESS_INFORMATION process = {};
     LONG status = create(buffer, executable, command, directory, CREATE_NO_WINDOW,
         &startup, &process, NULL, NULL, NULL, NULL);
     printf("status=%08lx ", status);

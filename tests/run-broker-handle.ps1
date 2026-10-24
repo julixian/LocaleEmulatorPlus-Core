@@ -10,7 +10,7 @@ $runtimeRoot = Join-Path $outputRoot 'broker-handle-runtime'
 New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
 foreach ($arch in @('x86','x64')) {
     $env:LIB = "$VcTools\lib\$arch;$SdkRoot\Lib\$SdkVersion\ucrt\$arch;$SdkRoot\Lib\$SdkVersion\um\$arch"
-    & "$VcTools\bin\Hostx64\$arch\cl.exe" /nologo /MT /EHsc /O2 "/I$VcTools\include" "/I$SdkRoot\Include\$SdkVersion\ucrt" "/I$SdkRoot\Include\$SdkVersion\shared" "/I$SdkRoot\Include\$SdkVersion\um" "$PSScriptRoot\broker-handle-probe.cpp" "/Fo$outputRoot\broker-handle-probe-$arch.obj" "/Fe$outputRoot\broker-handle-probe-$arch.exe"
+    & "$VcTools\bin\Hostx64\$arch\cl.exe" /nologo /utf-8 /MT /EHsc /O2 "/I$VcTools\include" "/I$SdkRoot\Include\$SdkVersion\ucrt" "/I$SdkRoot\Include\$SdkVersion\shared" "/I$SdkRoot\Include\$SdkVersion\um" "$PSScriptRoot\broker-handle-probe.cpp" "/Fo$outputRoot\broker-handle-probe-$arch.obj" "/Fe$outputRoot\broker-handle-probe-$arch.exe"
     if ($LASTEXITCODE -ne 0) { throw "Compile failed: $arch" }
     foreach ($name in @("LoaderDll_$arch.dll", "LocaleEmulatorPlus_$arch.dll")) {
         Copy-Item -LiteralPath "$outputRoot\$arch\$name" -Destination (Join-Path $runtimeRoot $name) -Force

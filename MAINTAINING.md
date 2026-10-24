@@ -28,9 +28,9 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 
 主要流程：
 
-1. `LEPProc_*` 把 GUI 配置转换成 `LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK` (LEPB)，调用 `LoaderDll_*!LepCreateProcess2`。
-2. `LepCreateProcess2` 调用非公开的 `CreateProcessInternalW`，创建挂起且未加载 kernel32.dll/kernelbase.dll 的目标进程。
-3. `LoaderDll` 把 LEPB、注册表重定向数据和 `LocaleEmulatorPlus_*` 的完整路径序列化为 `LEP_BOOTSTRAP_PAYLOAD`。Payload 的字符串和数据都放在同一块内存中，结构体只保存相对偏移。
+1. 调用方填写 `LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK` (LEPB)，通过 Loader 的启动接口传入代码页、区域、时区 ID 和可选名称覆盖。
+2. `LoaderDll` 在入口将公开配置解析为 `LEP_RUNTIME_ENVIRONMENT`，补全时差、切换日期和返回名称，再与 `LocaleEmulatorPlus_*` 的路径序列化为 `LEP_BOOTSTRAP_PAYLOAD`。Payload 只保存相对偏移；子进程继承解析后的配置快照。公开 ABI 详见 [原生调用说明](ai-docs/lepb-v4.md)。
+3. `LepCreateProcess2` 调用非公开的 `CreateProcessInternalW`，创建挂起且未加载 kernel32.dll/kernelbase.dll 的目标进程。
 4. `LoaderDll` 从磁盘读取对应位数的 `LocaleEmulatorPlus_*`，根据 `SizeOfImage` 和 Payload 大小在目标进程中申请一块连续区域。
 5. `LoaderDll` 根据申请的确定的远程地址在本地重定位 `LocaleEmulatorPlus_*` 镜像后，把镜像和 Payload 写入目标进程；Payload 紧跟在 PE `SizeOfImage` 对齐后的尾部。
 6. `LoaderDll` 把目标 `ntdll!LdrLoadDll` 的原始字节、原页面保护以及 Payload 偏移/大小写入 shadow 的 bootstrap 元数据，然后 patch 目标 `ntdll!LdrLoadDll` 到 `LocaleEmulatorPlus_*!LoadFirstDll`。

@@ -14,7 +14,7 @@ foreach ($arch in @('x86','x64')) {
     $fixture = Join-Path $PSScriptRoot "support-layout-$arch.txt"
     $header = "$repoRoot\LocaleEmulatorPlus\support\Support.h"
     $exe = "$outputRoot\support-layout-$arch.exe"
-    & $compiler /nologo /MT /O2 /D_NO_CRT_STDIO_INLINE $includes "/FI$header" "$PSScriptRoot\support-layout.cpp" "/Fo$outputRoot\support-layout-$arch.obj" "/Fe$exe" /link legacy_stdio_definitions.lib
+    & $compiler /nologo /utf-8 /MT /O2 /D_NO_CRT_STDIO_INLINE $includes "/FI$header" "$PSScriptRoot\support-layout.cpp" "/Fo$outputRoot\support-layout-$arch.obj" "/Fe$exe" /link legacy_stdio_definitions.lib
     if ($LASTEXITCODE -ne 0) { throw "Layout/hash probe compile failed: $arch" }
     $result = (& $exe) -join "`n"
     if ($LASTEXITCODE -ne 0) { throw "Layout probe failed: $arch" }

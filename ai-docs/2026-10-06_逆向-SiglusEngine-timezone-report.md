@@ -188,7 +188,7 @@ F-003：severity=n/a_re，evidence_ids=E-007，confidence=high，location=LepNtQ
 
 2026-10-07 用户指出枚举宿主语言名称无法覆盖其他系统语言，并批准在原 LEPB 尾部增加可选时区 ID。最终实现撤掉名称枚举；LEPB v3 总大小为 460 字节，原 204 字节前缀不变，尾部为 WCHAR TimeZoneId[128]。旧 v2/204 调用继续支持。
 
-GUI 仅填入 Windows 时区 ID 和原有时区数据，不实现名称修复。Core 只在 v3 ID 为 Tokyo Standard Time 时统一返回日文名称；其他 ID、空 ID 和 v2 配置保留原名称。Loader 只读校验非空 ID 的注册表键，拒绝格式错误或与东京标准偏移明显冲突的配置。完整 ABI、迁移和复现说明见 [lepb-v3.md](lepb-v3.md)。
+GUI 仅填入 Windows 时区 ID 和原有时区数据，不实现名称修复。Core 只在 v3 ID 为 Tokyo Standard Time 时统一返回日文名称；其他 ID、空 ID 和 v2 配置保留原名称。Loader 只读校验非空 ID 的注册表键，拒绝格式错误或与东京标准偏移明显冲突的配置。完整 ABI、迁移和复现说明见 [lepb-v4.md](lepb-v4.md)。
 
 E-008：source_ref=tests/lepb-compat-probe.cpp、tests/run-lepb-compat.ps1、out/lepb-compat-tests.log、out/core-lepb-v3-build.log、out/gui-lepb-v3-build.log；content_hash=n/a；repro_command=`.\tests\run-lepb-compat.ps1`，在 Core 仓库构建后运行。两种位数共 34 组测试通过，包括保护页上的 v2/v3 缓冲区、同位数和跨位数子进程传递、参数错误处理。额外验证已安装旧 DLL 明确拒绝 v3，以及 GUI 真实调用的 v3/460 封送和东京名称返回值。
 

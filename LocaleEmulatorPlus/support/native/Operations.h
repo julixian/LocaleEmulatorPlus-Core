@@ -238,12 +238,6 @@ CreateProcess(
 );
 
 
-typedef struct ML_PROCESS_INFORMATION : public PROCESS_INFORMATION
-{
-    PVOID FirstCallLdrLoadDll;
-
-} ML_PROCESS_INFORMATION, *PML_PROCESS_INFORMATION;
-
 NTSTATUS
 CreateThread(
     PVOID                   StartAddress,

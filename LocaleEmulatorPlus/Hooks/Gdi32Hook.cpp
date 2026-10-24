@@ -32,7 +32,7 @@ HFONT GetFontFromFont(PLepGlobalData GlobalData, HFONT Font)
     if (GetObjectW(Font, sizeof(LogFont), &LogFont) == 0)
         return nullptr;
 
-    LogFont.lfCharSet = GlobalData->GetLepb()->DefaultCharset;
+    LogFont.lfCharSet = GlobalData->GetEnvironment()->DefaultCharset;
     Font = CreateFontIndirectW(&LogFont);
 
     return Font;
@@ -408,7 +408,7 @@ NTSTATUS LepGlobalData::AdjustFontDataInternal(PADJUST_FONT_DATA AdjustData)
                 Table,
                 TableSize,
                 Gdi::TT_NAME_ID_FACENAME,
-                this->GetLepb()->LocaleID,
+                this->GetEnvironment()->LocaleID,
                 &FaceName
             );
 
@@ -417,7 +417,7 @@ NTSTATUS LepGlobalData::AdjustFontDataInternal(PADJUST_FONT_DATA AdjustData)
                     Table,
                     TableSize,
                     Gdi::TT_NAME_ID_FULLNAME,
-                    this->GetLepb()->LocaleID,
+                    this->GetEnvironment()->LocaleID,
                     &FullName)
                 : Status;
 
@@ -595,7 +595,7 @@ INT NTAPI LepEnumFontCallbackW(CONST LOGFONTW *lf, CONST TEXTMETRICW *TextMetric
              lf->lfCharSet == DEFAULT_CHARSET ||
              lf->lfCharSet == EnumParam->GlobalData->GetRuntimeState()->OriginalCharset))
         {
-            EnumLogFontEx.elfLogFont.lfCharSet = EnumParam->GlobalData->GetLepb()->DefaultCharset;
+            EnumLogFontEx.elfLogFont.lfCharSet = EnumParam->GlobalData->GetEnvironment()->DefaultCharset;
         }
 
         Status = EnumParam->GlobalData->AdjustFontData(EnumParam->DC, &EnumLogFontEx, &TextMetric, FontType);
@@ -668,7 +668,7 @@ INT NTAPI LepEnumFontCallbackW(CONST LOGFONTW *lf, CONST TEXTMETRICW *TextMetric
                 break;
             }
 
-            EnumLogFontEx.elfLogFont.lfCharSet = EnumParam->GlobalData->GetLepb()->DefaultCharset;
+            EnumLogFontEx.elfLogFont.lfCharSet = EnumParam->GlobalData->GetEnvironment()->DefaultCharset;
         }
 
         //PrintConsole(L"Original:        %s\n", lf->lfFaceName);
@@ -877,7 +877,7 @@ LepNtGdiHfontCreateWorker(
 
         CopyMemory(enumlfex, EnumLogFont, SizeOfEnumLogFont);
 
-        enumlfex->elfEnumLogfontEx.elfLogFont.lfCharSet = GlobalData->GetLepb()->DefaultCharset;
+        enumlfex->elfEnumLogfontEx.elfLogFont.lfCharSet = GlobalData->GetEnvironment()->DefaultCharset;
 
         //if (GdiGetCodePage == NULL)
         //AllocConsole();
@@ -965,8 +965,8 @@ INT WINAPI LepGetTextCharset(HDC DC)
         return Charset;
 
     CodePage = GdiGetCodePage(DC);
-    TargetCharset = GlobalData->GetLepb()->DefaultCharset;
-    if (CodePage != GlobalData->GetLepb()->AnsiCodePage || Charset == TargetCharset)
+    TargetCharset = GlobalData->GetEnvironment()->DefaultCharset;
+    if (CodePage != GlobalData->GetEnvironment()->AnsiCodePage || Charset == TargetCharset)
         return Charset;
 
     return TargetCharset;
@@ -986,9 +986,9 @@ LONG WINAPI LepGdiGetCharDimensions(HDC DC, LPTEXTMETRICW TextMetric, LONG *Heig
         return Result;
 
     CodePage = GdiGetCodePage(DC);
-    TargetCharset = GlobalData->GetLepb()->DefaultCharset;
+    TargetCharset = GlobalData->GetEnvironment()->DefaultCharset;
     OriginalCharset = TextMetric->tmCharSet;
-    if (CodePage != GlobalData->GetLepb()->AnsiCodePage || OriginalCharset == TargetCharset)
+    if (CodePage != GlobalData->GetEnvironment()->AnsiCodePage || OriginalCharset == TargetCharset)
         return Result;
 
     TextMetric->tmCharSet = (BYTE)TargetCharset;
@@ -1186,7 +1186,7 @@ NTSTATUS LepGlobalData::HookGdi32Routines(PVOID Gdi32)
             return STATUS_NOT_FOUND;
     }
 
-    if (GetLepb()->AnsiCodePage == CP_SHIFTJIS)
+    if (GetEnvironment()->AnsiCodePage == CP_SHIFTJIS)
     {
         PVOID Gdi32Full = Nt_GetModuleHandle(L"gdi32full.dll");
 

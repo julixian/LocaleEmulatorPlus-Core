@@ -243,7 +243,7 @@ NTSTATUS LepGlobalData::Initialize(PLEP_BOOTSTRAP_PAYLOAD Payload, BOOL OwnPaylo
 
     LOOP_ONCE
     {
-        PLEPB Environment = GetLepb();
+        PCLEP_RUNTIME_ENVIRONMENT Environment = GetEnvironment();
         WriteLog(L"init stage bootstrap payload size=%u environment=%u registryMode=%u",
                  Payload->TotalSize, Payload->EnvironmentSize,
                  Environment->RegistryRedirectionMode);
@@ -301,19 +301,19 @@ NTSTATUS LepGlobalData::Initialize(PLEP_BOOTSTRAP_PAYLOAD Payload, BOOL OwnPaylo
         }
         SCOPE_EXIT_END;
 
-        WriteLog(L"init stage GetNlsFile ACP begin cp=%u", GetLepb()->AnsiCodePage);
-        LEP_DIAG_FAIL_RETURN(L"GetNlsFile(ACP)", GetNlsFile(&NlsFileName, GetLepb()->AnsiCodePage, REGPATH_CODEPAGE));
+        WriteLog(L"init stage GetNlsFile ACP begin cp=%u", GetEnvironment()->AnsiCodePage);
+        LEP_DIAG_FAIL_RETURN(L"GetNlsFile(ACP)", GetNlsFile(&NlsFileName, GetEnvironment()->AnsiCodePage, REGPATH_CODEPAGE));
         WriteLog(L"init stage GetNlsFile ACP end path=%ws", NlsFileName.Buffer);
 
-        WriteLog(L"init stage GetNlsFile OEM begin cp=%u", GetLepb()->OemCodePage);
-        LEP_DIAG_FAIL_RETURN(L"GetNlsFile(OEMCP)", GetNlsFile(&OemNlsFileName, GetLepb()->OemCodePage, REGPATH_CODEPAGE));
+        WriteLog(L"init stage GetNlsFile OEM begin cp=%u", GetEnvironment()->OemCodePage);
+        LEP_DIAG_FAIL_RETURN(L"GetNlsFile(OEMCP)", GetNlsFile(&OemNlsFileName, GetEnvironment()->OemCodePage, REGPATH_CODEPAGE));
         WriteLog(L"init stage GetNlsFile OEM end path=%ws", OemNlsFileName.Buffer);
 
         // Windows 10 1803 removed all keys under "HKLM\SYSTEM\CurrentControlSet\Control\Nls\Language".
         // Since the value of all keys are "l_intl.nls" since Windows XP, 
         // we suppose that MS is not going to change it in the near future.
         // 
-        //Status = GetLangFile(&LangFileName, GetLepb()->LocaleID, REGPATH_LANGUAGE);
+        //Status = GetLangFile(&LangFileName, GetEnvironment()->LocaleID, REGPATH_LANGUAGE);
         //FAIL_RETURN(Status);
         RtlCreateUnicodeString(&LangFileName, L"l_intl.nls");
 
@@ -356,11 +356,11 @@ NTSTATUS LepGlobalData::Initialize(PLEP_BOOTSTRAP_PAYLOAD Payload, BOOL OwnPaylo
         RtlResetRtlTranslations(&NlsTableInfo);
 
         LepSyncNtdllNlsGlobals(
-            (USHORT)GetLepb()->AnsiCodePage,
+            (USHORT)GetEnvironment()->AnsiCodePage,
             (BOOLEAN)(NlsTableInfo.AnsiTableInfo.DBCSCodePage != 0),
             (BOOLEAN)(NlsTableInfo.OemTableInfo.DBCSCodePage != 0));
         WriteLog(L"reset nls acp=%u ntdll=%u mb=%u oemmb=%u table=%u/%u",
-            GetLepb()->AnsiCodePage,
+            GetEnvironment()->AnsiCodePage,
             NlsAnsiCodePage,
             NlsMbCodePageTag,
             NlsMbOemCodePageTag,
@@ -539,9 +539,9 @@ NTSTATUS LepGlobalData::InitRegistryRedirectionMode(ULONG Mode)
     if (Mode > LEP_REGISTRY_REDIRECTION_MODE_MAX)
         return STATUS_INVALID_PARAMETER;
 
-    DefaultACPLength    = (FormatLepUIntDecimal(DefaultACP, GetLepb()->AnsiCodePage) + 1) * sizeof(WCHAR);
-    DefaultOEMCPLength  = (FormatLepUIntDecimal(DefaultOEMCP, GetLepb()->OemCodePage) + 1) * sizeof(WCHAR);
-    DefaultLCIDLength   = (FormatLepUIntDecimal(DefaultLCID, GetLepb()->LocaleID) + 1) * sizeof(WCHAR);
+    DefaultACPLength    = (FormatLepUIntDecimal(DefaultACP, GetEnvironment()->AnsiCodePage) + 1) * sizeof(WCHAR);
+    DefaultOEMCPLength  = (FormatLepUIntDecimal(DefaultOEMCP, GetEnvironment()->OemCodePage) + 1) * sizeof(WCHAR);
+    DefaultLCIDLength   = (FormatLepUIntDecimal(DefaultLCID, GetEnvironment()->LocaleID) + 1) * sizeof(WCHAR);
 
     REGISTRY_REDIRECTION_CONFIG DefaultEntries[] =
     {
@@ -599,7 +599,7 @@ NTSTATUS LepGlobalData::InitAdvancedRegistryRedirection(PCWSTR LocaleName, USHOR
         return STATUS_INVALID_PARAMETER;
     }
 
-    ULONG LocaleId = GetLepb()->LocaleID;
+    ULONG LocaleId = GetEnvironment()->LocaleID;
     for (ULONG Index = 0; Index != 8; ++Index)
         LocaleHex[Index] = Hex[(LocaleId >> ((7 - Index) * 4)) & 0xF];
     LocaleHex[8] = 0;
@@ -931,10 +931,10 @@ BOOL Initialize(PVOID BaseAddress, PLEP_BOOTSTRAP_PAYLOAD BootstrapPayload = nul
     // Configuration is still propagated when NLS application is disabled;
     // do not label configured values as the effective process state.
     WriteLog(L"configured locale=%u originalLocale=%p acp=%u oemcp=%u tebLocale=%u",
-             GlobalData->GetLepb()->LocaleID,
+             GlobalData->GetEnvironment()->LocaleID,
              GlobalData->GetRuntimeState()->OriginalLocaleID,
-             GlobalData->GetLepb()->AnsiCodePage,
-             GlobalData->GetLepb()->OemCodePage,
+             GlobalData->GetEnvironment()->AnsiCodePage,
+             GlobalData->GetEnvironment()->OemCodePage,
              (ULONG)CurrentTeb()->CurrentLocale);
 
     WriteLog(L"observed ntdllAcp=%u nlsApply=%u", (ULONG)NlsAnsiCodePage, (ULONG)!LEP_DIAG_SKIP_NLS_APPLY);

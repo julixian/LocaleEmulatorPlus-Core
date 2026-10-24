@@ -12,17 +12,17 @@ using namespace Mp;
 
 LCID NTAPI LepGetUserDefaultLCID()
 {
-    return LepGetGlobalData()->GetLepb()->LocaleID;
+    return LepGetGlobalData()->GetEnvironment()->LocaleID;
 }
 
 LANGID WINAPI LepGetSystemDefaultUILanguage()
 {
-    return (LANGID)LepGetGlobalData()->GetLepb()->LocaleID;
+    return (LANGID)LepGetGlobalData()->GetEnvironment()->LocaleID;
 }
 
 LANGID WINAPI LepGetUserDefaultUILanguage()
 {
-    return (LANGID)LepGetGlobalData()->GetLepb()->LocaleID;
+    return (LANGID)LepGetGlobalData()->GetEnvironment()->LocaleID;
 }
 
 NTSTATUS LepGlobalData::HackUserDefaultLCID(PVOID Kernel32)
@@ -61,7 +61,7 @@ NTSTATUS LepGlobalData::HackUserDefaultLCID(PVOID Kernel32)
     );
 
     //if (gNlsProcessLocalCache != nullptr)
-        //*(PLCID)(((PULONG_PTR)gNlsProcessLocalCache)[2]) = GetLepb()->LocaleID;
+        //*(PLCID)(((PULONG_PTR)gNlsProcessLocalCache)[2]) = GetEnvironment()->LocaleID;
 
     return STATUS_SUCCESS;
 }
@@ -98,7 +98,7 @@ PVOID FASTCALL LepGetNamedLocaleHashNode(PWSTR LocaleName, LANGID LangId)
         return StubGetNamedLocaleHashNode(LocaleName, LangId);
 
     LocaleNameLength = LCIDToLocaleName(
-        GlobalData->GetLepb()->LocaleID,
+        GlobalData->GetEnvironment()->LocaleID,
         LocaleName,
         0xAC,
         0
@@ -248,7 +248,7 @@ VOID LepSyncUser32ClientCodePage()
 
     Value = LepGetWin32ClientInfo()[LEP_WIN32_CLIENT_INFO_CODE_PAGE_INDEX];
     LepGetWin32ClientInfo()[LEP_WIN32_CLIENT_INFO_CODE_PAGE_INDEX] =
-        (Value & ~0xFFFFull) | (USHORT)GlobalData->GetLepb()->AnsiCodePage;
+        (Value & ~0xFFFFull) | (USHORT)GlobalData->GetEnvironment()->AnsiCodePage;
 #endif
 }
 
@@ -577,7 +577,7 @@ NTSTATUS LepSetupAnsiOemCodeHashNodes() {
 
 NTSTATUS LepGlobalData::HackAnsiOemCodeHashNodes() {
     PLepGlobalData GlobalData = LepGetGlobalData();
-    LepNlsDiag(L"HackAnsiOemCodeHashNodes entry target=%u/%u", GlobalData->GetLepb()->AnsiCodePage, GlobalData->GetLepb()->OemCodePage);
+    LepNlsDiag(L"HackAnsiOemCodeHashNodes entry target=%u/%u", GlobalData->GetEnvironment()->AnsiCodePage, GlobalData->GetEnvironment()->OemCodePage);
 
     NLSTABLEINFO NlsTableInfo;
     CPTABLEINFO AnsiTableInfo, OemTableInfo;
@@ -599,8 +599,8 @@ NTSTATUS LepGlobalData::HackAnsiOemCodeHashNodes() {
     LepProbeRtlAnsiTable(L"before", &AnsiTableInfo);
 
     LepSetProcessCodePagePair(
-        (USHORT)GlobalData->GetLepb()->AnsiCodePage,
-        (USHORT)GlobalData->GetLepb()->OemCodePage);
+        (USHORT)GlobalData->GetEnvironment()->AnsiCodePage,
+        (USHORT)GlobalData->GetEnvironment()->OemCodePage);
     LepSyncUser32ClientCodePage();
 #else
     PUSHORT ProcessCodePagePair = LepGetProcessCodePagePair();
@@ -615,8 +615,8 @@ NTSTATUS LepGlobalData::HackAnsiOemCodeHashNodes() {
         OemTableInfo.CodePage);
 
     LepSetProcessCodePagePair(
-        (USHORT)GlobalData->GetLepb()->AnsiCodePage,
-        (USHORT)GlobalData->GetLepb()->OemCodePage);
+        (USHORT)GlobalData->GetEnvironment()->AnsiCodePage,
+        (USHORT)GlobalData->GetEnvironment()->OemCodePage);
 #endif
 
     RtlInitNlsTables(
@@ -626,14 +626,14 @@ NTSTATUS LepGlobalData::HackAnsiOemCodeHashNodes() {
         &NlsTableInfo);
     RtlResetRtlTranslations(&NlsTableInfo);
     LepSyncNtdllNlsGlobals(
-        (USHORT)GlobalData->GetLepb()->AnsiCodePage,
+        (USHORT)GlobalData->GetEnvironment()->AnsiCodePage,
         (BOOLEAN)(AnsiTableInfo.DBCSCodePage != 0),
         (BOOLEAN)(OemTableInfo.DBCSCodePage != 0));
     LepProbeRtlAnsiTable(L"after-reset", &AnsiTableInfo);
 
     NtdllStatus = LepInitNtdllCodePageTables(
-        (USHORT)GlobalData->GetLepb()->AnsiCodePage,
-        (USHORT)GlobalData->GetLepb()->OemCodePage);
+        (USHORT)GlobalData->GetEnvironment()->AnsiCodePage,
+        (USHORT)GlobalData->GetEnvironment()->OemCodePage);
     if (NT_FAILED(NtdllStatus))
     {
 #if ENABLE_LOG
@@ -700,7 +700,7 @@ NTSTATUS LepGlobalData::HookKernel32Routines(PVOID Kernel32)
 
     WriteLog(L"hook k32: %p", Status);
 
-    if (GetLepb()->HookUILanguageMode == 1 &&
+    if (GetEnvironment()->HookUILanguageMode == 1 &&
         HookedModule != nullptr &&
         RtlEqualUnicodeString(&HookedModule->BaseDllName, &USTR(L"KERNEL32.dll"), TRUE))
     {

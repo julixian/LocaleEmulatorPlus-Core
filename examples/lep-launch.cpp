@@ -33,8 +33,7 @@ int wmain(int argc, wchar_t** argv)
     environment.DefaultCharset = SHIFTJIS_CHARSET;
     environment.RegistryRedirectionMode = 2;
     environment.HookUILanguageMode = 1;
-    // Japan has no DST transitions. Core supplies the Japanese names by ID.
-    environment.Timezone.Bias = -540;
+    // Loader resolves offsets, DST transitions and default names from this ID.
     wcscpy_s(environment.TimeZoneId, L"Tokyo Standard Time");
 
     wchar_t currentDirectory[32768];
@@ -48,7 +47,7 @@ int wmain(int argc, wchar_t** argv)
     *filePart = L'\0';
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
-    LEP::ML_PROCESS_INFORMATION process{};
+    PROCESS_INFORMATION process{};
     LEP::NTSTATUS status = create(&environment, argv[2], nullptr, currentDirectory, 0,
         &startup, &process, nullptr, nullptr, nullptr, nullptr);
     printf("LepCreateProcess2: %08lx\n", static_cast<ULONG>(status));

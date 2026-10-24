@@ -11,33 +11,7 @@ export module LocaleEmulatorPlus;
 export namespace LEP
 {
     using NTSTATUS = LONG;
-    inline constexpr ULONG LEP_ENVIRONMENT_VERSION = 3;
-
-    struct TIME_FIELDS
-    {
-        SHORT Year;
-        SHORT Month;
-        SHORT Day;
-        SHORT Hour;
-        SHORT Minute;
-        SHORT Second;
-        SHORT Milliseconds;
-        SHORT Weekday;
-    };
-    using PTIME_FIELDS = TIME_FIELDS*;
-
-    // These are NT TIME_FIELDS, not Win32 SYSTEMTIME transition fields.
-    struct RTL_TIME_ZONE_INFORMATION
-    {
-        LONG Bias;
-        WCHAR StandardName[32];
-        TIME_FIELDS StandardStart;
-        LONG StandardBias;
-        WCHAR DaylightName[32];
-        TIME_FIELDS DaylightStart;
-        LONG DaylightBias;
-    };
-    using PRTL_TIME_ZONE_INFORMATION = RTL_TIME_ZONE_INFORMATION*;
+    inline constexpr ULONG LEP_ENVIRONMENT_VERSION = 4;
 
     struct LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK
     {
@@ -49,22 +23,13 @@ export namespace LEP
         ULONG DefaultCharset;
         ULONG RegistryRedirectionMode;
         ULONG HookUILanguageMode;
-        RTL_TIME_ZONE_INFORMATION Timezone;
-        WCHAR TimeZoneId[128]; // Optional; zero-terminated Windows ID.
+        WCHAR TimeZoneId[128]; // Required, zero-terminated Windows ID.
+        WCHAR StandardNameOverride[32]; // Empty uses the resolved default.
+        WCHAR DaylightNameOverride[32]; // Empty uses the resolved default.
     };
     using LEPB = LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK;
     using PLEPB = LEPB*;
     using PLOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK = PLEPB;
-
-    struct ML_PROCESS_INFORMATION
-    {
-        HANDLE hProcess;
-        HANDLE hThread;
-        DWORD dwProcessId;
-        DWORD dwThreadId;
-        PVOID FirstCallLdrLoadDll;
-    };
-    using PML_PROCESS_INFORMATION = ML_PROCESS_INFORMATION*;
 
     // Both exports use this signature. NTSTATUS is signed, not a Win32
     // GetLastError code; success is status >= 0. WINAPI matters on x86.
@@ -75,7 +40,7 @@ export namespace LEP
         PCWSTR CurrentDirectory,
         ULONG CreationFlags,
         LPSTARTUPINFOW StartupInfo,
-        PML_PROCESS_INFORMATION ProcessInformation,
+        LPPROCESS_INFORMATION ProcessInformation,
         LPSECURITY_ATTRIBUTES ProcessAttributes,
         LPSECURITY_ATTRIBUTES ThreadAttributes,
         PVOID Environment,
@@ -83,12 +48,10 @@ export namespace LEP
 
     using LepCreateProcess2_t = LepCreateProcess_t;
 
-    static_assert(sizeof(TIME_FIELDS) == 16);
-    static_assert(sizeof(RTL_TIME_ZONE_INFORMATION) == 172);
-    static_assert(sizeof(LEPB) == 460);
-    static_assert(offsetof(LEPB, Timezone) == 32);
-    static_assert(offsetof(LEPB, TimeZoneId) == 204);
-    static_assert(offsetof(ML_PROCESS_INFORMATION, FirstCallLdrLoadDll) == sizeof(PROCESS_INFORMATION));
-    static_assert(sizeof(ML_PROCESS_INFORMATION) == (sizeof(PVOID) == 8 ? 32 : 20));
+    static_assert(sizeof(LEPB) == 416);
+    static_assert(offsetof(LEPB, TimeZoneId) == 32);
+    static_assert(offsetof(LEPB, StandardNameOverride) == 288);
+    static_assert(offsetof(LEPB, DaylightNameOverride) == 352);
+    static_assert(sizeof(PROCESS_INFORMATION) == (sizeof(PVOID) == 8 ? 24 : 16));
 }
 #pragma pack(pop)
