@@ -1,9 +1,8 @@
-// The runner force-includes the selected support header before this file.
+// The runner force-includes support/Support.h before this file.
 #include <stdio.h>
 #include <stddef.h>
 
-// Golden values from the removed export-hash tables; these also require the
-// replacement to remain usable as a compile-time constant.
+// Fixed export hashes also require compile-time evaluation.
 static_assert(lep::HashExportName("") == 0, "empty export name");
 static_assert(lep::HashExportName("NtClose") == 0xB82DD68Cu, "NTDLL hash");
 static_assert(lep::HashExportName("LdrLoadDll") == 0x8F8ED6B0u, "loader hash");

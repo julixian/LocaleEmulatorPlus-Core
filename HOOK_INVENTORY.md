@@ -12,8 +12,8 @@
 
 宏定义在 `LocaleEmulatorPlus/LocaleEmulatorPlus.h`。
 
-- `LepHookFromEAT(base, prefix, name)`：从导出表找 `prefix_name`，入口跳到 `LepName`，原 trampoline 存到 `HookStub.StubName`。
-- `LepHookFromEATOp(base, prefix, name, op)`：同上，但显式指定 patch op。
+- `LepHookFromEAT(base, name)`：以 `lep::HashExportName(#name)` 查找模块导出，入口跳到 `LepName`，trampoline 存到 `HookStub.StubName`。
+- `LepHookFromEATOp(base, name, op)`：同上，但显式指定 patch op。
 - `LepFunctionJump(name)`：对已经扫描/查表得到的函数入口安装跳转。
 - `LepFunctionCall(name)`：改写 call site，不改写函数入口。
 

@@ -6,6 +6,8 @@ Keep instructions intended for AI agents in `ai-docs/`. The root `AGENTS.md` is 
 
 Place new AI-generated documentation, including maintenance notes and analysis reports, in `ai-docs/` as requested by the user. Keep existing root guides and READMEs at their current locations unless the user requests a move, and update references whenever relocating a document.
 
+Repository guides describe the current structure, behavior, APIs, and usage. Do not turn them into refactoring diaries, before/after name tables, deletion inventories, or dated test summaries. Keep editor setup out of READMEs. Remove unused internal forwarding headers rather than retaining speculative compatibility paths.
+
 ## Public native declarations
 
 Maintain `include/LocaleEmulatorPlus.ixx` as the standalone, copyable third-party ABI declaration for the latest version only; do not include legacy v2 declarations. When changing LEPB, time-zone structures, process information, or public calling signatures, update this declaration and its usage documentation together. Run `tests/run-public-api.ps1` to compare x86/x64 layouts with Core and verify an actual public caller.

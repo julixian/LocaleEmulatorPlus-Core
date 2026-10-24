@@ -126,7 +126,6 @@
       <Filter>Hooks</Filter>
     </ClInclude>
     <ClInclude Include="LocaleEmulatorPlus.h" />
-    <ClInclude Include="ml.h" />
     <ClInclude Include="SectionProtector.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="support\base\Constexpr.h">
@@ -282,9 +281,6 @@
       <Filter>Project files</Filter>
     </None>
     <None Include="..\ai-docs\native-support.md">
-      <Filter>Project files</Filter>
-    </None>
-    <None Include="..\ai-docs\visual-studio.md">
       <Filter>Project files</Filter>
     </None>
     <None Include="..\ide\Editor.Configuration.props">

@@ -4,11 +4,7 @@
 
 ## 中文
 
-本仓库是从
-[xupefei/Locale-Emulator-Core](https://github.com/xupefei/Locale-Emulator-Core)
-分离出来的 Core 维护分支。
-
-这里存放 Locale Emulator Plus 使用的原生 Core 组件。GUI 分支在
+本仓库存放 LocaleEmulatorPlus 的原生核心，负责创建目标进程、注入和区域环境模拟。GUI 与启动器在
 [julixian/LocaleEmulatorPlus](https://github.com/julixian/LocaleEmulatorPlus)
 单独维护。
 
@@ -17,7 +13,6 @@ Core 仓库。
 
 实现原理和维护说明请看 [MAINTAINING.md](MAINTAINING.md)。
 Windows 上使用 Python 3.10+ 构建：`python build.py all --no-deploy`。
-使用 Visual Studio 编辑和查看 IntelliSense 时，打开 [LocaleEmulatorPlus-Core.slnx](LocaleEmulatorPlus-Core.slnx)，详见[配置说明](ai-docs/visual-studio.md)。
 
 第三方原生调用可直接使用或复制 [LocaleEmulatorPlus.ixx](include/LocaleEmulatorPlus.ixx)
 中的独立声明，参考[启动示例](examples/lep-launch.cpp)与 [ABI 说明](ai-docs/lepb-v3.md)。
@@ -26,11 +21,8 @@ Windows 上使用 Python 3.10+ 构建：`python build.py all --no-deploy`。
 
 ## English
 
-This repository is a maintained core branch split from
-[xupefei/Locale-Emulator-Core](https://github.com/xupefei/Locale-Emulator-Core).
-
-It contains the native core components used by Locale Emulator Plus. The GUI
-repository is maintained separately at
+This repository contains LocaleEmulatorPlus's native core for process creation,
+injection, and locale emulation. The GUI and launchers are maintained at
 [julixian/LocaleEmulatorPlus](https://github.com/julixian/LocaleEmulatorPlus).
 
 If you are an end user rather than a developer, download LEP from the GUI
@@ -38,7 +30,6 @@ repository instead of using this core repository directly.
 
 For implementation notes and maintenance details, see [MAINTAINING.md](MAINTAINING.md).
 Build with Python 3.10+ on Windows: `python build.py all --no-deploy`.
-For Visual Studio editing and IntelliSense, open [LocaleEmulatorPlus-Core.slnx](LocaleEmulatorPlus-Core.slnx).
 
 Third-party native callers can use the standalone declarations in
 [LocaleEmulatorPlus.ixx](include/LocaleEmulatorPlus.ixx), with a

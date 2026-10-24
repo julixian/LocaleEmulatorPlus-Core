@@ -1,11 +1,10 @@
 # LocaleEmulatorPlus-Core 维护说明
 
-本文记录 Core 的大体转区原理、现代工具链构建方式、patched linker 注意事项。
-是之后升级 VS、SDK、WDK 或更新功能时用的维护笔记。
+本文说明 Core 的模块职责、转区流程、构建方式和工具链约束。
 
 ## 总体结构
 
-本仓库只保留 Core 侧两组 DLL：
+本仓库提供两组原生 DLL：
 
 - `LoaderDll_x86.dll` / `LoaderDll_x64.dll`
 - `LocaleEmulatorPlus_x86.dll` / `LocaleEmulatorPlus_x64.dll`
@@ -21,7 +20,7 @@ out\x64\LoaderDll_x64.dll
 out\x64\LocaleEmulatorPlus_x64.dll
 ```
 
-原 `ml.h` / `ml.cpp` 中的支持代码已拆到 `LocaleEmulatorPlus/support/`，独立编译为 `LepSupport.lib`，供 Core 和 Loader 分别静态链接。查找声明、实现及运行布局回归的方法见 [原生支持层维护](ai-docs/native-support.md)。
+`LocaleEmulatorPlus/support/` 提供 NT API、内存、字符串、PE 和指令补丁等支持代码，编译为 `LepSupport.lib`，供 Core 和 Loader 分别静态链接。模块划分和验证方式见 [原生支持层维护](ai-docs/native-support.md)。
 
 ## 转区原理
 
@@ -58,13 +57,9 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 - `LocaleEmulatorPlus_x86.dll` 普通 import 只应有 `ntdll.dll`；`KERNEL32.dll`/`USER32.dll`/`GDI32.dll`/`DBGHELP.dll` 是 delay-load。
 - `LocaleEmulatorPlus_x64.dll` 普通 import 只应有 `ntdll.dll`；`USER32.dll`/`GDI32.dll`/`DBGHELP.dll` 是 delay-load。
 
-## 在 Visual Studio 中编辑
-
-打开 [`LocaleEmulatorPlus-Core.slnx`](LocaleEmulatorPlus-Core.slnx)，使用 Core 和 Loader 两个项目浏览代码和 IntelliSense。可切换 `Log` / `NoLog`、`Win32` / `x64` 查看不同宏分支。VS 项目只用于编辑，构建命令仅显示提示；实际构建继续使用下方的 Python 入口。包含路径和文件清单维护方式见 [VS 编辑配置](ai-docs/visual-studio.md)。
-
 ## 构建
 
-构建入口为 [`build.py`](build.py)，需要 Windows、Python 3.10+，只使用 Python 标准库。原两个 bat 已移除。默认构建两个架构，也可以单独选择：
+构建入口为 [`build.py`](build.py)，需要 Windows、Python 3.10+，只使用 Python 标准库。默认构建两个架构，也可以单独选择：
 
 ```powershell
 python .\build.py
@@ -84,12 +79,11 @@ python .\build.py x86 --vs-root D:\VisualStudio2026 --msvc-version 14.44.35207 -
 | `--msvc-version` | `MSVC_VER` | `14.44.35207` |
 | `--sdk-root` | `SDK_ROOT` | `C:\Program Files (x86)\Windows Kits\10` |
 | `--sdk-version` | `SDK_VER` | `10.0.26100.0` |
-| `--extra-cl` | `EXTRA_CL` | 未指定选项时使用 `/DENABLE_LOG=1`；指定后替换默认选项 |
 | `--deploy-dir` | `LEP_DEPLOY_DIR` | `D:\GALGAME\GALGAMETOOLS\LocaleEmulatorPlus` |
 
-显式命令行参数优先于环境变量。`--extra-cl` 按 Windows 引号规则解析，含空格的路径应在参数字符串内加引号；工具执行使用参数列表，不经过 shell 展开。
+显式工具链和部署路径参数优先于环境变量。工具执行使用参数列表，不经过 shell 展开。
 
-默认仅向已经存在的部署目录复制 DLL，目录不存在则保留 `out/` 产物并跳过复制。传入 `--no-deploy` 可直接禁用部署，无需构造不存在的目录。使用 `--no-log` 关闭日志，它优先于额外编译参数中的日志定义：
+默认仅向已经存在的部署目录复制 DLL，目录不存在则保留 `out/` 产物并跳过复制。传入 `--no-deploy` 可直接禁用部署。日志默认开启，通过 `--no-log` 关闭：
 
 ```powershell
 python .\build.py all --no-log --no-deploy
@@ -99,10 +93,10 @@ python .\build.py all --no-log --no-deploy
 
 `ENABLE_LOG=1` 会启用 `WriteLog`。日志位于 LEP DLL 同目录下的 `Log` 子目录，普通运行日志形如 `<目标进程模块名>.<pid>.log.txt`，broker 日志记录跨架构注入阶段。日志会改变早期执行路径和时序，定位完问题后可关闭。
 
-如果目标进程在 log 建立前失败，可以使用弹框阶段诊断；使用等号传入以 `/` 或 `-` 开头的额外编译参数：
+如果目标进程在日志建立前失败，可以用 `--diag-init` 启用初始化阶段弹框诊断：
 
 ```powershell
-python .\build.py --extra-cl="/DLEP_DIAG_INIT=1" --no-deploy
+python .\build.py --diag-init --no-deploy
 ```
 
 `--dry-run` 校验工具链并打印命令，不执行工具、不写文件，也不部署；`--verbose` 在真实构建时打印命令。运行 `python .\build.py --help` 查看全部参数。所有选定架构的工具链会先检查，任何工具失败立即返回非零状态，停止后续构建。
@@ -167,9 +161,7 @@ python .\build.py --extra-cl="/DLEP_DIAG_INIT=1" --no-deploy
 
 ## 私有 import lib 和 delay-load helper
 
-当前不再依赖[原仓库](https://github.com/xupefei/Locale-Emulator-Core/tree/master/LocaleEmulator) `_Libs` 中的闭源 `MyLib.lib`、旧 `DelayImp.lib`、`undoc_ntdll.lib`、`undoc_k32.lib`。
-
-替代方式：
+延迟加载辅助代码、CRT shim 和系统导入定义均位于 `dep/libs/`：
 
 - `dep\libs\LepDelayLoad_x86_x64.cpp`
   - 自定义 delay-load helper。
@@ -194,7 +186,7 @@ python .\build.py --extra-cl="/DLEP_DIAG_INIT=1" --no-deploy
 
 ## patched link.exe
 
-当前补丁对象是现代 MSVC linker。本仓库中带有一份示例：
+构建使用仓库内的 patched MSVC linker：
 
 ```text
 dep\tools\link.exe

@@ -57,7 +57,6 @@
     <ClInclude Include="Hooks\NtdllHook.h" />
     <ClInclude Include="Hooks\User32Hook.h" />
     <ClInclude Include="LocaleEmulatorPlus.h" />
-    <ClInclude Include="ml.h" />
     <ClInclude Include="SectionProtector.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="support\base\Constexpr.h" />
@@ -113,7 +112,6 @@
     <None Include="..\build-nolog.py" />
     <None Include="..\MAINTAINING.md" />
     <None Include="..\ai-docs\native-support.md" />
-    <None Include="..\ai-docs\visual-studio.md" />
     <None Include="..\ide\Editor.Configuration.props" />
     <None Include="..\ide\Editor.IntelliSense.props" />
   </ItemGroup>

@@ -7,8 +7,6 @@ Requires Windows and Python 3.10+. No third-party Python packages are needed.
 from __future__ import annotations
 
 import argparse
-import ctypes
-from ctypes import wintypes
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -36,26 +34,6 @@ SYSTEM_LIBRARIES = (
 )
 
 
-def split_windows_arguments(value: str) -> list[str]:
-    """Parse EXTRA_CL with Windows quoting, without evaluating shell syntax."""
-    if not value.strip():
-        return []
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    shell32.CommandLineToArgvW.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int))
-    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
-    kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
-    kernel32.LocalFree.restype = ctypes.c_void_p
-    count = ctypes.c_int()
-    arguments = shell32.CommandLineToArgvW("cl.exe " + value, ctypes.byref(count))
-    if not arguments:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        return [arguments[index] for index in range(1, count.value)]
-    finally:
-        kernel32.LocalFree(arguments)
-
-
 def parse_options(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target", nargs="?", default="all", type=str.lower,
@@ -66,9 +44,8 @@ def parse_options(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sdk-root", type=Path,
                         default=os.environ.get("SDK_ROOT") or r"C:\Program Files (x86)\Windows Kits\10")
     parser.add_argument("--sdk-version", default=os.environ.get("SDK_VER") or "10.0.26100.0")
-    parser.add_argument("--extra-cl", default=os.environ.get("EXTRA_CL") or "",
-                        help="extra compiler options, using Windows quoting (or EXTRA_CL)")
-    parser.add_argument("--no-log", action="store_true", help="disable logging, overriding EXTRA_CL")
+    parser.add_argument("--no-log", action="store_true", help="disable logging")
+    parser.add_argument("--diag-init", action="store_true", help="show initialization diagnostic dialogs")
     parser.add_argument("--deploy-dir", type=Path,
                         default=os.environ.get("LEP_DEPLOY_DIR") or r"D:\GALGAME\GALGAMETOOLS\LocaleEmulatorPlus",
                         help="copy DLLs here only if this directory already exists")
@@ -84,8 +61,9 @@ class BuildConfig:
     vc_tools: Path
     sdk_root: Path
     sdk_version: str
-    extra_cl: tuple[str, ...]
+    log_enabled: bool
     deploy_dir: Path | None
+    diag_init: bool = False
     dry_run: bool = False
     verbose: bool = False
 
@@ -132,7 +110,8 @@ class NativeBuild:
         self.compiler_flags = [
             "/nologo", "/c", "/O2", "/Ob1", "/GF", "/Gy", "/GR-", "/EHs-c-", "/GS-",
             *(["/Gr", "/arch:SSE", "/DWIN32"] if arch == "x86" else ["/DWIN64", "/D_WIN64"]),
-            "/DNDEBUG", *config.extra_cl, "/D_NO_CRT_STDIO_INLINE", "/Zc:wchar_t",
+            "/DNDEBUG", f"/DENABLE_LOG={int(config.log_enabled)}", f"/DLEP_DIAG_INIT={int(config.diag_init)}",
+            "/D_NO_CRT_STDIO_INLINE", "/Zc:wchar_t",
         ]
         self.includes = [f"/I{path}" for path in (
             self.core, config.vc_tools / "include",
@@ -266,16 +245,12 @@ def main(argv: list[str] | None = None) -> int:
         print("This build requires Windows and MSVC.", file=sys.stderr)
         return 1
     try:
-        extra_cl = split_windows_arguments(options.extra_cl)
-        if not extra_cl:
-            extra_cl.append("/DENABLE_LOG=0" if options.no_log else "/DENABLE_LOG=1")
-        elif options.no_log:
-            extra_cl.append("/DENABLE_LOG=0")
         config = BuildConfig(
             root=ROOT,
             vc_tools=options.vs_root.resolve() / "VC/Tools/MSVC" / options.msvc_version,
             sdk_root=options.sdk_root.resolve(), sdk_version=options.sdk_version,
-            extra_cl=tuple(extra_cl),
+            log_enabled=not options.no_log,
+            diag_init=options.diag_init,
             deploy_dir=None if options.no_deploy else options.deploy_dir.resolve(),
             dry_run=options.dry_run, verbose=options.verbose,
         )

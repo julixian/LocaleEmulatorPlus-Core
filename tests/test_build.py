@@ -23,18 +23,12 @@ class BuildTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.config = build.BuildConfig(
             root=self.root, vc_tools=self.root / "VS tools", sdk_root=self.root / "Windows SDK",
-            sdk_version="test", extra_cl=("/DENABLE_LOG=1",), deploy_dir=None,
+            sdk_version="test", log_enabled=True, deploy_dir=None,
         )
         self.output = io.StringIO()
         self.stdout = redirect_stdout(self.output)
         self.stdout.__enter__()
         self.addCleanup(self.stdout.__exit__, None, None, None)
-
-    def test_windows_quoting_round_trip_without_shell_expansion(self):
-        arguments = [r'/IC:\SDK path\include', '/DNAME="value with spaces"',
-                     '/DROOT=C:\\trailing path\\', '/DSYNTAX=%TEMP%&$(command)', '/D名称=值']
-        self.assertEqual(build.split_windows_arguments(subprocess.list2cmdline(arguments)), arguments)
-        self.assertEqual(build.split_windows_arguments("  "), [])
 
     def test_dry_run_does_not_create_outputs_run_tools_or_modify_environment(self):
         source = self.root / "LocaleEmulatorPlus/support/runtime/Test.cpp"
@@ -87,15 +81,17 @@ class BuildTests(unittest.TestCase):
         driver.deploy(("Core.dll", "Loader.dll"))
         self.assertFalse(destination.exists())
 
-    def test_no_deploy_overrides_existing_destination_and_no_log_preserves_extra_flags(self):
+    def test_no_deploy_and_no_log_flags(self):
         with patch.object(build.BuildConfig, "preflight"), patch.object(build, "NativeBuild") as driver:
-            self.assertEqual(build.main(["x64", "--no-deploy", "--no-log",
-                                         "--deploy-dir", str(self.root),
-                                         "--extra-cl=/DLEP_DIAG_INIT=1 /DENABLE_LOG=1"]), 0)
+            self.assertEqual(build.main(["x64", "--no-deploy", "--no-log", "--diag-init",
+                                         "--deploy-dir", str(self.root)]), 0)
         config = driver.call_args.args[0]
         self.assertIsNone(config.deploy_dir)
-        self.assertIn("/DLEP_DIAG_INIT=1", config.extra_cl)
-        self.assertEqual(config.extra_cl[-1], "/DENABLE_LOG=0")
+        self.assertFalse(config.log_enabled)
+        self.assertTrue(config.diag_init)
+        flags = build.NativeBuild(config, "x64").compiler_flags
+        self.assertEqual([flag for flag in flags if flag.startswith('/DENABLE_LOG=')], ['/DENABLE_LOG=0'])
+        self.assertIn('/DLEP_DIAG_INIT=1', flags)
 
     def test_cli_paths_override_legacy_environment(self):
         with patch.dict(os.environ, {"VS_ROOT": "old vs", "SDK_VER": "old sdk"}):
