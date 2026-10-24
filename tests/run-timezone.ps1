@@ -6,17 +6,22 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $outputRoot = Join-Path $repoRoot 'out'
+. "$PSScriptRoot\standard-modules.ps1"
 $runtimeRoot = Join-Path $outputRoot 'timezone-test-runtime'
 New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
 foreach ($arch in @('x86','x64')) {
     $compiler = "$VcTools\bin\Hostx64\$arch\cl.exe"
     $env:LIB = "$VcTools\lib\$arch;$SdkRoot\Lib\$SdkVersion\ucrt\$arch;$SdkRoot\Lib\$SdkVersion\um\$arch"
     $includes = @("/I$VcTools\include", "/I$SdkRoot\Include\$SdkVersion\ucrt", "/I$SdkRoot\Include\$SdkVersion\shared", "/I$SdkRoot\Include\$SdkVersion\um")
+    $standard = Build-StandardModules -Compiler $compiler -VcTools $VcTools -Includes $includes -OutputDirectory "$outputRoot\timezone-std-$arch"
+    $references = $standard.References
+    $language = $standard.Language
     $ifc = "$outputRoot\timezone-$arch.ifc"
     $moduleObject = "$outputRoot\timezone-module-$arch.obj"
-    & $compiler /nologo /utf-8 /c /std:c++20 /EHsc /MT $includes /interface "$repoRoot\include\LocaleEmulatorPlus.ixx" "/ifcOutput$ifc" "/Fo$moduleObject"
+    & $compiler /nologo /utf-8 /c $language /EHsc /MT $includes $references /interface "$repoRoot\include\LocaleEmulatorPlus.ixx" "/ifcOutput$ifc" "/Fo$moduleObject"
     if ($LASTEXITCODE -ne 0) { throw "Module compile failed: $arch" }
-    & $compiler /nologo /utf-8 /std:c++20 /EHsc /MT $includes /reference "LocaleEmulatorPlus=$ifc" "$PSScriptRoot\timezone-probe.cpp" $moduleObject advapi32.lib "/Fo$outputRoot\timezone-probe-$arch.obj" "/Fe$outputRoot\timezone-probe-$arch.exe"
+    $moduleObjects = @($moduleObject) + $standard.Objects
+    & $compiler /nologo /utf-8 $language /EHsc /MT $includes $references /reference "LocaleEmulatorPlus=$ifc" "$PSScriptRoot\timezone-probe.cpp" $moduleObjects advapi32.lib "/Fo$outputRoot\timezone-probe-$arch.obj" "/Fe$outputRoot\timezone-probe-$arch.exe"
     if ($LASTEXITCODE -ne 0) { throw "Time-zone probe compile failed: $arch" }
     foreach ($name in @("LoaderDll_$arch.dll", "LocaleEmulatorPlus_$arch.dll")) {
         Copy-Item -LiteralPath "$outputRoot\$arch\$name" -Destination (Join-Path $runtimeRoot $name) -Force

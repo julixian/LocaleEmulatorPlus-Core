@@ -5,7 +5,7 @@ namespace
     struct LegacyEnvironmentV3
     {
         LEP_RUNTIME_ENVIRONMENT Base;
-        WCHAR TimeZoneId[128];
+        WCHAR TimezoneId[128];
     };
     static_assert(sizeof(LegacyEnvironmentV3) == 460, "Legacy v3 layout mismatch");
 
@@ -19,7 +19,7 @@ namespace
     };
     static_assert(sizeof(RegistryTimeZone) == 44, "Registry TZI layout mismatch");
 
-    bool ValidTimeZoneId(PCWSTR Id, ULONG Capacity, bool AllowEmpty)
+    bool ValidTimezoneId(PCWSTR Id, ULONG Capacity, bool AllowEmpty)
     {
         if (!AllowEmpty && Id[0] == 0)
             return false;
@@ -108,7 +108,7 @@ namespace
     NTSTATUS ResolveTimeZone(const LEPB* Input, PRTL_TIME_ZONE_INFORMATION Zone)
     {
         HANDLE Key = nullptr;
-        NTSTATUS Status = OpenTimeZone(Input->TimeZoneId, &Key);
+        NTSTATUS Status = OpenTimeZone(Input->TimezoneId, &Key);
         if (NT_FAILED(Status))
             return Status;
 
@@ -130,7 +130,7 @@ namespace
         Zone->DaylightBias = Tzi.DaylightBias;
         Zone->StandardStart = ConvertTransition(Tzi.StandardDate);
         Zone->DaylightStart = ConvertTransition(Tzi.DaylightDate);
-        if (StrICompareW(Input->TimeZoneId, L"Tokyo Standard Time") == 0)
+        if (StrICompareW(Input->TimezoneId, L"Tokyo Standard Time") == 0)
             NormalizeTokyoName(Zone);
         if (Input->StandardNameOverride[0] != 0)
             CopyMemory(Zone->StandardName, Input->StandardNameOverride, sizeof(Zone->StandardName));
@@ -154,7 +154,7 @@ NTSTATUS LepResolveEnvironment(const void* Input, PLEP_RUNTIME_ENVIRONMENT Outpu
     if (Version == LEP_ENVIRONMENT_VERSION && Size == sizeof(LEPB))
     {
         auto Environment = (const LEPB*)Input;
-        if (!ValidTimeZoneId(Environment->TimeZoneId, countof(Environment->TimeZoneId), false) ||
+        if (!ValidTimezoneId(Environment->TimezoneId, countof(Environment->TimezoneId), false) ||
             !LepStringTerminated(Environment->StandardNameOverride, countof(Environment->StandardNameOverride)) ||
             !LepStringTerminated(Environment->DaylightNameOverride, countof(Environment->DaylightNameOverride)))
             return STATUS_INVALID_PARAMETER;
@@ -173,15 +173,15 @@ NTSTATUS LepResolveEnvironment(const void* Input, PLEP_RUNTIME_ENVIRONMENT Outpu
         if (Version == 3)
         {
             auto Environment = (const LegacyEnvironmentV3*)Input;
-            if (!ValidTimeZoneId(Environment->TimeZoneId, countof(Environment->TimeZoneId), true))
+            if (!ValidTimezoneId(Environment->TimezoneId, countof(Environment->TimezoneId), true))
                 return STATUS_INVALID_PARAMETER;
-            if (Environment->TimeZoneId[0] != 0)
+            if (Environment->TimezoneId[0] != 0)
             {
-                bool Tokyo = StrICompareW(Environment->TimeZoneId, L"Tokyo Standard Time") == 0;
+                bool Tokyo = StrICompareW(Environment->TimezoneId, L"Tokyo Standard Time") == 0;
                 if (Tokyo && (Resolved.Timezone.Bias != -540 || Resolved.Timezone.StandardBias != 0))
                     return STATUS_INVALID_PARAMETER;
                 HANDLE Key = nullptr;
-                NTSTATUS Status = OpenTimeZone(Environment->TimeZoneId, &Key);
+                NTSTATUS Status = OpenTimeZone(Environment->TimezoneId, &Key);
                 if (NT_FAILED(Status))
                     return Status;
                 NtClose(Key);

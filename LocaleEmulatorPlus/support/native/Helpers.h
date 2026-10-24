@@ -60,11 +60,6 @@ Nt_FindLdrModuleByHandle(
     PVOID BaseAddress
 );
 
-PTEB_ACTIVE_FRAME
-Nt_FindThreadFrameByContext(
-    ULONG_PTR Context
-);
-
 ForceInline
 ANSI_STRING
 CharToAnsiString(

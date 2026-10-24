@@ -232,7 +232,7 @@ NTSTATUS LepGlobalData::InjectCrossArchitecture(HANDLE Process, BOOL CurrentWow6
     ZeroMemory(&StartupInfo, sizeof(StartupInfo));
     StartupInfo.cb = sizeof(StartupInfo);
     ZeroMemory(&NativeInfo, sizeof(NativeInfo));
-    TEB_ACTIVE_FRAME BrokerLaunchFrame(LEP_BROKER_LAUNCH_CONTEXT);
+    lep::ActiveFrame BrokerLaunchFrame(LEP_BROKER_LAUNCH_CONTEXT);
     BrokerLaunchFrame.Push();
     Created = CreateProcessW(RundllPath, CommandLine, nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &StartupInfo, &NativeInfo);
     BrokerLaunchFrame.Pop();
@@ -289,6 +289,7 @@ NTSTATUS LepGlobalData::InjectCrossArchitecture(HANDLE Process, BOOL CurrentWow6
     return Status;
 }
 
+/*
 NTSTATUS ReplaceMUIVersionLocaleInfo(PVOID& VersionData, ULONG& VersionSize)
 {
     PVOID       TlbBuffer;
@@ -339,12 +340,14 @@ NTSTATUS ReplaceMUIVersionLocaleInfo(PVOID& VersionData, ULONG& VersionSize)
     LangID = (PUSHORT)PtrAdd(Entry, ROUND_DOWN(CONST_STRSIZE(Translation) + 11, 4));
     CharsetID = LangID + 1;
 
-    *LangID = LepGetGlobalData()->GetEnvironment()->LocaleID;
+    *LangID = LepGetGlobalData()->GetEnvironment()->LocaleId;
 
     VersionData = TlbBuffer;
 
     return STATUS_SUCCESS;
 }
+
+*/
 
 NTSTATUS QueryRegKeyFullPath(HANDLE Key, PUNICODE_STRING KeyFullPath)
 {
@@ -493,7 +496,7 @@ static NTSTATUS LepInitializeAdvancedRegistryRedirection(PLepGlobalData GlobalDa
         return STATUS_PROCEDURE_NOT_FOUND;
     if (!LepInitializeMuiCultureName(
             LcidToCultureName,
-            GlobalData->GetEnvironment()->LocaleID,
+            GlobalData->GetEnvironment()->LocaleId,
             LocaleName,
             sizeof(LocaleName),
             &LocaleNameLength))
@@ -520,7 +523,7 @@ static NTSTATUS LepInitializeVirtualMuiLanguage(PLepGlobalData GlobalData, PVOID
 
     if (!LepInitializeMuiCultureName(
             LcidToCultureName,
-            GlobalData->GetEnvironment()->LocaleID,
+            GlobalData->GetEnvironment()->LocaleId,
             GlobalData->HookRoutineData.Ntdll.MuiLanguageName,
             sizeof(GlobalData->HookRoutineData.Ntdll.MuiLanguageName),
             &GlobalData->HookRoutineData.Ntdll.MuiLanguageNameLength
@@ -581,7 +584,7 @@ static NTSTATUS LepInitializeVirtualMuiLanguage(PLepGlobalData GlobalData, PVOID
 
     WriteLog(L"virtual MUI installed language: %ws (%04X), host=%ws (%04X), chain=%ws",
         GlobalData->HookRoutineData.Ntdll.MuiLanguageName,
-        GlobalData->GetEnvironment()->LocaleID,
+        GlobalData->GetEnvironment()->LocaleId,
         GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName,
         HostLanguageId,
         GlobalData->HookRoutineData.Ntdll.MuiInstallFallback);
@@ -917,7 +920,7 @@ static NTSTATUS LepQueryVirtualMuiKeyValue(
 )
 {
     ULONG LanguageType = 0x92;
-    ULONG LocaleId = GlobalData->GetEnvironment()->LocaleID;
+    ULONG LocaleId = GlobalData->GetEnvironment()->LocaleId;
     UNICODE_STRING HostLanguageName;
 
     HostLanguageName.Buffer = GlobalData->HookRoutineData.Ntdll.MuiHostLanguageName;
@@ -1267,7 +1270,7 @@ LepNtQueryInformationThread(
 
 NTSTATUS LepGlobalData::InjectSelfToChildProcess(HANDLE Process, PCLIENT_ID Cid, ULONG InjectionFlags)
 {
-    if (FindThreadFrame(LEP_BROKER_LAUNCH_CONTEXT) != nullptr)
+    if (lep::ActiveFrame::Find(LEP_BROKER_LAUNCH_CONTEXT) != nullptr)
     {
         WriteLog(L"skip child injection while broker launch is active");
         return STATUS_SUCCESS;
@@ -1569,7 +1572,7 @@ LepNtInitializeNlsFiles(
 
     GlobalData = (PLepGlobalData)HpGetFilterContext();
 
-    *DefaultLocaleId = GlobalData->GetEnvironment()->LocaleID;
+    *DefaultLocaleId = GlobalData->GetEnvironment()->LocaleId;
 
     return Status;
 }
@@ -2094,7 +2097,7 @@ LepNtQueryDefaultLocale(
 {
     HpSetFilterAction(BlockSystemCall);
 
-    *DefaultLocaleId = ((PLepGlobalData)HpGetFilterContext())->GetEnvironment()->LocaleID;
+    *DefaultLocaleId = ((PLepGlobalData)HpGetFilterContext())->GetEnvironment()->LocaleId;
     return STATUS_SUCCESS;
 }
 
@@ -2107,7 +2110,7 @@ LepNtQueryDefaultUILanguage(
 {
     HpSetFilterAction(BlockSystemCall);
 
-    *DefaultUILanguageId = ((PLepGlobalData)HpGetFilterContext())->GetEnvironment()->LocaleID;
+    *DefaultUILanguageId = ((PLepGlobalData)HpGetFilterContext())->GetEnvironment()->LocaleId;
     return STATUS_SUCCESS;
 }
 
@@ -2120,7 +2123,7 @@ LepNtQueryInstallUILanguage(
 {
     HpSetFilterAction(BlockSystemCall);
 
-    *InstallUILanguageId = ((PLepGlobalData)HpGetFilterContext())->GetEnvironment()->LocaleID;
+    *InstallUILanguageId = ((PLepGlobalData)HpGetFilterContext())->GetEnvironment()->LocaleId;
     return STATUS_SUCCESS;
 }
 
@@ -2129,7 +2132,7 @@ NTSTATUS NTAPI LepLdrInitNtContinue(PCONTEXT Context, BOOLEAN TestAlert)
 {
     PLepGlobalData GlobalData = LepGetGlobalData();
 
-    CurrentTeb()->CurrentLocale = GlobalData->GetEnvironment()->LocaleID;
+    CurrentTeb()->CurrentLocale = GlobalData->GetEnvironment()->LocaleId;
 
     return GlobalData->HookStub.StubLdrInitNtContinue(Context, TestAlert);
 }
@@ -2147,7 +2150,7 @@ LepNtContinue(
     PLepGlobalData GlobalData = (PLepGlobalData)HpGetFilterContext();
 
     if (GlobalData != nullptr)
-        CurrentTeb()->CurrentLocale = GlobalData->GetEnvironment()->LocaleID;
+        CurrentTeb()->CurrentLocale = GlobalData->GetEnvironment()->LocaleId;
 
     return 0;
 }

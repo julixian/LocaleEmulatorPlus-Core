@@ -6,18 +6,17 @@
 #define FMS_CALL_MAGIC TAG4('FMSC')
 #define GDI_HOOK_BYPASS TAG4('GHBP')
 
-struct FMS_CALL_CONTEXT : public TEB_ACTIVE_FRAME
+struct FMS_CALL_CONTEXT : public lep::ActiveFrame
 {
     HDC hDC;
 
-    FMS_CALL_CONTEXT()
+    FMS_CALL_CONTEXT() : lep::ActiveFrame(FMS_CALL_MAGIC)
     {
-        this->Context = FMS_CALL_MAGIC;
     }
 
     static FMS_CALL_CONTEXT* Find()
     {
-        return (FMS_CALL_CONTEXT *)FindThreadFrame(FMS_CALL_MAGIC);
+        return (FMS_CALL_CONTEXT *)lep::ActiveFrame::Find(FMS_CALL_MAGIC);
     }
 };
 

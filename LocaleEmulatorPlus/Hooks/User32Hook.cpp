@@ -120,7 +120,7 @@ static PBYTE NTAPI LepGetDpiServerInfoForCurrentThread()
         "Unexpected TEXTMETRICW layout");
     RtlCopyMemory(Shadow, Info, sizeof(Tlb->DpiServerInfoShadow));
     TEXTMETRICW *Metric = (TEXTMETRICW *)(Shadow + 40);
-    BYTE TargetCharset = (BYTE)GlobalData->GetEnvironment()->DefaultCharset;
+    BYTE TargetCharset = (BYTE)GlobalData->GetEnvironment()->FontCharset;
     Metric->tmCharSet = TargetCharset;
 
     return Shadow;
@@ -343,13 +343,13 @@ static ULONG NTAPI LepDefaultEditSetFont(PVOID Edit, HGDIOBJ Font, ULONG Redraw)
     if (Font == nullptr && Edit != nullptr && GlobalData->DefaultEditCharsetOffset != 0)
     {
         PBYTE Charset = (PBYTE)PtrAdd(Edit, GlobalData->DefaultEditCharsetOffset);
-        BYTE OriginalCharset = *Charset;
-        BYTE TargetCharset = (BYTE)GlobalData->GetEnvironment()->DefaultCharset;
+        BYTE OriginalFontCharset = *Charset;
+        BYTE TargetCharset = (BYTE)GlobalData->GetEnvironment()->FontCharset;
         *Charset = TargetCharset;
 
 #if ENABLE_LOG
         WriteLog(L"user32 default EDIT charset cache: edit=%p offset=%Iu original=%u target=%u",
-            Edit, GlobalData->DefaultEditCharsetOffset, OriginalCharset, TargetCharset);
+            Edit, GlobalData->DefaultEditCharsetOffset, OriginalFontCharset, TargetCharset);
 #endif
     }
 
@@ -1664,7 +1664,7 @@ VOID ResetDCCharset(PLepGlobalData GlobalData, HWND hWnd)
 
 LRESULT CALLBACK CBTProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
-    PCBT_PROC_PARAM     CbtParam = (PCBT_PROC_PARAM)FindThreadFrame(CBT_PROC_PARAM_CONTEXT);
+    PCBT_PROC_PARAM     CbtParam = (PCBT_PROC_PARAM)lep::ActiveFrame::Find(CBT_PROC_PARAM_CONTEXT);
     LPCBT_CREATEWND     CreateWnd;
     PCBT_CREATE_PARAM   CreateParam;
 
@@ -1704,7 +1704,7 @@ LRESULT CALLBACK CBTProc(int nCode, WPARAM wParam, LPARAM lParam)
 LRESULT CALLBACK CBTProcU(int nCode, WPARAM wParam, LPARAM lParam)
 {
     LRESULT             Result;
-    PCBT_PROC_PARAM     CbtParam = (PCBT_PROC_PARAM)FindThreadFrame(CBT_PROC_PARAM_CONTEXT);
+    PCBT_PROC_PARAM     CbtParam = (PCBT_PROC_PARAM)lep::ActiveFrame::Find(CBT_PROC_PARAM_CONTEXT);
     LPCBT_CREATEWND     CreateWnd;
     PCBT_CREATE_PARAM   CreateParam;
 
@@ -3442,7 +3442,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
 
 #if ENABLE_LOG
     WriteLog(L"user32 default EDIT DPI server-info getter=%p target=%u",
-        DefaultEditDpiServerInfoGetter, GetEnvironment()->DefaultCharset);
+        DefaultEditDpiServerInfoGetter, GetEnvironment()->FontCharset);
     WriteLog(L"user32 Win7 default EDIT ECSetFont=%p charset-offset=%u",
         DefaultEditSetFont.Routine, (ULONG)DefaultEditSetFont.CharsetOffset);
 #endif

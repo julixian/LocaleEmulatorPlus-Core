@@ -80,7 +80,7 @@ C3                    ; ret
 ```asm
 4C 8B D1                         ; mov r10, rcx
 B8 xx xx xx xx                   ; mov eax, service_id
-F6 04 25 08 03 FE 7F 01         ; test byte ptr [0x7FFE0308], 1
+F6 04 25 08 03 FE 7F 01          ; test byte ptr [0x7FFE0308], 1
 75 03                            ; jne int2e_path
 0F 05                            ; syscall
 C3                               ; ret
@@ -126,15 +126,15 @@ x64 syscall 入口 patch 策略：
 
 共同的创建时序：wrapper 先从调用者传入的 `ThreadFlags` 记下“原本是否要求挂起”，然后无论同架构还是跨架构，都把实际传给 `NtCreateUserProcess` 的标志强制改为挂起。系统调用成功后，父进程趁子线程尚未运行完成注入；随后按照刚才记下的原始标志决定是否调用 `NtResumeThread`。
 
-父进程先根据自己的当前配置重新构建 `LEP_BOOTSTRAP_PAYLOAD`，再从磁盘读取对应位数的 `LocaleEmulatorPlus_*` 镜像。镜像按目标地址重定位后，与 Payload 一起写入子进程的一块连续内存；Payload 位于对齐后的 PE 镜像尾部。bootstrap 元数据同时写入 Payload 偏移/大小、目标 `LdrLoadDll` 原始字节和页面保护，再把目标入口 patch 到 shadow 中的 `LoadFirstDll`（x86 使用 `E9 rel32`，x64 使用 `FF 25 [rip+0]` 绝对跳）。第一次调用恢复原入口、校验并读取 Payload、完成初始化；初始化后的子进程继续拥有 `NtCreateUserProcess` filter，因此它创建后代时会重复这套传播流程。
+父进程先根据自己的当前配置重新构建 `LEP_BOOTSTRAP_PAYLOAD`，再从磁盘读取对应位数的 `LocaleEmulatorPlus_*` 镜像。镜像按目标地址重定位后，与 Payload 一起写入子进程的一块连续内存；Payload 位于对齐后的 PE 镜像尾部。bootstrap 元数据同时写入 Payload 偏移/大小、目标 `LdrLoadDll` 原始字节和页面保护，再把目标入口 patch 到映像中的 `LoadFirstDll`（x86 使用 `E9 rel32`，x64 使用 `FF 25 [rip+0]` 绝对跳）。第一次调用恢复原入口、校验并读取 Payload、完成初始化；初始化后的子进程继续拥有 `NtCreateUserProcess` filter，因此它创建后代时会重复这套传播流程。
 
 同架构传播：父子进程使用相同位数时，父进程可以直接按本架构格式操作目标进程。
 
 跨架构传播：父进程不能把本架构的指针、Payload 内部地址或 DLL 镜像直接交给另一位数进程。父进程先用 `CreateFileMappingW(INVALID_HANDLE_VALUE, ...)` 创建一个按名称访问的、由系统分页文件提供后备存储的临时 section，再用 `MapViewOfFile` 写入 broker 配置。这个 `Local\LEP_BROKER_<childPid>_<parentPid>` 映射只是父进程和 broker 之间的传输邮包。
 
-邮包中的 `LEP_BOOTSTRAP_PAYLOAD` 使用架构无关的固定宽度字段：指针不跨进程传递，字符串和重定向数据都使用相对于 Payload 起点的偏移，内部环境使用 `LEP_RUNTIME_ENVIRONMENT`。父进程随后启动目标位数的 `rundll32.exe`，调用 `LoaderDll_*!LepBrokerEntry`；broker 校验邮包中的 Payload，从磁盘加载对应位数的 LEP DLL，重新把同一份 Payload 序列化后写入目标 shadow 尾部，保存并 patch 子进程的 `LdrLoadDll`。broker 将最终状态写回邮包的 `Result` 字段，父进程等待 broker 退出后读取结果。
+邮包中的 `LEP_BOOTSTRAP_PAYLOAD` 使用架构无关的固定宽度字段：环境块和 DLL 路径通过相对于 Payload 起点的偏移定位，内部环境使用 `LEP_RUNTIME_ENVIRONMENT`。父进程随后启动目标位数的 `rundll32.exe`，调用 `LoaderDll_*!LepBrokerEntry`；broker 校验邮包中的 Payload，从磁盘读取对应位数的 LEP DLL，在本地按目标进程中分配的映像基址重定位，并填充 `LEP_FIRST_DLL_BOOTSTRAP_DATA`。随后将镜像和 Payload 的原始字节写入目标进程，Payload 紧跟在对齐后的映像尾部，再 patch 子进程的 `LdrLoadDll`。Payload 不会在 broker 中重新序列化或解析时区；其内部偏移相对于自身起点，更换进程或放置地址不需要改写这些偏移。broker 将最终状态写回邮包的 `Result` 字段，父进程等待 broker 退出后读取结果。
 
-broker 启动使用线程级的 `TEB_ACTIVE_FRAME` 标记。父进程准备通过 `CreateProcessW` 启动 broker 时把 `LEP_BROKER_LAUNCH_CONTEXT` frame 压入当前线程，`CreateProcessW` 返回后弹出；因为父进程自己的 `NtCreateUserProcess` hook 也会在这条线程调用链上看到 broker 创建，`InjectSelfToChildProcess()` 发现该 frame 就跳过注入。这样不会影响其他线程同时创建的普通子进程，也只阻止“启动 broker → 又给 broker 注入 → broker 再启动 broker”的递归重入。
+broker 启动使用线程级的 `lep::ActiveFrame` 标记，其首成员是标准 `TEB_ACTIVE_FRAME`。父进程准备通过 `CreateProcessW` 启动 broker 时把类型为 `LEP_BROKER_LAUNCH_CONTEXT` 的 frame 压入当前线程，`CreateProcessW` 返回后弹出；因为父进程自己的 `NtCreateUserProcess` hook 也会在这条线程调用链上看到 broker 创建，`InjectSelfToChildProcess()` 发现该 frame 就跳过注入。这样不会影响其他线程同时创建的普通子进程，也只阻止“启动 broker → 又给 broker 注入 → broker 再启动 broker”的递归重入。
 
 注意：代码直接使用当前进程解析出的 `LdrLoadDll` 地址写入 bootstrap 元数据。这隐含假设同架构子进程 ntdll 映射基址与当前进程一致，因此 `ntdll!LdrLoadDll` 地址一致；跨架构 broker 会在自身目标位数上下文中重新解析地址。
 
@@ -144,7 +144,7 @@ broker 启动使用线程级的 `TEB_ACTIVE_FRAME` 标记。父进程准备通�
 
 时机：`HookNtdllRoutines()`。
 
-x86：`SearchLdrInitNtContinue()` 扫描 `LdrInitializeThunk` 前 `0x5B` 字节，改写其中目标为 `NtContinue` 的 call site。`LepLdrInitNtContinue()` 在 loader 即将恢复线程初始 context 前，把当前线程的 `TEB.CurrentLocale` 设置为 `LEPB.LocaleID`，然后通过 `StubLdrInitNtContinue` 调用原 `NtContinue`。hook 范围限定在 loader 的这处调用。
+x86：`SearchLdrInitNtContinue()` 扫描 `LdrInitializeThunk` 前 `0x5B` 字节，改写其中目标为 `NtContinue` 的 call site。`LepLdrInitNtContinue()` 在 loader 即将恢复线程初始 context 前，把当前线程的 `TEB.CurrentLocale` 设置为 `LEPB.LocaleId`，然后通过 `StubLdrInitNtContinue` 调用原 `NtContinue`。hook 范围限定在 loader 的这处调用。
 
 x64：不再扫描 `LdrInitializeThunk`，也不安装 x86 使用的 loader call-site hook。HookPort 直接对 `NtContinue` syscall 入口安装 filter，覆盖经过该 ntdll stub 的调用。`LepNtContinue()` 设置当前线程的 `TEB.CurrentLocale`，保持 `CONTEXT`、`TestAlert` 和默认 `ContinueSystemCall` Action，随后由 wrapper 调用 original。
 
@@ -276,8 +276,8 @@ PS: 这个我看了很久逆向信息和当时的 [PR](https://github.com/xupefe
 
 入口：
 
-- `NtQueryInstallUILanguage`：直接返回目标 `LEPB.LocaleID`。
-- `NtQueryDefaultUILanguage`：直接返回目标 `LEPB.LocaleID`。
+- `NtQueryInstallUILanguage`：直接返回目标 `LEPB.LocaleId`。
+- `NtQueryDefaultUILanguage`：直接返回目标 `LEPB.LocaleId`。
 - `NtQueryLicenseValue("Kernel-MUI-Language-Allowed")`：返回目标 culture name。
 - `NtOpenKey`、`NtClose`、`NtEnumerateKey`、`NtQueryKey`、`NtEnumerateValueKey`、`NtQueryValueKey`：在 native MUI loader 访问 `HKLM\System\CurrentControlSet\Control\MUI\UILanguages` 时构造目标语言项。
 
@@ -410,7 +410,7 @@ x64 win32u 布局：从 `win32u.dll` 按名称取 `NtGdiHfontCreate`，验证为
 
 x64 gdi32 兼容布局：从 `gdi32!CreateFontIndirectExW` 开始最多扫 `0xA0` 字节，返回第一个 call 到直接 x64 syscall stub 的目标，注册 HookPort filter。
 
-线程级重入保护：字体枚举 callback 调用 `AdjustFontData()` 校正字体名称和度量时，会通过 `CreateFontIndirectBypassW()` 创建临时字体；它把 Context 为 `GDI_HOOK_BYPASS` 的 `TEB_ACTIVE_FRAME` 压入当前线程，再调用 `CreateFontIndirectW()`。调用链到达 `LepNtGdiHfontCreateWorker()` 时，该标记使这次字体创建跳过 charset 二次改写。
+线程级重入保护：字体枚举 callback 调用 `AdjustFontData()` 校正字体名称和度量时，会通过 `CreateFontIndirectBypassW()` 创建临时字体；它把 `Kind` 为 `GDI_HOOK_BYPASS` 的 `lep::ActiveFrame` 压入当前线程，再调用 `CreateFontIndirectW()`。调用链到达 `LepNtGdiHfontCreateWorker()` 时，该标记使这次字体创建跳过 charset 二次改写。
 
 作用：控制/记录字体 charset 创建路径，让字体选择符合目标 locale。
 

@@ -4,7 +4,7 @@
 #include <wchar.h>
 
 struct EnvironmentV2 {
-    ULONG Size, Version, AnsiCodePage, OemCodePage, LocaleID, DefaultCharset;
+    ULONG Size, Version, AnsiCodePage, OemCodePage, LocaleId, FontCharset;
     ULONG RegistryRedirectionMode, HookUILanguageMode;
     struct {
         LONG Bias;
@@ -16,7 +16,7 @@ struct EnvironmentV2 {
         LONG DaylightBias;
     } Timezone;
 };
-struct EnvironmentV3 { EnvironmentV2 Base; WCHAR TimeZoneId[128]; };
+struct EnvironmentV3 { EnvironmentV2 Base; WCHAR TimezoneId[128]; };
 typedef LONG (WINAPI *CreateWithLocale)(void *, PCWSTR, PWSTR, PCWSTR,
     ULONG, LPSTARTUPINFOW, LPPROCESS_INFORMATION, void *, void *, void *, HANDLE);
 static_assert(sizeof(EnvironmentV2) == 204, "v2 ABI");
@@ -67,23 +67,23 @@ int wmain(int argc, wchar_t **argv) {
     environment.Base.Size = sizeof(environment);
     environment.Base.Version = 3;
     environment.Base.AnsiCodePage = environment.Base.OemCodePage = 932;
-    environment.Base.LocaleID = 0x411;
-    environment.Base.DefaultCharset = 128;
+    environment.Base.LocaleId = 0x411;
+    environment.Base.FontCharset = 128;
     environment.Base.RegistryRedirectionMode = 2;
     environment.Base.HookUILanguageMode = 1;
     environment.Base.Timezone.Bias = -540;
     wcscpy_s(environment.Base.Timezone.StandardName, L"Host language name");
     wcscpy_s(environment.Base.Timezone.DaylightName, L"Host language name");
-    wcscpy_s(environment.TimeZoneId, L"Tokyo Standard Time");
+    wcscpy_s(environment.TimezoneId, L"Tokyo Standard Time");
     bool expectNormalized = true, reject = false;
     if (wcscmp(argv[2], L"v2") == 0 || wcscmp(argv[2], L"v2-nested") == 0 ||
         wcsncmp(argv[2], L"v2-dst", 6) == 0) {
         environment.Base.Size = sizeof(EnvironmentV2); environment.Base.Version = 2;
         expectNormalized = false;
     }
-    if (wcscmp(argv[2], L"empty") == 0) { environment.TimeZoneId[0] = 0; expectNormalized = false; }
-    if (wcscmp(argv[2], L"korea") == 0) { wcscpy_s(environment.TimeZoneId, L"Korea Standard Time"); expectNormalized = false; }
-    if (wcscmp(argv[2], L"uppercase") == 0) wcscpy_s(environment.TimeZoneId, L"TOKYO STANDARD TIME");
+    if (wcscmp(argv[2], L"empty") == 0) { environment.TimezoneId[0] = 0; expectNormalized = false; }
+    if (wcscmp(argv[2], L"korea") == 0) { wcscpy_s(environment.TimezoneId, L"Korea Standard Time"); expectNormalized = false; }
+    if (wcscmp(argv[2], L"uppercase") == 0) wcscpy_s(environment.TimezoneId, L"TOKYO STANDARD TIME");
     bool dst = wcsstr(argv[2], L"-dst") != nullptr;
     if (dst) {
         expectNormalized = false;
@@ -92,17 +92,17 @@ int wmain(int argc, wchar_t **argv) {
         SHORT standard[] = {0,11,1,2,0,0,0,0}, daylight[] = {0,3,2,2,0,0,0,0};
         memcpy(environment.Base.Timezone.StandardStart, standard, sizeof(standard));
         memcpy(environment.Base.Timezone.DaylightStart, daylight, sizeof(daylight));
-        wcscpy_s(environment.TimeZoneId, L"Pacific Standard Time");
+        wcscpy_s(environment.TimezoneId, L"Pacific Standard Time");
     }
     if (wcscmp(argv[2], L"bad-size") == 0) { environment.Base.Size = 459; reject = true; }
     if (wcscmp(argv[2], L"bad-version") == 0) { environment.Base.Version = 99; reject = true; }
     if (wcscmp(argv[2], L"v3-short") == 0) { environment.Base.Size = 204; reject = true; }
     if (wcscmp(argv[2], L"v2-long") == 0) { environment.Base.Version = 2; reject = true; }
-    if (wcscmp(argv[2], L"unterminated") == 0) { for (auto &ch : environment.TimeZoneId) ch = L'x'; reject = true; }
-    if (wcscmp(argv[2], L"unknown-id") == 0) { wcscpy_s(environment.TimeZoneId, L"LEP Unknown Time Zone"); reject = true; }
+    if (wcscmp(argv[2], L"unterminated") == 0) { for (auto &ch : environment.TimezoneId) ch = L'x'; reject = true; }
+    if (wcscmp(argv[2], L"unknown-id") == 0) { wcscpy_s(environment.TimezoneId, L"LEP Unknown Time Zone"); reject = true; }
     if (wcscmp(argv[2], L"bad-bias") == 0) { environment.Base.Timezone.Bias = -480; reject = true; }
     if (wcscmp(argv[2], L"bad-standard-bias") == 0) { environment.Base.Timezone.StandardBias = 1; reject = true; }
-    if (wcscmp(argv[2], L"bad-path") == 0) { wcscpy_s(environment.TimeZoneId, L"Tokyo Standard Time\\subkey"); reject = true; }
+    if (wcscmp(argv[2], L"bad-path") == 0) { wcscpy_s(environment.TimezoneId, L"Tokyo Standard Time\\subkey"); reject = true; }
     if (wcscmp(argv[2], L"old-dll") == 0) reject = true;
 
     // Place the supplied buffer immediately before an inaccessible page.

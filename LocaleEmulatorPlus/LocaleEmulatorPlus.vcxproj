@@ -94,6 +94,7 @@
     <ClInclude Include="support\runtime\File.h" />
     <ClInclude Include="support\runtime\HashTable.h" />
     <ClInclude Include="support\runtime\Heap.h" />
+    <ClInclude Include="support\runtime\ActiveFrame.h" />
     <ClInclude Include="support\runtime\MemoryPrimitives.h" />
     <ClInclude Include="support\runtime\String.h" />
     <ClInclude Include="support\runtime\TypeTraits.h" />

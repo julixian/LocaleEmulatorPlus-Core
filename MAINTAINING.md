@@ -28,16 +28,16 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 
 主要流程：
 
-1. 调用方填写 `LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK` (LEPB)，通过 Loader 的启动接口传入代码页、区域、时区 ID 和可选名称覆盖。
-2. `LoaderDll` 在入口将公开配置解析为 `LEP_RUNTIME_ENVIRONMENT`，补全时差、切换日期和返回名称，再与 `LocaleEmulatorPlus_*` 的路径序列化为 `LEP_BOOTSTRAP_PAYLOAD`。Payload 只保存相对偏移；子进程继承解析后的配置快照。公开 ABI 详见 [原生调用说明](ai-docs/lepb-v4.md)。
+1. 调用方填写 `LOCALE_EMULATOR_PLUS_ENVIRONMENT_BLOCK` (LEPB)，通过 Loader 的启动接口传入代码页、区域、时区 ID 和可选时区名称覆盖。
+2. `LoaderDll` 在入口将公开配置解析为 `LEP_RUNTIME_ENVIRONMENT`，补全时差、切换日期和返回名称，再与 `LocaleEmulatorPlus_*` 的路径序列化为 Payload。Payload 以 `LEP_BOOTSTRAP_PAYLOAD` 为头，此结构仅保存后续数据的偏移和大小。公开 ABI 详见 [原生调用说明](ai-docs/lepb-v4.md)。
 3. `LepCreateProcess2` 调用非公开的 `CreateProcessInternalW`，创建挂起且未加载 kernel32.dll/kernelbase.dll 的目标进程。
 4. `LoaderDll` 从磁盘读取对应位数的 `LocaleEmulatorPlus_*`，根据 `SizeOfImage` 和 Payload 大小在目标进程中申请一块连续区域。
 5. `LoaderDll` 根据申请的确定的远程地址在本地重定位 `LocaleEmulatorPlus_*` 镜像后，把镜像和 Payload 写入目标进程；Payload 紧跟在 PE `SizeOfImage` 对齐后的尾部。
-6. `LoaderDll` 把目标 `ntdll!LdrLoadDll` 的原始字节、原页面保护以及 Payload 偏移/大小写入 shadow 的 bootstrap 元数据，然后 patch 目标 `ntdll!LdrLoadDll` 到 `LocaleEmulatorPlus_*!LoadFirstDll`。
+6. `LoaderDll` 把目标 `ntdll!LdrLoadDll` 的原始字节、原页面保护以及 Payload 偏移/大小写入远程映像的 `LEP_FIRST_DLL_BOOTSTRAP_DATA` (导出名称 `LepFirstDllBootstrapData`) 元数据，然后 patch 目标 `ntdll!LdrLoadDll` 到 `LocaleEmulatorPlus_*!LoadFirstDll`。
 7. `LocaleEmulatorPlus` 侧 `LdrLoadDll` 调用命中 `LoadFirstDll` 后，先恢复原入口并恢复页面保护，再校验 Payload，调用 LEP 初始化，最后转回原始 `LdrLoadDll`。
 8. `LocaleEmulatorPlus` 从已校验的 Payload 读取静态配置；运行时获取的原始 locale、字体 charset 和 script name 保存在进程内的 `LEP_RUNTIME_STATE` 中。初始化完成后，目标进程调用 NLS、locale、窗口文字、字体、剪贴板、注册表、时区等相关 API 时，会被 LEP 的 hook 改写结果。
 
-`LepCreateProcess` 路径（当前进程直接加载 `LocaleEmulatorPlus_*`）无法把 Payload 放在 PE 镜像尾部，因此使用 `TEB_ACTIVE_FRAME::Data` 传递指针。Payload 由进程堆分配：Loader 初始拥有它，LEP 接受后清空 frame 中的指针并负责释放；如果 LEP 没有接受，Loader 在返回前释放。
+`LepCreateProcess` 路径（当前进程直接加载 `LocaleEmulatorPlus_*`）无法把 Payload 放在 PE 镜像尾部，因此使用 `lep::ActiveFrame::Data` 传递指针。该封装通过标准 Native 帧头挂入线程活动帧链，LEP 数据存于扩展字段。Payload 由进程堆分配：Loader 初始拥有它，LEP 接受后清空 frame 中的指针并负责释放；如果 LEP 没有接受，Loader 在返回前释放。
 
 关键点是“早”：如果目标进程在 LEP 初始化前已经加载并初始化 kernel32/kernelbase，NLS 缓存已经按本机区域建立，后续再改 ACP/LCID 往往无效。因此 `LocaleEmulatorPlus.dll` 自身必须尽量只静态依赖 `ntdll.dll`；其他 DLL 只能 delay-load，且 delay helper 也不能依赖 kernel32。
 

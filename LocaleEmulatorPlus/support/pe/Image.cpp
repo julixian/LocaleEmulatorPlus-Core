@@ -644,7 +644,7 @@ _ML_CPP_TAIL_
 #endif // cpp
 
 
-typedef struct LOAD_MEM_DLL_INFO : public TEB_ACTIVE_FRAME
+typedef struct LOAD_MEM_DLL_INFO : public lep::ActiveFrame
 {
     ULONG           Flags;
     PVOID           MappedBase;
@@ -673,7 +673,7 @@ typedef struct LOAD_MEM_DLL_INFO : public TEB_ACTIVE_FRAME
 
 PLOAD_MEM_DLL_INFO GetLaodMemDllInfo()
 {
-    return (PLOAD_MEM_DLL_INFO)FindThreadFrame(LOAD_MEM_DLL_INFO_MAGIC);
+    return (PLOAD_MEM_DLL_INFO)lep::ActiveFrame::Find(LOAD_MEM_DLL_INFO_MAGIC);
 }
 
 NTSTATUS
@@ -998,7 +998,7 @@ LoadDllFromMemory(
     ULONG               Length;
     PVOID               ModuleBase, ShadowNtdll;
     PLDR_MODULE         Ntdll;
-    LOAD_MEM_DLL_INFO   MemDllInfo;
+    LOAD_MEM_DLL_INFO   MemDllInfo{};
     PIMAGE_DOS_HEADER   DosHeader;
     PIMAGE_NT_HEADERS   NtHeader;
     WCHAR               Lz32DosPath[MAX_NTPATH];
@@ -1027,9 +1027,8 @@ LoadDllFromMemory(
     *(PVOID *)&NtQuerySection           = LookupExportTable(ShadowNtdll, lep::HashExportName("NtQuerySection"));
     *(PVOID *)&LdrLoadDll               = LookupExportTable(ShadowNtdll, lep::HashExportName("LdrLoadDll"));
 
-    ZeroMemory(&MemDllInfo, sizeof(MemDllInfo));
-    MemDllInfo.Context = LOAD_MEM_DLL_INFO_MAGIC;
-    RtlPushFrame(&MemDllInfo);
+    MemDllInfo.Kind = LOAD_MEM_DLL_INFO_MAGIC;
+    MemDllInfo.Push();
 
     Status = STATUS_UNSUCCESSFUL;
     LOOP_ONCE
@@ -1075,7 +1074,7 @@ LoadDllFromMemory(
             *ModuleHandle = (HANDLE)ModuleBase;
     }
 
-    RtlPopFrame(&MemDllInfo);
+    MemDllInfo.Pop();
     RtlFreeUnicodeString(&MemDllInfo.MemDllFullPath);
     RtlFreeUnicodeString(&MemDllInfo.Lz32Path);
 

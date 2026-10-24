@@ -15,9 +15,9 @@ int wmain()
         LEP::LEP_ENVIRONMENT_VERSION,
         sizeof(LEP::LEPB), sizeof(PROCESS_INFORMATION),
         offsetof(LEP::LEPB, Size), offsetof(LEP::LEPB, Version), offsetof(LEP::LEPB, AnsiCodePage),
-        offsetof(LEP::LEPB, OemCodePage), offsetof(LEP::LEPB, LocaleID), offsetof(LEP::LEPB, DefaultCharset),
+        offsetof(LEP::LEPB, OemCodePage), offsetof(LEP::LEPB, LocaleId), offsetof(LEP::LEPB, FontCharset),
         offsetof(LEP::LEPB, RegistryRedirectionMode), offsetof(LEP::LEPB, HookUILanguageMode),
-        offsetof(LEP::LEPB, TimeZoneId), offsetof(LEP::LEPB, StandardNameOverride), offsetof(LEP::LEPB, DaylightNameOverride),
+        offsetof(LEP::LEPB, TimezoneId), offsetof(LEP::LEPB, StandardNameOverride), offsetof(LEP::LEPB, DaylightNameOverride),
         offsetof(PROCESS_INFORMATION, hProcess), offsetof(PROCESS_INFORMATION, hThread),
         offsetof(PROCESS_INFORMATION, dwProcessId), offsetof(PROCESS_INFORMATION, dwThreadId),
     };

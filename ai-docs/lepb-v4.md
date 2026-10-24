@@ -2,7 +2,7 @@
 
 调用方在 LEPB v4 中填写 Windows 时区 ID，Loader 负责解析完整时区配置。需要控制程序看到的名称时，单独设置标准时间、夏令时名称覆盖。
 
-独立声明位于 [LocaleEmulatorPlus.ixx](../include/LocaleEmulatorPlus.ixx)，完整启动示例位于 [lep-launch.cpp](../examples/lep-launch.cpp)。声明只依赖 Windows SDK，可作为 C++20 模块使用，也可复制其中的声明用于动态调用。
+独立声明位于 [LocaleEmulatorPlus.ixx](../include/LocaleEmulatorPlus.ixx)，完整启动示例位于 [lep-launch.cpp](../examples/lep-launch.cpp)。声明使用 Windows SDK 类型，模块接口导入 `std.compat`，需要支持标准库模块的 C++23 工具链；也可把结构体和函数指针声明复制到普通头文件中用于动态调用。
 
 ## 填写配置
 
@@ -14,20 +14,22 @@ LEP::LEPB environment{};
 environment.Size = sizeof(environment);
 environment.Version = LEP::LEP_ENVIRONMENT_VERSION;
 environment.AnsiCodePage = environment.OemCodePage = 932;
-environment.LocaleID = 0x411;
-environment.DefaultCharset = SHIFTJIS_CHARSET;
+environment.LocaleId = 0x411;
+environment.FontCharset = SHIFTJIS_CHARSET;
 environment.RegistryRedirectionMode = 2;
 environment.HookUILanguageMode = 1;
-wcscpy_s(environment.TimeZoneId, L"Tokyo Standard Time");
+wcscpy_s(environment.TimezoneId, L"Tokyo Standard Time");
 ```
 
 通过 `LoadLibraryW` 加载对应架构的 Loader，以 `GetProcAddress` 获取 `LepCreateProcess2` 并转换为 `LEP::LepCreateProcess2_t`。该接口创建并配置目标进程。`LepCreateProcess` 使用相同签名，但会在调用进程中加载 Core，使其子进程继承配置。
 
 两个接口均返回有符号 NTSTATUS；失败值小于零。进程信息输出参数统一使用 Windows 标准 `PROCESS_INFORMATION`：x86 为 16 字节，x64 为 24 字节，包含进程句柄、线程句柄、进程 ID 和线程 ID。成功后需要关闭返回的两个句柄。
 
+`FontCharset` 使用 GDI 字体字符集常量，例如 `SHIFTJIS_CHARSET`（128），用于字体和默认 EDIT 字体信息的模拟；`AnsiCodePage` 使用编码代码页，例如 932。两者的数值和用途不同。
+
 ## 时区 ID 和名称
 
-`TimeZoneId` 必填，例如 `Tokyo Standard Time`、`Pacific Standard Time`、`AUS Eastern Standard Time`。它是 Windows 固定 ID，不是本地化显示名。.NET 可从 `TimeZoneInfo.GetSystemTimeZones()` 返回对象的 `Id` 获取候选值。
+`TimezoneId` 必填，例如 `Tokyo Standard Time`、`Pacific Standard Time`、`AUS Eastern Standard Time`。它是 Windows 固定 ID，不是本地化显示名。.NET 可从 `TimeZoneInfo.GetSystemTimeZones()` 返回对象的 `Id` 获取候选值。
 
 Loader 只读访问本机的 `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Time Zones\<ID>`：
 
@@ -54,7 +56,7 @@ LEPB v4 不含指针，x86/x64 均为 416 字节。
 | 字段 | 偏移 | 大小 |
 | --- | ---: | ---: |
 | Size、Version、代码页、区域和模式字段 | 0 | 32 字节 |
-| WCHAR TimeZoneId[128] | 32 | 256 字节 |
+| WCHAR TimezoneId[128] | 32 | 256 字节 |
 | WCHAR StandardNameOverride[32] | 288 | 64 字节 |
 | WCHAR DaylightNameOverride[32] | 352 | 64 字节 |
 
@@ -71,9 +73,9 @@ Loader 不修改或保留调用方缓冲区；缓冲区可以只读，并可在�
 internal struct LEPB
 {
     internal uint Size, Version;
-    internal uint AnsiCodePage, OemCodePage, LocaleID, DefaultCharset;
+    internal uint AnsiCodePage, OemCodePage, LocaleId, FontCharset;
     internal uint RegistryRedirectionMode, HookUILanguageMode;
-    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] internal string TimeZoneId;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] internal string TimezoneId;
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] internal string StandardNameOverride;
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] internal string DaylightNameOverride;
 }

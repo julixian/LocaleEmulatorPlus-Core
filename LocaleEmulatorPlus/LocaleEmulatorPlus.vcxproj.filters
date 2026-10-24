@@ -233,6 +233,9 @@
     <ClInclude Include="support\runtime\Heap.h">
       <Filter>support\runtime</Filter>
     </ClInclude>
+    <ClInclude Include="support\runtime\ActiveFrame.h">
+      <Filter>support\runtime</Filter>
+    </ClInclude>
     <ClInclude Include="support\runtime\MemoryPrimitives.h">
       <Filter>support\runtime</Filter>
     </ClInclude>

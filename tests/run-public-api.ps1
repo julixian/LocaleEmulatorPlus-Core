@@ -6,23 +6,28 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $outputRoot = Join-Path $repoRoot 'out'
+. "$PSScriptRoot\standard-modules.ps1"
 foreach ($arch in @('x86','x64')) {
     $compiler = "$VcTools\bin\Hostx64\$arch\cl.exe"
     $env:LIB = "$VcTools\lib\$arch;$SdkRoot\Lib\$SdkVersion\ucrt\$arch;$SdkRoot\Lib\$SdkVersion\um\$arch"
     $includes = @("/I$VcTools\include", "/I$SdkRoot\Include\$SdkVersion\ucrt", "/I$SdkRoot\Include\$SdkVersion\shared", "/I$SdkRoot\Include\$SdkVersion\um", "/I$SdkRoot\Include\$SdkVersion\km")
+    $standard = Build-StandardModules -Compiler $compiler -VcTools $VcTools -Includes $includes -OutputDirectory "$outputRoot\public-api-std-$arch"
+    $references = $standard.References
+    $language = $standard.Language
     $ifc = "$outputRoot\LocaleEmulatorPlus-$arch.ifc"
     $moduleObject = "$outputRoot\LocaleEmulatorPlus-module-$arch.obj"
-    & $compiler /nologo /utf-8 /c /std:c++20 /EHsc /MT $includes /interface "$repoRoot\include\LocaleEmulatorPlus.ixx" "/ifcOutput$ifc" "/Fo$moduleObject"
+    & $compiler /nologo /utf-8 /c $language /EHsc /MT $includes $references /interface "$repoRoot\include\LocaleEmulatorPlus.ixx" "/ifcOutput$ifc" "/Fo$moduleObject"
     if ($LASTEXITCODE -ne 0) { throw "Module compile failed: $arch" }
     $archDefine = if ($arch -eq 'x64') { '/D_WIN64' } else { '/DWIN32' }
     $coreObject = "$outputRoot\lepb-core-layout-$arch.obj"
     & $compiler /nologo /utf-8 /c /O2 /EHsc /MT /D_NO_CRT_STDIO_INLINE $archDefine $includes "$PSScriptRoot\lepb-core-layout.cpp" "/Fo$coreObject"
     if ($LASTEXITCODE -ne 0) { throw "Core layout compile failed: $arch" }
-    & $compiler /nologo /utf-8 /std:c++20 /EHsc /MT $includes /reference "LocaleEmulatorPlus=$ifc" "$PSScriptRoot\lepb-public-layout.cpp" $coreObject $moduleObject "/Fo$outputRoot\lepb-public-layout-$arch.obj" "/Fe$outputRoot\lepb-public-layout-$arch.exe"
+    $moduleObjects = @($moduleObject) + $standard.Objects
+    & $compiler /nologo /utf-8 $language /EHsc /MT $includes $references /reference "LocaleEmulatorPlus=$ifc" "$PSScriptRoot\lepb-public-layout.cpp" $coreObject $moduleObjects "/Fo$outputRoot\lepb-public-layout-$arch.obj" "/Fe$outputRoot\lepb-public-layout-$arch.exe"
     if ($LASTEXITCODE -ne 0) { throw "Public layout compile failed: $arch" }
     & "$outputRoot\lepb-public-layout-$arch.exe"
     if ($LASTEXITCODE -ne 0) { throw "Public/Core layout mismatch: $arch" }
-    & $compiler /nologo /utf-8 /std:c++20 /EHsc /MT $includes /reference "LocaleEmulatorPlus=$ifc" "$repoRoot\examples\lep-launch.cpp" $moduleObject "/Fo$outputRoot\lep-launch-$arch.obj" "/Fe$outputRoot\lep-launch-$arch.exe"
+    & $compiler /nologo /utf-8 $language /EHsc /MT $includes $references /reference "LocaleEmulatorPlus=$ifc" "$repoRoot\examples\lep-launch.cpp" $moduleObjects "/Fo$outputRoot\lep-launch-$arch.obj" "/Fe$outputRoot\lep-launch-$arch.exe"
     if ($LASTEXITCODE -ne 0) { throw "Example compile failed: $arch" }
     $previousTestFlag = $env:LEP_PUBLIC_API_TEST
     try {

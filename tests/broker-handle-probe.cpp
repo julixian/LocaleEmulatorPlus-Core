@@ -3,7 +3,7 @@
 #include <wchar.h>
 
 struct Environment {
-    ULONG Size, Version, AnsiCodePage, OemCodePage, LocaleID, DefaultCharset;
+    ULONG Size, Version, AnsiCodePage, OemCodePage, LocaleId, FontCharset;
     ULONG RegistryRedirectionMode, HookUILanguageMode;
     TIME_ZONE_INFORMATION Timezone;
 };
@@ -80,7 +80,7 @@ int wmain(int argc, wchar_t **argv) {
     auto environment = (Environment *)(config->Data + payload->EnvironmentOffset);
     environment->Size = sizeof(Environment); environment->Version = 1;
     environment->AnsiCodePage = environment->OemCodePage = 932;
-    environment->LocaleID = 0x411; environment->DefaultCharset = 128;
+    environment->LocaleId = 0x411; environment->FontCharset = 128;
     environment->RegistryRedirectionMode = 2; environment->HookUILanguageMode = 1;
     environment->Timezone.Bias = -540;
     wcscpy_s(environment->Timezone.StandardName, L"東京標準時");

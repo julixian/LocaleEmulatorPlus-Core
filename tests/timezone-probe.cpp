@@ -39,7 +39,7 @@ namespace
     bool ReadExpected(const LEP::LEPB& Environment, TIME_ZONE_INFORMATION& Zone)
     {
         wchar_t Path[256];
-        swprintf_s(Path, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\%s", Environment.TimeZoneId);
+        swprintf_s(Path, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\%s", Environment.TimezoneId);
         HKEY Key = nullptr;
         if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_READ | KEY_WOW64_64KEY, &Key) != ERROR_SUCCESS)
             return false;
@@ -58,7 +58,7 @@ namespace
         Zone.DaylightBias = Tzi.DaylightBias;
         Zone.StandardDate = Tzi.StandardDate;
         Zone.DaylightDate = Tzi.DaylightDate;
-        if (_wcsicmp(Environment.TimeZoneId, L"Tokyo Standard Time") == 0)
+        if (_wcsicmp(Environment.TimezoneId, L"Tokyo Standard Time") == 0)
         {
             ZeroMemory(Zone.StandardName, sizeof(Zone.StandardName));
             ZeroMemory(Zone.DaylightName, sizeof(Zone.DaylightName));
@@ -163,8 +163,8 @@ int wmain(int argc, wchar_t** argv)
     Environment.Size = sizeof(Environment);
     Environment.Version = LEP::LEP_ENVIRONMENT_VERSION;
     Environment.AnsiCodePage = Environment.OemCodePage = 932;
-    Environment.LocaleID = 0x411;
-    Environment.DefaultCharset = 128;
+    Environment.LocaleId = 0x411;
+    Environment.FontCharset = 128;
     Environment.RegistryRedirectionMode = 2;
     Environment.HookUILanguageMode = 1;
     PCWSTR Case = argv[2];
@@ -176,7 +176,7 @@ int wmain(int argc, wchar_t** argv)
     if (wcsstr(Case, L"southern")) Id = L"AUS Eastern Standard Time";
     if (wcsstr(Case, L"israel")) Id = L"Israel Standard Time";
     if (Is(L"uppercase")) Id = L"TOKYO STANDARD TIME";
-    wcscpy_s(Environment.TimeZoneId, Id);
+    wcscpy_s(Environment.TimezoneId, Id);
     if (Is(L"standard-only")) wcscpy_s(Environment.StandardNameOverride, L"標準時間");
     if (Is(L"daylight-only")) wcscpy_s(Environment.DaylightNameOverride, L"夏令时间");
     if (Is(L"overrides") || Is(L"non-tokyo-overrides") || wcsstr(Case, L"nested"))
@@ -195,11 +195,11 @@ int wmain(int argc, wchar_t** argv)
     else if (Is(L"short-header")) Environment.Size = 4;
     else if (Is(L"bad-version")) Environment.Version = 99;
     else if (Is(L"legacy-size")) Environment.Size = 204;
-    else if (Is(L"empty-id")) Environment.TimeZoneId[0] = 0;
-    else if (Is(L"unknown-id")) wcscpy_s(Environment.TimeZoneId, L"LEP Unknown Time Zone");
-    else if (Is(L"bad-path")) wcscpy_s(Environment.TimeZoneId, L"Tokyo Standard Time\\subkey");
-    else if (Is(L"slash")) wcscpy_s(Environment.TimeZoneId, L"Tokyo Standard Time/subkey");
-    else if (Is(L"id-unterminated")) wmemset(Environment.TimeZoneId, L'x', 128);
+    else if (Is(L"empty-id")) Environment.TimezoneId[0] = 0;
+    else if (Is(L"unknown-id")) wcscpy_s(Environment.TimezoneId, L"LEP Unknown Time Zone");
+    else if (Is(L"bad-path")) wcscpy_s(Environment.TimezoneId, L"Tokyo Standard Time\\subkey");
+    else if (Is(L"slash")) wcscpy_s(Environment.TimezoneId, L"Tokyo Standard Time/subkey");
+    else if (Is(L"id-unterminated")) wmemset(Environment.TimezoneId, L'x', 128);
     else if (Is(L"standard-unterminated")) wmemset(Environment.StandardNameOverride, L'x', 32);
     else if (Is(L"daylight-unterminated")) wmemset(Environment.DaylightNameOverride, L'x', 32);
     else if (Is(L"bad-registry-mode")) Environment.RegistryRedirectionMode = 3;

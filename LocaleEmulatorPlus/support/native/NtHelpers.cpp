@@ -884,11 +884,6 @@ PLDR_MODULE Nt_FindLdrModuleByHandle(PVOID BaseAddress)
     return lep::Native::Ldr::FindLdrModuleByHandle(BaseAddress);
 }
 
-PTEB_ACTIVE_FRAME Nt_FindThreadFrameByContext(ULONG_PTR Context)
-{
-    return lep::Native::Ps::FindThreadFrame(Context);
-}
-
 
 /************************************************************************
   path

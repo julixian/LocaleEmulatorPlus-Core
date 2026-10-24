@@ -29,12 +29,12 @@ int wmain(int argc, wchar_t** argv)
     environment.Size = sizeof(environment);
     environment.Version = LEP::LEP_ENVIRONMENT_VERSION;
     environment.AnsiCodePage = environment.OemCodePage = 932;
-    environment.LocaleID = 0x411;
-    environment.DefaultCharset = SHIFTJIS_CHARSET;
+    environment.LocaleId = 0x411;
+    environment.FontCharset = SHIFTJIS_CHARSET;
     environment.RegistryRedirectionMode = 2;
     environment.HookUILanguageMode = 1;
     // Loader resolves offsets, DST transitions and default names from this ID.
-    wcscpy_s(environment.TimeZoneId, L"Tokyo Standard Time");
+    wcscpy_s(environment.TimezoneId, L"Tokyo Standard Time");
 
     wchar_t currentDirectory[32768];
     wchar_t* filePart = nullptr;

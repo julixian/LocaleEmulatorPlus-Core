@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 $headers = @(
     'base/Platform.h', 'base/Pointer.h',
     'native/Declarations.h', 'native/Helpers.h', 'native/Path.h', 'native/RegistrySupport.h', 'native/Operations.h',
-    'runtime/MemoryPrimitives.h', 'runtime/Heap.h', 'runtime/File.h',
+    'runtime/MemoryPrimitives.h', 'runtime/ActiveFrame.h', 'runtime/Heap.h', 'runtime/File.h',
     'runtime/TypeTraits.h', 'runtime/Array.h', 'runtime/String.h',
     'runtime/HashTable.h', 'runtime/Diagnostics.h',
     'pe/ExportHash.h', 'pe/Image.h', 'patch/Decoder.h', 'patch/MemoryPatch.h',

@@ -29,9 +29,14 @@
 | `lep::DynamicArray` | 动态数组 |
 | `lep::HashTable` | 键值缓存 |
 | `lep::String`、`lep::WideStringStorage` | 宽字符串及其存储 |
+| `lep::ActiveFrame` | 使用标准 Native 头的线程活动帧，LEP 类型、数据和入栈状态存于扩展字段 |
 | `lep::InitializeSupportHeap`、`lep::UninitializeSupportHeap` | 支持堆的生命周期 |
 
 堆生命周期和分配实现位于 `runtime/Heap.cpp`。控制台输出、崩溃转储、原生错误对话框和日志目录辅助函数位于 `runtime/Diagnostics.*`。原生内存操作使用 `lep::Native::Mm`。
+
+`runtime/ActiveFrame.h` 提供 `lep::ActiveFrame`。其首成员是标准 `TEB_ACTIVE_FRAME`（x86 为 12 字节，x64 为 24 字节）；`Flags`、`Previous`、`Context` 保持 Native 含义，LEP 的大小、版本、类型、数据和入栈状态位于扩展部分。Loader 与 Core 按描述名称内容及扩展版本识别同一协议，不依赖各 DLL 静态描述对象的地址相等。对象不可复制或移动，正常作用域退出自动弹出。
+
+`THREAD_LOCAL_BUFFER` 通过该封装保存 104 字节的默认 EDIT 字体信息副本；版本资源缓冲与对应处理函数已注释。线程对象在 x86/x64 上分别为 136/160 字节，仍采用活动帧链保存，没有使用动态 FLS 或编译器 TLS。
 
 ## 导出查找与 hook
 
@@ -67,14 +72,16 @@ python .\build.py --diag-init --no-deploy
 python -m unittest discover -s tests -p test_build.py
 .\tests\run-support-headers.ps1
 .\tests\run-support-layout.ps1
+.\tests\run-active-frame.ps1
 .\tests\run-lepb-compat.ps1
 .\tests\run-broker-handle.ps1
 .\tests\run-public-api.ps1
 .\tests\run-timezone.ps1
 ```
 
-- `run-support-headers.ps1` 检查 22 个入口头文件能独立、重复包含。
+- `run-support-headers.ps1` 检查 23 个入口头文件能独立、重复包含。
 - `run-support-layout.ps1` 检查 x86/x64 各 26 项大小和偏移，以及固定导出哈希值。布局有意变化时应人工审查基线。
+- `run-active-frame.ps1` 检查 Native 前缀布局、外部节点保留、嵌套及重复入栈/出栈、线程隔离、不同 DLL 描述对象之间的查找，并通过两个导出启动隐藏的 ANSI/Unicode EDIT 控件测试。
 - `run-lepb-compat.ps1` 覆盖 LEPB 格式、参数校验及同架构、跨架构子进程传播。
 - `run-broker-handle.ps1` 检查 broker 句柄传递、权限和 PID 校验。
 - `run-public-api.ps1` 对照公开声明与 Core 布局，并运行第三方调用示例。

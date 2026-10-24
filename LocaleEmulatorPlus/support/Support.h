@@ -6,6 +6,7 @@
 #include "base/Pointer.h"
 #include "pe/ExportHash.h"
 #include "native/Helpers.h"
+#include "runtime/ActiveFrame.h"
 #include "runtime/Heap.h"
 #include "runtime/Diagnostics.h"
 #include "pe/Image.h"

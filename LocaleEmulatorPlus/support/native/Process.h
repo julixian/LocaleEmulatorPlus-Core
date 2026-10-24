@@ -1336,39 +1336,15 @@ ZwGetNextThread(
 typedef struct
 {
 /* 0x000 */ ULONG   Flags;
-/* 0x004 */ PSTR    FrameName;
+/* 0x004 */ PCSTR   FrameName;
 
 } TEB_ACTIVE_FRAME_CONTEXT, *PTEB_ACTIVE_FRAME_CONTEXT;
 
 typedef struct TEB_ACTIVE_FRAME
 {
-/* 0x000 */ ULONG                       Context;  // Flags;
-/* 0x004 */ struct TEB_ACTIVE_FRAME    *Previous;
-            ULONG_PTR                   Data;
-// /* 0x008 */ PTEB_ACTIVE_FRAME_CONTEXT   Context;
-
-#if CPP_DEFINED
-
-    BOOL NeedPop;
-
-    TEB_ACTIVE_FRAME(ULONG Context = 0)
-    {
-        NeedPop = FALSE;
-        this->Context = Context;
-        this->Data = 0;
-    }
-
-    ~TEB_ACTIVE_FRAME()
-    {
-        if (NeedPop)
-            Pop();
-    }
-
-    VOID Push();
-    VOID Pop();
-
-#endif // cpp
-
+    ULONG Flags;
+    struct TEB_ACTIVE_FRAME* Previous;
+    PTEB_ACTIVE_FRAME_CONTEXT Context;
 } TEB_ACTIVE_FRAME, *PTEB_ACTIVE_FRAME;
 
 NATIVE_API
@@ -1391,22 +1367,6 @@ NTAPI
 RtlPopFrame(
     PTEB_ACTIVE_FRAME Frame
 );
-
-#if CPP_DEFINED
-
-inline VOID TEB_ACTIVE_FRAME::Push()
-{
-    NeedPop = TRUE;
-    RtlPushFrame(this);
-}
-
-inline VOID TEB_ACTIVE_FRAME::Pop()
-{
-    NeedPop = FALSE;
-    RtlPopFrame(this);
-}
-
-#endif // cpp
 
 NATIVE_API
 NTSTATUS

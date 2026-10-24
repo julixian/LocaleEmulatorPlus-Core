@@ -6,15 +6,14 @@
 #define CBT_PROC_PARAM_CONTEXT  TAG4('CPPC')
 #define CBTU_PROC_PARAM_CONTEXT TAG4('CUPC')
 
-typedef struct CBT_PROC_PARAM : public TEB_ACTIVE_FRAME
+typedef struct CBT_PROC_PARAM : public lep::ActiveFrame
 {
     HHOOK           Hook;
     PLepGlobalData   GlobalData;
     PVOID           StackPointer;
 
-    CBT_PROC_PARAM()
+    CBT_PROC_PARAM() : lep::ActiveFrame(CBT_PROC_PARAM_CONTEXT)
     {
-        this->Context = CBT_PROC_PARAM_CONTEXT;
         Hook = nullptr;
     }
 

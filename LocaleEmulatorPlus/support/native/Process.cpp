@@ -244,35 +244,6 @@ VOID Sleep(ULONG_PTR Milliseconds, BOOL Alertable)
 }
 
 
-PTEB_ACTIVE_FRAME
-FindThreadFrame(
-    ULONG_PTR Context
-)
-{
-    PTEB_ACTIVE_FRAME Frame;
-
-    Frame = RtlGetFrame();
-    while (Frame != NULL && Frame->Context != Context)
-        Frame = Frame->Previous;
-
-    return Frame;
-}
-
-PTEB_ACTIVE_FRAME
-FindThreadFrameEx(
-    ULONG_PTR Context,
-    ULONG_PTR Data
-)
-{
-    PTEB_ACTIVE_FRAME Frame;
-
-    Frame = RtlGetFrame();
-    while (Frame != nullptr && Frame->Context != Context && Frame->Data != Data)
-        Frame = Frame->Previous;
-
-    return Frame;
-}
-
 NTSTATUS
 CreateProcess(
     PCWSTR                  ApplicationName,

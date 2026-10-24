@@ -1,11 +1,12 @@
 module;
 
 #include <Windows.h>
-#include <stddef.h>
 
 // Standalone declarations for LoadLibrary/GetProcAddress callers.
 // No Core headers or import libraries are required.
 export module LocaleEmulatorPlus;
+
+import std.compat;
 
 #pragma pack(push, 8)
 export namespace LEP
@@ -19,11 +20,11 @@ export namespace LEP
         ULONG Version;
         ULONG AnsiCodePage;
         ULONG OemCodePage;
-        ULONG LocaleID;
-        ULONG DefaultCharset;
+        ULONG LocaleId;
+        ULONG FontCharset;
         ULONG RegistryRedirectionMode;
         ULONG HookUILanguageMode;
-        WCHAR TimeZoneId[128]; // Required, zero-terminated Windows ID.
+        WCHAR TimezoneId[128]; // Required, zero-terminated Windows ID.
         WCHAR StandardNameOverride[32]; // Empty uses the resolved default.
         WCHAR DaylightNameOverride[32]; // Empty uses the resolved default.
     };
@@ -49,7 +50,7 @@ export namespace LEP
     using LepCreateProcess2_t = LepCreateProcess_t;
 
     static_assert(sizeof(LEPB) == 416);
-    static_assert(offsetof(LEPB, TimeZoneId) == 32);
+    static_assert(offsetof(LEPB, TimezoneId) == 32);
     static_assert(offsetof(LEPB, StandardNameOverride) == 288);
     static_assert(offsetof(LEPB, DaylightNameOverride) == 352);
     static_assert(sizeof(PROCESS_INFORMATION) == (sizeof(PVOID) == 8 ? 24 : 16));

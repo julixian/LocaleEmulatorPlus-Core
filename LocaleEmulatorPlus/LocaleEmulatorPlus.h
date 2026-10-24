@@ -134,29 +134,30 @@ ForceInline VOID LepSetProcessCodePagePair(USHORT AnsiCodePage, USHORT OemCodePa
 
 inline BOOL IsLepLoader()
 {
-    return FindThreadFrame(LEP_LOADER_PROCESS) != nullptr;
+    return lep::ActiveFrame::Find(LEP_LOADER_PROCESS) != nullptr;
 }
 
-typedef struct THREAD_LOCAL_BUFFER : public TEB_ACTIVE_FRAME
+typedef struct THREAD_LOCAL_BUFFER : public lep::ActiveFrame
 {
-    BYTE Buffer[MEMORY_PAGE_SIZE * 2];
+    // BYTE Buffer[MEMORY_PAGE_SIZE * 2];
     BYTE DpiServerInfoShadow[104];
 
-    THREAD_LOCAL_BUFFER()
+    THREAD_LOCAL_BUFFER() : lep::ActiveFrame(THREAD_LOCAL_BUFFER_CONTEXT)
     {
-        this->Context = THREAD_LOCAL_BUFFER_CONTEXT;
     }
 
+    /*
     PVOID GetBuffer()
     {
         return this == nullptr ? nullptr : &Buffer;
     }
+    */
 
     NoInline static THREAD_LOCAL_BUFFER* GetTlb(BOOL Allocate)
     {
         PTHREAD_LOCAL_BUFFER Tlb;
 
-        Tlb = (PTHREAD_LOCAL_BUFFER)FindThreadFrame(THREAD_LOCAL_BUFFER_CONTEXT);
+        Tlb = (PTHREAD_LOCAL_BUFFER)lep::ActiveFrame::Find(THREAD_LOCAL_BUFFER_CONTEXT);
 
         if (Tlb != nullptr || Allocate == FALSE)
             return Tlb;
@@ -231,11 +232,11 @@ typedef struct
     ULONG                           Version;
     ULONG                           AnsiCodePage;
     ULONG                           OemCodePage;
-    ULONG                           LocaleID;
-    ULONG                           DefaultCharset;
+    ULONG                           LocaleId;
+    ULONG                           FontCharset;
     ULONG                           RegistryRedirectionMode;
     ULONG                           HookUILanguageMode;
-    WCHAR                           TimeZoneId[128];
+    WCHAR                           TimezoneId[128];
     WCHAR                           StandardNameOverride[32];
     WCHAR                           DaylightNameOverride[32];
 
@@ -246,7 +247,7 @@ typedef struct
 #define LEP_REGISTRY_REDIRECTION_MODE_MAX 2
 
 static_assert(sizeof(LEPB) == 416, "LEPB ABI v4 size mismatch");
-static_assert(offsetof(LEPB, TimeZoneId) == 32, "LEPB time-zone ID offset mismatch");
+static_assert(offsetof(LEPB, TimezoneId) == 32, "LEPB time-zone ID offset mismatch");
 static_assert(offsetof(LEPB, StandardNameOverride) == 288, "LEPB standard-name offset mismatch");
 static_assert(offsetof(LEPB, DaylightNameOverride) == 352, "LEPB daylight-name offset mismatch");
 
@@ -258,8 +259,8 @@ typedef struct
     ULONG Version;
     ULONG AnsiCodePage;
     ULONG OemCodePage;
-    ULONG LocaleID;
-    ULONG DefaultCharset;
+    ULONG LocaleId;
+    ULONG FontCharset;
     ULONG RegistryRedirectionMode;
     ULONG HookUILanguageMode;
     RTL_TIME_ZONE_INFORMATION Timezone;
@@ -368,8 +369,8 @@ typedef struct
 
 typedef struct
 {
-    ULONG_PTR   OriginalCharset;
-    ULONG_PTR   OriginalLocaleID;
+    ULONG_PTR   OriginalFontCharset;
+    ULONG_PTR   OriginalLocaleId;
     CHAR        ScriptNameA[LF_FACESIZE];
     WCHAR       ScriptNameW[LF_FACESIZE];
     PVOID       LdrLoadDllAddress;
@@ -946,9 +947,9 @@ public:
         LOGFONTW lf;
 
         DC = HookStub.StubGetDC == nullptr ? ::GetDC(nullptr) : this->GetDC(nullptr);
-        GetRuntimeState()->OriginalCharset = GetTextCharset(DC);
+        GetRuntimeState()->OriginalFontCharset = GetTextCharset(DC);
 
-        lf.lfCharSet = GetEnvironment()->DefaultCharset;
+        lf.lfCharSet = GetEnvironment()->FontCharset;
         lf.lfFaceName[0] = 0;
 
         auto EnumFontCallback = [] (CONST LOGFONTW *lf, CONST TEXTMETRICW *, DWORD, LPARAM Param)

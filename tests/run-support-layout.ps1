@@ -20,5 +20,5 @@ foreach ($arch in @('x86','x64')) {
     if ($LASTEXITCODE -ne 0) { throw "Layout probe failed: $arch" }
     $expected = [IO.File]::ReadAllText($fixture).TrimEnd("`r", "`n")
     if ($result -cne $expected) { throw "Native layout changed: $arch`nExpected:`n$expected`nActual:`n$result" }
-    Write-Output "${arch}: 26 native sizes/offsets match the original baseline"
+    Write-Output "${arch}: 26 native sizes/offsets match the numeric baseline"
 }

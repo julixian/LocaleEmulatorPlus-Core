@@ -211,17 +211,6 @@ Sleep(
 );
 
 
-PTEB_ACTIVE_FRAME
-FindThreadFrame(
-    ULONG_PTR Context
-);
-
-PTEB_ACTIVE_FRAME
-FindThreadFrameEx(
-    ULONG_PTR Context,
-    ULONG_PTR Data
-);
-
 NTSTATUS
 CreateProcess(
     PCWSTR                  ApplicationName,

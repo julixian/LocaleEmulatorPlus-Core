@@ -12,17 +12,17 @@ using namespace Mp;
 
 LCID NTAPI LepGetUserDefaultLCID()
 {
-    return LepGetGlobalData()->GetEnvironment()->LocaleID;
+    return LepGetGlobalData()->GetEnvironment()->LocaleId;
 }
 
 LANGID WINAPI LepGetSystemDefaultUILanguage()
 {
-    return (LANGID)LepGetGlobalData()->GetEnvironment()->LocaleID;
+    return (LANGID)LepGetGlobalData()->GetEnvironment()->LocaleId;
 }
 
 LANGID WINAPI LepGetUserDefaultUILanguage()
 {
-    return (LANGID)LepGetGlobalData()->GetEnvironment()->LocaleID;
+    return (LANGID)LepGetGlobalData()->GetEnvironment()->LocaleId;
 }
 
 NTSTATUS LepGlobalData::HackUserDefaultLCID(PVOID Kernel32)
@@ -61,7 +61,7 @@ NTSTATUS LepGlobalData::HackUserDefaultLCID(PVOID Kernel32)
     );
 
     //if (gNlsProcessLocalCache != nullptr)
-        //*(PLCID)(((PULONG_PTR)gNlsProcessLocalCache)[2]) = GetEnvironment()->LocaleID;
+        //*(PLCID)(((PULONG_PTR)gNlsProcessLocalCache)[2]) = GetEnvironment()->LocaleId;
 
     return STATUS_SUCCESS;
 }
@@ -98,7 +98,7 @@ PVOID FASTCALL LepGetNamedLocaleHashNode(PWSTR LocaleName, LANGID LangId)
         return StubGetNamedLocaleHashNode(LocaleName, LangId);
 
     LocaleNameLength = LCIDToLocaleName(
-        GlobalData->GetEnvironment()->LocaleID,
+        GlobalData->GetEnvironment()->LocaleId,
         LocaleName,
         0xAC,
         0
