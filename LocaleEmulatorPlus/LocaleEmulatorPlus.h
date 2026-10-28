@@ -815,6 +815,7 @@ public:
         API_POINTER(GetWindowLongPtrA)          StubGetWindowLongPtrA;
 #endif
         API_POINTER(IsWindowUnicode)            StubIsWindowUnicode;
+        API_POINTER(PeekMessageA)               StubPeekMessageA;
         API_POINTER(GetClipboardData)           StubGetClipboardData;
         API_POINTER(SetClipboardData)           StubSetClipboardData;
         API_POINTER(SystemParametersInfoA)      StubSystemParametersInfoA;

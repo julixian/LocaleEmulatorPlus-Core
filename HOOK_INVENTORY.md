@@ -323,6 +323,12 @@ x64 user32 兼容布局：从 `SendNotifyMessageW/A` 开始，各扫 `0x30` 字�
 
 做法：把原 ANSI 窗口过程保存到 `GetWindowDataA(hwnd)` 对应数据里，并把窗口过程替换为 `WindowProcW()`。`IsWindowUnicode` 对这些 tracked wrapped A window 返回 `FALSE`，让外部仍看到 A 窗口语义。
 
+字符消息：包装层收到的 `WM_CHAR`、`WM_IME_CHAR`、`WM_SYSCHAR`、`WM_DEADCHAR`、`WM_SYSDEADCHAR` 按目标 ACP 转换后再交给原 ANSI 窗口过程。`WM_CHAR` 按顺序分别发送双字节字符的首字节和尾字节；其余四种消息在同一个 `wParam` 中打包，首字节位于高位。各次回调保留原 `lParam`，返回最后一次回调的结果。
+
+边界：该转换只处理已经进入 `WindowProcW()` 的 Unicode 字符；若 ANSI 消息队列 API 或系统类在进入包装层之前已按宿主代码页转换并丢失字符，包装层无法恢复原文。此处也不接管 IMM32 组合串读取 API。
+
+EDIT 双字节字符：W->A 字符适配仍调用保存的 `PrevProcA`，默认 EDIT 和应用安装的 ANSI 子类共用这条路径。ANSI EDIT 在处理首字节时会通过 `PeekMessageA(WM_CHAR)` 取尾字节，因此适配器在首字节回调期间用线程栈上的 `lep::ActiveFrame` 暂存尾字节。`LepPeekMessageA()` 只在该临时上下文、匹配窗口和消息范围时返回尾字节；`PM_NOREMOVE` 保留，`PM_REMOVE` 标记消费。若回调没有取走尾字节，适配器在回调返回后继续调用原过程交付尾字节。该过程不向真实消息队列投递消息，嵌套调用使用各自的栈帧，其它 `PeekMessageA` 调用转交原 API。
+
 标准对话框标题例外：`WindowProcW()` 对 `#32770` 类窗口的 `WM_SETTEXT` 直接调用 `DefWindowProcW()`。原因是 shell/common dialog 可能通过 A 创建路径得到 ANSI 标志窗口，于是被 LEP 包装；但后续标题可能来自系统自己的 Unicode 本地化资源，例如中文 Windows 上的“选择计算机”。如果继续走 `WindowProcW -> CallWindowProcA(PrevProcA)`，这些系统 Unicode 文本会被按目标 ACP 压成 ANSI，CP932 等目标代码页无法表示的本机字符会变成 `?`。该例外只覆盖标准对话框标题，不全局拦截所有 `WM_SETTEXT`，以免绕过自定义 A 窗口过程内部状态。后续如果有其它标准窗口有同样的问题可以再加白名单。
 
 作用：定义 LEP 自己制造的 A/W 窗口过程边界。EDIT 文本位置 thunk、标准对话框标题例外都依赖这个边界。

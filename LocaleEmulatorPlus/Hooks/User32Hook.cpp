@@ -1252,6 +1252,83 @@ UserMessageCall(GETDBCSTEXTLENGTHS)
     return Length / sizeof(WCHAR);
 }
 
+static const ULONG DBCS_CHARACTER_CONTEXT = TAG4('DBCS');
+
+struct DBCS_CHARACTER_MESSAGE
+{
+    MSG Message;
+    BOOL Consumed;
+};
+
+BOOL WINAPI LepPeekMessageA(LPMSG Msg, HWND Window, UINT Min, UINT Max, UINT Remove)
+{
+    lep::ActiveFrame *Frame = lep::ActiveFrame::Find(DBCS_CHARACTER_CONTEXT);
+    if (Frame != nullptr && Msg != nullptr)
+    {
+        auto Pending = (DBCS_CHARACTER_MESSAGE *)Frame->Data;
+        if (!Pending->Consumed && (Window == nullptr || Window == Pending->Message.hwnd) &&
+            ((Min == 0 && Max == 0) || (Min <= WM_CHAR && Max >= WM_CHAR)))
+        {
+            *Msg = Pending->Message;
+            if (FLAG_ON(Remove, PM_REMOVE))
+                Pending->Consumed = TRUE;
+            return TRUE;
+        }
+    }
+    return LepGetGlobalData()->HookStub.StubPeekMessageA(Msg, Window, Min, Max, Remove);
+}
+
+static LRESULT CallAnsiCharacterProc(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
+{
+    WCHAR Unicode = (WCHAR)wParam;
+    CHAR Ansi[4];
+    ULONG Bytes = 0;
+
+    // The wrapper receives UTF-16, while PrevProc still expects the emulated
+    // ACP. CallWindowProcA cannot convert an already-Unicode wParam for us.
+    if (!NT_SUCCESS(RtlUnicodeToMultiByteN(Ansi, sizeof(Ansi), &Bytes, &Unicode, sizeof(Unicode))) || Bytes == 0)
+        return 0;
+
+    if (Message == WM_CHAR)
+    {
+        if (Bytes == 2 && IsEditControl(Window))
+        {
+            // ANSI EDIT consumes the trail byte through PeekMessageA while
+            // handling the lead byte (DbcsCombine). Make it available only
+            // during this W->A boundary; leave the actual queue untouched.
+            DBCS_CHARACTER_MESSAGE Pending = {};
+            Pending.Message.hwnd = Window;
+            Pending.Message.message = WM_CHAR;
+            Pending.Message.wParam = (BYTE)Ansi[1];
+            Pending.Message.lParam = lParam;
+            Pending.Message.time = GetMessageTime();
+            DWORD Position = GetMessagePos();
+            Pending.Message.pt.x = (SHORT)LOWORD(Position);
+            Pending.Message.pt.y = (SHORT)HIWORD(Position);
+            lep::ActiveFrame Frame(DBCS_CHARACTER_CONTEXT);
+            Frame.Data = (ULONG_PTR)&Pending;
+            Frame.Push();
+            LRESULT Result = CallWindowProcA(PrevProc, Window, Message, (BYTE)Ansi[0], lParam);
+            Frame.Pop();
+            if (!Pending.Consumed)
+                Result = CallWindowProcA(PrevProc, Window, Message, (BYTE)Ansi[1], lParam);
+            return Result;
+        }
+        // WM_CHAR delivers each DBCS byte separately, lead byte first.
+        LRESULT Result = 0;
+        for (ULONG Index = 0; Index != Bytes; ++Index)
+            Result = CallWindowProcA(PrevProc, Window, Message, (BYTE)Ansi[Index], lParam);
+        return Result;
+    }
+
+    // IME, system-character and dead-character messages pack the lead byte
+    // above the trail byte in a single wParam.
+    WPARAM AnsiParam = 0;
+    for (ULONG Index = 0; Index != Bytes; ++Index)
+        AnsiParam = (AnsiParam << 8) | (BYTE)Ansi[Index];
+    return CallWindowProcA(PrevProc, Window, Message, AnsiParam, lParam);
+}
+
 LRESULT NTAPI WindowProcW(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
 {
     WNDPROC             PrevProc;
@@ -1265,6 +1342,16 @@ LRESULT NTAPI WindowProcW(HWND Window, UINT Message, WPARAM wParam, LPARAM lPara
 
     if (IsEditTextPositionMessage(Message) && IsEditControl(Window))
         return UserfnEDIT_TEXT_POSITION(PrevProc, Window, Message, wParam, lParam);
+
+    switch (Message)
+    {
+        case WM_CHAR:
+        case WM_IME_CHAR:
+        case WM_SYSCHAR:
+        case WM_DEADCHAR:
+        case WM_SYSDEADCHAR:
+            return CallAnsiCharacterProc(PrevProc, Window, Message, wParam, lParam);
+    }
 
     if (Message < countof(MessageTable))
     {
@@ -3546,7 +3633,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
                 LEP_FUNCTION_NO_ABSOLUTE_JUMP_OP :
                 LEP_FUNCTION_JUMP_OP;
 
-        Mp::PATCH_MEMORY_DATA p[10];
+        Mp::PATCH_MEMORY_DATA p[11];
         ULONG_PTR Count = 0;
 
         p[Count++] = LepHookFromEATOp(User32, SetWindowLongA, SetWindowLongHookOp);
@@ -3554,6 +3641,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
         p[Count++] = LepHookFromEATOp(User32, SetWindowLongPtrA, SetWindowLongHookOp);
         p[Count++] = LepHookFromEAT(User32, GetWindowLongPtrA);
         p[Count++] = LepHookFromEAT(User32, IsWindowUnicode);
+        p[Count++] = LepHookFromEAT(User32, PeekMessageA);
 
         p[Count++] = LepHookFromEAT(User32, GetClipboardData);
         p[Count++] = LepHookFromEAT(User32, SetClipboardData);
@@ -3645,6 +3733,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     p[Count++] = LepHookFromEAT(User32, SetWindowLongA);
     p[Count++] = LepHookFromEAT(User32, GetWindowLongA);
     p[Count++] = LepHookFromEAT(User32, IsWindowUnicode);
+    p[Count++] = LepHookFromEAT(User32, PeekMessageA);
 
     p[Count++] = LepHookFromEAT(User32, GetClipboardData);
     p[Count++] = LepHookFromEAT(User32, SetClipboardData);
@@ -3712,6 +3801,7 @@ NTSTATUS LepGlobalData::UnHookUser32Routines()
     Mp::RestoreMemory(HookStub.StubGetWindowLongPtrA);
 #endif
     Mp::RestoreMemory(HookStub.StubIsWindowUnicode);
+    Mp::RestoreMemory(HookStub.StubPeekMessageA);
 
     Mp::RestoreMemory(HookStub.StubGetClipboardData);
     Mp::RestoreMemory(HookStub.StubSetClipboardData);
