@@ -46,6 +46,7 @@ def parse_options(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sdk-version", default=os.environ.get("SDK_VER") or "10.0.26100.0")
     parser.add_argument("--no-log", action="store_true", help="disable logging")
     parser.add_argument("--diag-init", action="store_true", help="show initialization diagnostic dialogs")
+    parser.add_argument("--diag-input", action="store_true", help="enable PID-armed input diagnostics in existing hooks")
     parser.add_argument("--deploy-dir", type=Path,
                         default=os.environ.get("LEP_DEPLOY_DIR") or r"D:\GALGAME\GALGAMETOOLS\LocaleEmulatorPlus",
                         help="copy DLLs here only if this directory already exists")
@@ -64,6 +65,7 @@ class BuildConfig:
     log_enabled: bool
     deploy_dir: Path | None
     diag_init: bool = False
+    diag_input: bool = False
     dry_run: bool = False
     verbose: bool = False
 
@@ -111,6 +113,7 @@ class NativeBuild:
             "/nologo", "/utf-8", "/c", "/O2", "/Ob1", "/GF", "/Gy", "/GR-", "/EHs-c-", "/GS-",
             *(["/Gr", "/arch:SSE", "/DWIN32"] if arch == "x86" else ["/DWIN64", "/D_WIN64"]),
             "/DNDEBUG", f"/DENABLE_LOG={int(config.log_enabled)}", f"/DLEP_DIAG_INIT={int(config.diag_init)}",
+            f"/DLEP_DIAG_INPUT={int(config.diag_input)}",
             "/D_NO_CRT_STDIO_INLINE", "/Zc:wchar_t",
         ]
         self.includes = [f"/I{path}" for path in (
@@ -242,6 +245,9 @@ class NativeBuild:
 
 def main(argv: list[str] | None = None) -> int:
     options = parse_options(argv)
+    if options.diag_input and options.no_log:
+        print("--diag-input requires logging; remove --no-log.", file=sys.stderr)
+        return 2
     if os.name != "nt":
         print("This build requires Windows and MSVC.", file=sys.stderr)
         return 1
@@ -252,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             sdk_root=options.sdk_root.resolve(), sdk_version=options.sdk_version,
             log_enabled=not options.no_log,
             diag_init=options.diag_init,
+            diag_input=options.diag_input,
             deploy_dir=None if options.no_deploy else options.deploy_dir.resolve(),
             dry_run=options.dry_run, verbose=options.verbose,
         )

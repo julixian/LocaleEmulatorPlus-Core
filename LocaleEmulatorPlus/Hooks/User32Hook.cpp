@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "MessageTable.h"
+#include "InputDiagnostics.h"
 
 #define LEP_DISABLE_ANSI_WNDPROC_WRAP 0
 
@@ -1272,10 +1273,13 @@ BOOL WINAPI LepPeekMessageA(LPMSG Msg, HWND Window, UINT Min, UINT Max, UINT Rem
             *Msg = Pending->Message;
             if (FLAG_ON(Remove, PM_REMOVE))
                 Pending->Consumed = TRUE;
+            lep::input_diag::Peek(Window, Min, Max, Remove, Msg->wParam, _ReturnAddress());
             return TRUE;
         }
     }
-    return LepGetGlobalData()->HookStub.StubPeekMessageA(Msg, Window, Min, Max, Remove);
+    BOOL Result = LepGetGlobalData()->HookStub.StubPeekMessageA(Msg, Window, Min, Max, Remove);
+    lep::input_diag::Queue(Msg, Result, Remove, _ReturnAddress());
+    return Result;
 }
 
 static LRESULT CallAnsiCharacterProc(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
@@ -1288,6 +1292,8 @@ static LRESULT CallAnsiCharacterProc(WNDPROC PrevProc, HWND Window, UINT Message
     // ACP. CallWindowProcA cannot convert an already-Unicode wParam for us.
     if (!NT_SUCCESS(RtlUnicodeToMultiByteN(Ansi, sizeof(Ansi), &Bytes, &Unicode, sizeof(Unicode))) || Bytes == 0)
         return 0;
+
+    lep::input_diag::Character(L"convert", Window, Message, Unicode, Ansi, Bytes, -1);
 
     if (Message == WM_CHAR)
     {
@@ -1310,6 +1316,7 @@ static LRESULT CallAnsiCharacterProc(WNDPROC PrevProc, HWND Window, UINT Message
             Frame.Push();
             LRESULT Result = CallWindowProcA(PrevProc, Window, Message, (BYTE)Ansi[0], lParam);
             Frame.Pop();
+            lep::input_diag::Character(L"edit-trail", Window, Message, Unicode, Ansi, Bytes, Pending.Consumed);
             if (!Pending.Consumed)
                 Result = CallWindowProcA(PrevProc, Window, Message, (BYTE)Ansi[1], lParam);
             return Result;
@@ -1336,6 +1343,7 @@ LRESULT NTAPI WindowProcW(HWND Window, UINT Message, WPARAM wParam, LPARAM lPara
     PLepGlobalData       GlobalData = LepGetGlobalData();
 
     PrevProc = (WNDPROC)GlobalData->GetWindowDataA(Window);
+    lep::input_diag::Message(Window, Message, wParam, lParam, PrevProc);
 
     if ((Message == WM_NCCREATE || Message == WM_SETTEXT) && IsWindowClass(Window, L"#32770"))
         return DefWindowProcW(Window, Message, wParam, lParam);
@@ -2161,6 +2169,8 @@ HWND LepNtUserCreateWindowExWorker(PUSER_CREATE_WINDOW Parameters, HWND (*Invoke
     UninstallCbtHook(&CbtParam);
     FreeLargeString(&UnicodeWindowName);
 
+    lep::input_diag::Snapshot(hWnd);
+
     RtlSetLastWin32Error(LastError);
 
     return hWnd;
@@ -2379,6 +2389,7 @@ BOOL NTAPI LepIsWindowUnicode(HWND hWnd)
 
 HANDLE NTAPI LepSetClipboardData(UINT Format, HANDLE Memory)
 {
+    lep::input_diag::Clipboard(L"set-enter", Format, Memory);
     HGLOBAL             Data;
     PWSTR               Unicode;
     PSTR                Ansi;
@@ -2418,11 +2429,14 @@ HANDLE NTAPI LepSetClipboardData(UINT Format, HANDLE Memory)
     if (Ansi != nullptr)
         GlobalUnlock(Memory);
 
-    return GlobalData->SetClipboardData(Format, Memory);
+    HANDLE Result = GlobalData->SetClipboardData(Format, Memory);
+    lep::input_diag::Clipboard(L"set-return", Format, Result);
+    return Result;
 }
 
 HANDLE NTAPI LepGetClipboardData(UINT Format)
 {
+    lep::input_diag::Clipboard(L"get-enter", Format, nullptr);
     HGLOBAL             Data, AnsiData;
     ULONG_PTR           Length, Flags;
     PWSTR               Unicode;
@@ -2433,6 +2447,7 @@ HANDLE NTAPI LepGetClipboardData(UINT Format)
     {
         case CF_TEXT:
             Data = GlobalData->GetClipboardData(CF_UNICODETEXT);
+            lep::input_diag::Clipboard(L"unicode-source", CF_UNICODETEXT, Data);
             if (Data == nullptr)
                 break;
 
@@ -2460,6 +2475,7 @@ HANDLE NTAPI LepGetClipboardData(UINT Format)
             GlobalUnlock(Data);
 
             Data = SetClipboardData(CF_TEXT, AnsiData);
+            lep::input_diag::Clipboard(L"text-publish", CF_TEXT, Data);
             if (Data == nullptr)
             {
                 GlobalFree(AnsiData);
@@ -2468,7 +2484,9 @@ HANDLE NTAPI LepGetClipboardData(UINT Format)
             break;
     }
 
-    return GlobalData->GetClipboardData(Format);
+    HANDLE Result = GlobalData->GetClipboardData(Format);
+    lep::input_diag::Clipboard(L"get-return", Format, Result);
+    return Result;
 }
 
 #ifndef SPI_GETDEFAULTINPUTLANG

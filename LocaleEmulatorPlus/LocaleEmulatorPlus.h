@@ -591,6 +591,14 @@ inline ULONG_PTR FormatLepUIntHex4(PWSTR Buffer, ULONG_PTR Value)
 #define ENABLE_LOG 1
 #endif
 
+#ifndef LEP_DIAG_INPUT
+#define LEP_DIAG_INPUT 0
+#endif
+
+#if LEP_DIAG_INPUT && !ENABLE_LOG
+#error LEP_DIAG_INPUT requires ENABLE_LOG
+#endif
+
 #if ENABLE_LOG
 
 inline BOOLEAN LepAppendLogDirectory(PWSTR Path, ULONG_PTR Capacity, PULONG_PTR Offset)

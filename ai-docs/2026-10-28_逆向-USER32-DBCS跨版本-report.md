@@ -123,3 +123,26 @@ residual_risks：Win8/8.1、原生 32 位 Windows 尚无本轮样本证据；这
 在仓库根目录运行 `powershell -NoProfile -ExecutionPolicy Bypass -File out/input-path/versions/run-native-cache.ps1`。脚本路径及探针在忽略的 `out` 目录内，编译器路径为本机配置；重跑会改写含地址的日志及其哈希。
 
 2026-10-28：复制并对照六份 IDB；核验所有输入指纹；提取缓存、TEB 定位和 DbcsCombine 行为；在本机 x86/WOW64 与 x64 上完成借用缓存及默认/子类 EDIT 验证；复现 HWND 过滤差异和无条件恢复快照导致尾字节丢失。
+
+## DBCS 命名函数统计补充
+
+### F-V05：USER32 自身的 DBCS 命名函数为六至七个
+
+severity：n/a_re；category：symbol_inventory；status：validated；confidence：high。
+evidence_ids：E-V71/E-V72/E-V101/E-V102/E-V111/E-V112；新增原始证据为 `out/input-path/versions/{win7,win10,win11}-{x86,x64}.dbcs.json`，各文件记录原输入 SHA-256、函数地址、原始符号名、反修饰名、导入和跳板。
+
+统计口径为名称大小写不敏感地包含 `dbcs`，且位于 IDA 识别的函数入口；排除 `FUNC_THUNK`、IAT 和字符串。Win7 x86/x64 各六个，Win10/Win11 x86/x64 各七个。严格限定名字以 `Dbcs` 开头时，这六份样本均只有 `DbcsCombine` 一个。
+
+| 函数名（去掉调用约定及 C++ 修饰） | Win7 | Win10/Win11 |
+|---|---|---|
+| `DbcsCombine` | 有 | 有 |
+| `ECIsDBCSLeadByte` | 有 | 有 |
+| `ECGetDBCSVector` | 有 | 有 |
+| `ECCalcMarginForDBCSFont` | 有 | 有 |
+| `fnINWPARAMDBCSCHAR` | 有 | 有 |
+| `__fnINWPARAMDBCSCHAR` | 有 | 有 |
+| `CheckDBCSEnabledExt` | 无独立命名函数 | 有 |
+
+六份样本还都导入 `IsDBCSLeadByte` 和 `IsDBCSLeadByteEx` 两个外部函数。Win10/Win11 x86 另有两个对应的导入跳板；跳板与 IAT 不作为额外实现重复计数。若将外部依赖也算入函数名集合，Win7 为八个，Win10/Win11 为九个。
+
+本统计不覆盖没有 DBCS 名称的相关逻辑、内联实现、未命名函数或其他 Windows 模块，不能作为整个 Windows 的 DBCS 函数总数。它是符号清单，并不改变 P-V01 或当前 Hook 实现。
