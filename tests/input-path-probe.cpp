@@ -100,6 +100,10 @@ static void PrintBytes(const char* data, size_t count)
 }
 static int Probe(UINT target, bool emulated)
 {
+    // Native USER32 uses the input language for some character conversions.
+    // Match its keyboard layout to the native ACP instead of inheriting an IME
+    // from the user's interactive thread.
+    if (!emulated && target == 1252) LoadKeyboardLayoutW(L"00000409", KLF_ACTIVATE);
     printf("ACP=%u OEM=%u target=%u arch=%u\n", GetACP(), GetOEMCP(), target, unsigned(sizeof(void*) * 8));
     if (GetACP() != target) return 20;
     WNDCLASSA cls{};

@@ -323,11 +323,15 @@ x64 user32 兼容布局：从 `SendNotifyMessageW/A` 开始，各扫 `0x30` 字�
 
 做法：把原 ANSI 窗口过程保存到 `GetWindowDataA(hwnd)` 对应数据里，并把窗口过程替换为 `WindowProcW()`。`IsWindowUnicode` 对这些 tracked wrapped A window 返回 `FALSE`，让外部仍看到 A 窗口语义。
 
-字符消息：包装层收到的 `WM_CHAR`、`WM_IME_CHAR`、`WM_SYSCHAR`、`WM_DEADCHAR`、`WM_SYSDEADCHAR` 按目标 ACP 转换后再交给原 ANSI 窗口过程。`WM_CHAR` 按顺序分别发送双字节字符的首字节和尾字节；其余四种消息在同一个 `wParam` 中打包，首字节位于高位。各次回调保留原 `lParam`，返回最后一次回调的结果。
+字符消息：包装层收到的 `WM_CHAR`、`WM_IME_CHAR`、`WM_SYSCHAR`、`WM_DEADCHAR`、`WM_SYSDEADCHAR` 按目标 ACP 转换后再交给原 ANSI 窗口过程。`WM_CHAR` 按顺序分别发送双字节字符的首字节和尾字节；其余消息在同一个 `wParam` 中打包，首字节位于高位。`IMSG_INWPARAMCHAR` 同时处理 `WM_IME_COMPOSITION`、菜单字符等携带字符参数的消息，转换低 16 位并保留高位标志与原 `lParam`。
 
-边界：该转换只处理已经进入 `WindowProcW()` 的 Unicode 字符；若 ANSI 消息队列 API 或系统类在进入包装层之前已按宿主代码页转换并丢失字符，包装层无法恢复原文。此处也不接管 IMM32 组合串读取 API。
+反向边界：`LepNtUserMessageCall` 的 `IMSG_INWPARAMCHAR` 按目标 ACP 将 ANSI 打包字符解码为 Unicode 后走 W 调用。`SendMessageA`、`PostMessageA` 的 IME_CHAR/IME_COMPOSITION 参数也在入口转换，覆盖同线程快速路径和异步投递。已丢失的信息无法恢复；此处不接管 IMM32 组合串读取 API。
+
+默认 IME 提交：被包装的 ANSI 窗口调用 `DefWindowProcA(WM_IME_CHAR)` 时，适配器只向真实队列提交一次 Unicode `WM_CHAR`，随后由现有 W->A 边界交付目标字节；`WM_IME_COMPOSITION` 转交 W 默认过程以保留输入法状态处理。DefWindowProcA 的导出可能转发到 ntdll，因此使用正常过程地址解析再安装 inline hook。
 
 EDIT 双字节字符：W->A 字符适配仍调用保存的 `PrevProcA`，默认 EDIT 和应用安装的 ANSI 子类共用这条路径。ANSI EDIT 在处理首字节时会通过 `PeekMessageA(WM_CHAR)` 取尾字节，因此适配器在首字节回调期间用线程栈上的 `lep::ActiveFrame` 暂存尾字节。`LepPeekMessageA()` 只在该临时上下文、匹配窗口和消息范围时返回尾字节；`PM_NOREMOVE` 保留，`PM_REMOVE` 标记消费。若回调没有取走尾字节，适配器在回调返回后继续调用原过程交付尾字节。该过程不向真实消息队列投递消息，嵌套调用使用各自的栈帧，其它 `PeekMessageA` 调用转交原 API。
+
+USER32 DBCS 环境：`Hooks/User32Environment.cpp` 从 `CheckDBCSEnabledExt` 的已验证机器码操作动态定位服务信息指针，不使用固定 RVA。仅当宿主模式与实际 NLS 模式不同时，复制原映射中可读的区域尾部（上限 1 MiB），覆盖第一 DWORD 的 DBCS 位，并把本进程的 USER32 指针指向私有副本。原共享页不写入；标准 EDIT 内部也会读到目标模式。GetSystemMetrics/CheckDBCSEnabledExt、窗口创建和相关设置消息会同步原始服务信息中的其它数据。卸载时恢复仍由 LEP 持有的指针；已发布的副本保留到进程退出，避免并发原生读者持有悬空地址。定位或映射验证失败时保留原状态，日志记录定位结果。
 
 标准对话框标题例外：`WindowProcW()` 对 `#32770` 类窗口的 `WM_SETTEXT` 直接调用 `DefWindowProcW()`。原因是 shell/common dialog 可能通过 A 创建路径得到 ANSI 标志窗口，于是被 LEP 包装；但后续标题可能来自系统自己的 Unicode 本地化资源，例如中文 Windows 上的“选择计算机”。如果继续走 `WindowProcW -> CallWindowProcA(PrevProcA)`，这些系统 Unicode 文本会被按目标 ACP 压成 ANSI，CP932 等目标代码页无法表示的本机字符会变成 `?`。该例外只覆盖标准对话框标题，不全局拦截所有 `WM_SETTEXT`，以免绕过自定义 A 窗口过程内部状态。后续如果有其它标准窗口有同样的问题可以再加白名单。
 
@@ -396,7 +400,7 @@ Win7 x64 特例：`SetWindowLongA` 和 `SetWindowLongPtrA` 使用 `LEP_FUNCTION_
 
 x86/x64：EAT inline hook `GetClipboardData`、`SetClipboardData`。
 
-作用：让 `CF_TEXT` 和字符串数据按目标 ACP 转换。
+作用：让 `CF_TEXT` 和字符串数据按目标 ACP 转换。转换后的 CF_TEXT 使用固定、清零的 GPTR 缓冲，兼容将返回句柄直接当作指针的客户端，同时仍可用 GlobalLock 读取。这是经过运行验证的兼容行为；SetClipboardData 文档要求提交的内存带 GMEM_MOVEABLE，且固定分配不延长 CloseClipboard 之后的对象有效期。
 
 ### 22. `SystemParametersInfoA/W`
 

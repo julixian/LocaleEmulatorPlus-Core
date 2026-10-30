@@ -467,7 +467,7 @@ NtTestAlert(
 
 
 NATIVE_API
-VOID
+NTSTATUS
 NTAPI
 RtlInitializeCriticalSectionAndSpinCount(
     LPCRITICAL_SECTION  CriticalSection,

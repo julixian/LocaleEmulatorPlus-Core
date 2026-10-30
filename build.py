@@ -22,6 +22,7 @@ CORE_SOURCES = (
     "Hooks/Kernel32Hook.cpp",
     "Hooks/NtdllHook.cpp",
     "Hooks/User32Hook.cpp",
+    "Hooks/User32Environment.cpp",
     "LocaleEmulatorPlus.cpp",
     "stdafx.cpp",
     "Utility/Utility.cpp",

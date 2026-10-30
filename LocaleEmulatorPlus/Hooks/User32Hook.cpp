@@ -1282,6 +1282,85 @@ BOOL WINAPI LepPeekMessageA(LPMSG Msg, HWND Window, UINT Min, UINT Max, UINT Rem
     return Result;
 }
 
+static BOOL AnsiCharacterParamToUnicode(WPARAM AnsiParam, WPARAM *UnicodeParam)
+{
+    CHAR Bytes[2];
+    ULONG Length = HIBYTE(LOWORD(AnsiParam)) != 0 ? 2 : 1;
+    Bytes[0] = Length == 2 ? HIBYTE(LOWORD(AnsiParam)) : LOBYTE(LOWORD(AnsiParam));
+    Bytes[1] = LOBYTE(LOWORD(AnsiParam));
+    WCHAR Unicode = 0;
+    ULONG Written = 0;
+    if (!NT_SUCCESS(RtlMultiByteToUnicodeN(&Unicode, sizeof(Unicode), &Written, Bytes, Length)) ||
+        Written != sizeof(Unicode))
+        return FALSE;
+    *UnicodeParam = (AnsiParam & ~(WPARAM)0xFFFF) | Unicode;
+    return TRUE;
+}
+
+static BOOL IsImeCharacterParameter(UINT Message)
+{
+    return Message == WM_IME_CHAR || Message == WM_IME_COMPOSITION;
+}
+
+static VOID SyncUser32Environment()
+{
+    ULONG Error = RtlGetLastWin32Error();
+    LepGetGlobalData()->User32Environment.Synchronize();
+    RtlSetLastWin32Error(Error);
+}
+
+int WINAPI LepGetSystemMetrics(int Index)
+{
+    SyncUser32Environment();
+    return LepGetGlobalData()->HookStub.StubGetSystemMetrics(Index);
+}
+
+BOOL WINAPI LepCheckDBCSEnabledExt()
+{
+    SyncUser32Environment();
+    // The validated native getter is exactly this load and bit test. Its
+    // RIP-relative prologue cannot be executed from an unrelocated trampoline.
+    auto Slot = LepGetGlobalData()->User32Environment.Slot;
+    return Slot != nullptr && *Slot != nullptr && (*(volatile ULONG*)*Slot & 2) != 0;
+}
+
+LRESULT WINAPI LepSendMessageA(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
+{
+    // SendMessageA has a same-thread path before NtUserMessageCall. Convert
+    // these packed characters before USER32 applies the host's SBCS rules.
+    WPARAM Unicode;
+    if (IsImeCharacterParameter(Message) && AnsiCharacterParamToUnicode(wParam, &Unicode))
+        return SendMessageW(Window, Message, Unicode, lParam);
+    return LepGetGlobalData()->HookStub.StubSendMessageA(Window, Message, wParam, lParam);
+}
+
+LRESULT WINAPI LepDefWindowProcA(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
+{
+    WPARAM Unicode;
+    if (IsImeCharacterParameter(Message) && LepGetGlobalData()->GetWindowDataA(Window) != nullptr &&
+        AnsiCharacterParamToUnicode(wParam, &Unicode))
+    {
+        // The native window is Unicode; its saved application procedure is
+        // ANSI. Let the Unicode default IME handler submit the character once,
+        // rather than posting isolated lead/trail bytes under an SBCS host.
+        if (Message == WM_IME_CHAR)
+        {
+            PostMessageW(Window, WM_CHAR, Unicode, lParam);
+            return 0;
+        }
+        return DefWindowProcW(Window, Message, Unicode, lParam);
+    }
+    return LepGetGlobalData()->HookStub.StubDefWindowProcA(Window, Message, wParam, lParam);
+}
+
+BOOL WINAPI LepPostMessageA(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
+{
+    WPARAM Unicode;
+    if (IsImeCharacterParameter(Message) && AnsiCharacterParamToUnicode(wParam, &Unicode))
+        return PostMessageW(Window, Message, Unicode, lParam);
+    return LepGetGlobalData()->HookStub.StubPostMessageA(Window, Message, wParam, lParam);
+}
+
 static LRESULT CallAnsiCharacterProc(WNDPROC PrevProc, HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
 {
     WCHAR Unicode = (WCHAR)wParam;
@@ -1333,7 +1412,12 @@ static LRESULT CallAnsiCharacterProc(WNDPROC PrevProc, HWND Window, UINT Message
     WPARAM AnsiParam = 0;
     for (ULONG Index = 0; Index != Bytes; ++Index)
         AnsiParam = (AnsiParam << 8) | (BYTE)Ansi[Index];
-    return CallWindowProcA(PrevProc, Window, Message, AnsiParam, lParam);
+    return CallWindowProcA(PrevProc, Window, Message, (wParam & ~(WPARAM)0xFFFF) | AnsiParam, lParam);
+}
+
+UserMessageCall(INWPARAMCHAR)
+{
+    return CallAnsiCharacterProc(PrevProc, Window, Message, wParam, lParam);
 }
 
 LRESULT NTAPI WindowProcW(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam)
@@ -1343,6 +1427,9 @@ LRESULT NTAPI WindowProcW(HWND Window, UINT Message, WPARAM wParam, LPARAM lPara
     PLepGlobalData       GlobalData = LepGetGlobalData();
 
     PrevProc = (WNDPROC)GlobalData->GetWindowDataA(Window);
+    if (Message == WM_NCCREATE || Message == WM_SETTINGCHANGE || Message == WM_DISPLAYCHANGE ||
+        Message == WM_THEMECHANGED || Message == WM_DPICHANGED)
+        SyncUser32Environment();
     lep::input_diag::Message(Window, Message, wParam, lParam, PrevProc);
 
     if ((Message == WM_NCCREATE || Message == WM_SETTEXT) && IsWindowClass(Window, L"#32770"))
@@ -1380,6 +1467,15 @@ LRESULT NTAPI WindowProcW(HWND Window, UINT Message, WPARAM wParam, LPARAM lPara
 KernelMessageCall(EMPTY)
 {
     return CallNtUserMessageCall();
+}
+
+KernelMessageCall(INWPARAMCHAR)
+{
+    WPARAM Unicode;
+    if (!AnsiCharacterParamToUnicode(wParam, &Unicode))
+        return CallNtUserMessageCall();
+    wParam = Unicode;
+    return CallNtUserMessageCallW();
 }
 
 KernelMessageCall(INLPCREATESTRUCT)
@@ -1779,6 +1875,7 @@ LRESULT CALLBACK CBTProc(int nCode, WPARAM wParam, LPARAM lParam)
 
         CreateWnd->lpcs->lpCreateParams = CreateParam->CreateParams;
         GlobalData = CbtParam->GlobalData;
+        SyncUser32Environment();
 
         if (GlobalData->GetWindowDataA(hWnd) != nullptr)
             break;
@@ -1807,6 +1904,7 @@ LRESULT CALLBACK CBTProcU(int nCode, WPARAM wParam, LPARAM lParam)
 
     if (nCode == HCBT_CREATEWND) LOOP_ONCE
     {
+        SyncUser32Environment();
         ResetDCCharset(CbtParam->GlobalData, (HWND)wParam);
     }
 
@@ -2460,7 +2558,14 @@ HANDLE NTAPI LepGetClipboardData(UINT Format)
                 break;
 
             Length = StrLengthW(Unicode);
-            AnsiData = GlobalAlloc(GHND, Length * sizeof(WCHAR) + 1);
+            // Compatibility: QQSpeed and some ANSI clients cast the CF_TEXT
+            // handle directly to char* instead of using GlobalLock. A movable
+            // GHND handle exposes allocator metadata to those clients. GPTR
+            // makes the handle equal the text address and still supports
+            // GlobalLock. Windows accepts this on the tested systems, although
+            // SetClipboardData documents GMEM_MOVEABLE for supplied memory.
+            // This workaround does not extend validity past CloseClipboard.
+            AnsiData = GlobalAlloc(GPTR, Length * sizeof(WCHAR) + 1);
             if (AnsiData == nullptr)
             {
                 GlobalUnlock(Data);
@@ -3434,6 +3539,9 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     Status = Nt_QueryOsVersion(&VersionInfo);
     FAIL_RETURN(Status);
 
+    BOOL DbcsLocated = User32Environment.Initialize(User32, NlsMbCodePageTag != 0);
+    WriteLog(L"user32 DBCS environment locator=%u target=%u", DbcsLocated, (ULONG)NlsMbCodePageTag);
+
     if (this->HasWin32U)
     {
         HMODULE Win32uMod = (HMODULE)Nt_GetModuleHandle(L"win32u.dll");
@@ -3651,7 +3759,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
                 LEP_FUNCTION_NO_ABSOLUTE_JUMP_OP :
                 LEP_FUNCTION_JUMP_OP;
 
-        Mp::PATCH_MEMORY_DATA p[11];
+        Mp::PATCH_MEMORY_DATA p[16];
         ULONG_PTR Count = 0;
 
         p[Count++] = LepHookFromEATOp(User32, SetWindowLongA, SetWindowLongHookOp);
@@ -3660,6 +3768,14 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
         p[Count++] = LepHookFromEAT(User32, GetWindowLongPtrA);
         p[Count++] = LepHookFromEAT(User32, IsWindowUnicode);
         p[Count++] = LepHookFromEAT(User32, PeekMessageA);
+        p[Count++] = LepHookFromEAT(User32, SendMessageA);
+        p[Count++] = LepHookFromEAT(User32, PostMessageA);
+        p[Count++] = Mp::FunctionJumpVa(Nt_GetProcAddress(User32, "DefWindowProcA"),
+            LepDefWindowProcA, &HookStub.StubDefWindowProcA, LEP_FUNCTION_JUMP_OP);
+        p[Count++] = LepHookFromEAT(User32, GetSystemMetrics);
+        if (DbcsLocated)
+            p[Count++] = Mp::FunctionJumpVa(Nt_GetProcAddress(User32, "CheckDBCSEnabledExt"),
+                LepCheckDBCSEnabledExt, &HookStub.StubCheckDBCSEnabledExt, LEP_FUNCTION_JUMP_OP);
 
         p[Count++] = LepHookFromEAT(User32, GetClipboardData);
         p[Count++] = LepHookFromEAT(User32, SetClipboardData);
@@ -3724,7 +3840,7 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
         HookNativeDC, NtUserGetDC, NtUserGetDCEx, NtUserGetWindowDC, NtUserBeginPaint);
 #endif
 
-    Mp::PATCH_MEMORY_DATA p[20];
+    Mp::PATCH_MEMORY_DATA p[25];
     ULONG_PTR Count = 0;
 
     p[Count++] = LepFunctionJump(NtUserCreateWindowEx);
@@ -3752,6 +3868,15 @@ NTSTATUS LepGlobalData::HookUser32Routines(PVOID User32)
     p[Count++] = LepHookFromEAT(User32, GetWindowLongA);
     p[Count++] = LepHookFromEAT(User32, IsWindowUnicode);
     p[Count++] = LepHookFromEAT(User32, PeekMessageA);
+
+    p[Count++] = LepHookFromEAT(User32, SendMessageA);
+    p[Count++] = LepHookFromEAT(User32, PostMessageA);
+    p[Count++] = Mp::FunctionJumpVa(Nt_GetProcAddress(User32, "DefWindowProcA"),
+        LepDefWindowProcA, &HookStub.StubDefWindowProcA, LEP_FUNCTION_JUMP_OP);
+    p[Count++] = LepHookFromEAT(User32, GetSystemMetrics);
+    if (DbcsLocated)
+        p[Count++] = Mp::FunctionJumpVa(Nt_GetProcAddress(User32, "CheckDBCSEnabledExt"),
+            LepCheckDBCSEnabledExt, &HookStub.StubCheckDBCSEnabledExt, LEP_FUNCTION_JUMP_OP);
 
     p[Count++] = LepHookFromEAT(User32, GetClipboardData);
     p[Count++] = LepHookFromEAT(User32, SetClipboardData);
@@ -3820,6 +3945,12 @@ NTSTATUS LepGlobalData::UnHookUser32Routines()
 #endif
     Mp::RestoreMemory(HookStub.StubIsWindowUnicode);
     Mp::RestoreMemory(HookStub.StubPeekMessageA);
+    Mp::RestoreMemory(HookStub.StubSendMessageA);
+    Mp::RestoreMemory(HookStub.StubPostMessageA);
+    Mp::RestoreMemory(HookStub.StubDefWindowProcA);
+    Mp::RestoreMemory(HookStub.StubGetSystemMetrics);
+    Mp::RestoreMemory(HookStub.StubCheckDBCSEnabledExt);
+    User32Environment.Restore();
 
     Mp::RestoreMemory(HookStub.StubGetClipboardData);
     Mp::RestoreMemory(HookStub.StubSetClipboardData);

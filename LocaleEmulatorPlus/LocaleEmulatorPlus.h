@@ -2,6 +2,7 @@
 #define _LocaleEmulatorPlus_H_cd444a0d_c7f9_44b2_aac8_8107e9a07ca2_
 
 #include "support/Support.h"
+#include "Hooks/User32Environment.h"
 
 
 #define ROOTDIR_SYSTEM32            L"\\SystemRoot\\system32\\"
@@ -824,6 +825,11 @@ public:
 #endif
         API_POINTER(IsWindowUnicode)            StubIsWindowUnicode;
         API_POINTER(PeekMessageA)               StubPeekMessageA;
+        API_POINTER(SendMessageA)               StubSendMessageA;
+        API_POINTER(PostMessageA)               StubPostMessageA;
+        API_POINTER(DefWindowProcA)             StubDefWindowProcA;
+        API_POINTER(GetSystemMetrics)           StubGetSystemMetrics;
+        PVOID                                  StubCheckDBCSEnabledExt;
         API_POINTER(GetClipboardData)           StubGetClipboardData;
         API_POINTER(SetClipboardData)           StubSetClipboardData;
         API_POINTER(SystemParametersInfoA)      StubSystemParametersInfoA;
@@ -857,6 +863,7 @@ public:
     } HookStub;
 
     ULONG_PTR DefaultEditCharsetOffset;
+    lep::User32Environment User32Environment;
 
     ATOM AtomAnsiProc;
 

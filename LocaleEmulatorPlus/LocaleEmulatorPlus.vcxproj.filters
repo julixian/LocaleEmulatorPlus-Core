@@ -53,6 +53,9 @@
     <ClCompile Include="Hooks\User32Hook.cpp">
       <Filter>Hooks</Filter>
     </ClCompile>
+    <ClCompile Include="Hooks\User32Environment.cpp">
+      <Filter>Hooks</Filter>
+    </ClCompile>
     <ClCompile Include="LocaleEmulatorPlus.cpp" />
     <ClCompile Include="stdafx.cpp" />
     <ClCompile Include="support\native\File.cpp">
@@ -123,6 +126,9 @@
       <Filter>Hooks</Filter>
     </ClInclude>
     <ClInclude Include="Hooks\User32Hook.h">
+      <Filter>Hooks</Filter>
+    </ClInclude>
+    <ClInclude Include="Hooks\User32Environment.h">
       <Filter>Hooks</Filter>
     </ClInclude>
     <ClInclude Include="LocaleEmulatorPlus.h" />
