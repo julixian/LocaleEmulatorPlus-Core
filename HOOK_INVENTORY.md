@@ -319,42 +319,89 @@ x64 user32 兼容布局：从 `SendNotifyMessageW/A` 开始，各扫 `0x30` 字�
 
 ### 16. ANSI 窗口过程包装及边界
 
-时机：`NtUserCreateWindowEx`/CBT 包装 A 创建路径，或 `SetWindowLongA` / `SetWindowLongPtrA` 安装 A 窗口过程时生效。
+LEP 为 ANSI 窗口安装一个 Unicode 包装过程：系统先调用 LEP 的 `WindowProcW()`，LEP 按目标代码页转换参数，再调用程序原来的 ANSI 窗口过程。这个包装在窗口创建期间由 `NtUserCreateWindowEx`/CBT 路径安装，也会在程序通过 SetWindowLongA/PtrA 安装 ANSI 窗口过程时安装。
 
-做法：把原 ANSI 窗口过程保存到 `GetWindowDataA(hwnd)` 对应数据里，并把窗口过程替换为 `WindowProcW()`。`IsWindowUnicode` 对这些 tracked wrapped A window 返回 `FALSE`，让外部仍看到 A 窗口语义。
+#### 保存和替换窗口过程
 
-字符消息：包装层收到的 `WM_CHAR`、`WM_IME_CHAR`、`WM_SYSCHAR`、`WM_DEADCHAR`、`WM_SYSDEADCHAR` 按目标 ACP 转换后再交给原 ANSI 窗口过程。`WM_CHAR` 按顺序分别发送双字节字符的首字节和尾字节；其余消息在同一个 `wParam` 中打包，首字节位于高位。`IMSG_INWPARAMCHAR` 同时处理 `WM_IME_COMPOSITION`、菜单字符等携带字符参数的消息，转换低 16 位并保留高位标志与原 `lParam`。
+原过程保存在该窗口的属性列表中，属性名为 `L"Asuna"`，属性值供 `CallWindowProcA()` 调用。LEP 内部的 `SetWindowDataA()` 封装 SetPropW 保存这个值，`GetWindowDataA()` 封装 GetPropW 读取这个值；`AtomAnsiProc` 是属性名对应的 atom 编号。
 
-反向边界：`LepNtUserMessageCall` 的 `IMSG_INWPARAMCHAR` 按目标 ACP 将 ANSI 打包字符解码为 Unicode 后走 W 调用。`SendMessageA`、`PostMessageA` 的 IME_CHAR/IME_COMPOSITION 参数也在入口转换，覆盖同线程快速路径和异步投递。已丢失的信息无法恢复；此处不接管 IMM32 组合串读取 API。
+`InitUnicodeProc()` 用 SetWindowLongPtrW 把窗口的 `GWLP_WNDPROC` 替换成 `WindowProcW`。每次消息到达时，包装过程根据 hwnd 查出保存的原过程。程序以后通过 A 接口更换窗口过程，LEP 就更新这个属性；GetWindowLongA/PtrA hook 返回属性里的过程值，IsWindowUnicode hook 返回 FALSE，使程序继续按 ANSI 窗口使用它。
 
-默认 IME 提交：被包装的 ANSI 窗口调用 `DefWindowProcA(WM_IME_CHAR)` 时，适配器只向真实队列提交一次 Unicode `WM_CHAR`，随后由现有 W->A 边界交付目标字节；`WM_IME_COMPOSITION` 转交 W 默认过程以保留输入法状态处理。DefWindowProcA 的导出可能转发到 ntdll，因此使用正常过程地址解析再安装 inline hook。
+#### 向原 ANSI 过程交付字符
 
-EDIT 双字节字符：W->A 字符适配仍调用保存的 `PrevProcA`，默认 EDIT 和应用安装的 ANSI 子类共用这条路径。ANSI EDIT 在处理首字节时会通过 `PeekMessageA(WM_CHAR)` 取尾字节，因此适配器在首字节回调期间用线程栈上的 `lep::ActiveFrame` 暂存尾字节。`LepPeekMessageA()` 只在该临时上下文、匹配窗口和消息范围时返回尾字节；`PM_NOREMOVE` 保留，`PM_REMOVE` 标记消费。若回调没有取走尾字节，适配器在回调返回后继续调用原过程交付尾字节。该过程不向真实消息队列投递消息，嵌套调用使用各自的栈帧，其它 `PeekMessageA` 调用转交原 API。
+`CallAnsiCharacterProc()` 把 Unicode 字符编码为目标 ACP 的字节，再根据消息类型选择交付方式。下文统一使用 CP936 的“中”作为例子：Unicode 值为 `0x4E2D`，编码字节为 `D6 D0`。
 
-USER32 DBCS 环境：`Hooks/User32Environment.cpp` 从 `CheckDBCSEnabledExt` 的已验证机器码操作动态定位服务信息指针，不使用固定 RVA。仅当宿主模式与实际 NLS 模式不同时，复制原映射中可读的区域尾部（上限 1 MiB），覆盖第一 DWORD 的 DBCS 位，并把本进程的 USER32 指针指向私有副本。原共享页不写入；标准 EDIT 内部也会读到目标模式。GetSystemMetrics/CheckDBCSEnabledExt、窗口创建和相关设置消息会同步原始服务信息中的其它数据。卸载时恢复仍由 LEP 持有的指针；已发布的副本保留到进程退出，避免并发原生读者持有悬空地址。定位或映射验证失败时保留原状态，日志记录定位结果。
+**`WM_CHAR`：逐字节交付。** 双字节 WM_CHAR 交给普通窗口时，每个字节调用一次原过程，前一次返回后再调用下一次：
 
-标准对话框标题例外：`WindowProcW()` 对 `#32770` 类窗口的 `WM_SETTEXT` 直接调用 `DefWindowProcW()`。原因是 shell/common dialog 可能通过 A 创建路径得到 ANSI 标志窗口，于是被 LEP 包装；但后续标题可能来自系统自己的 Unicode 本地化资源，例如中文 Windows 上的“选择计算机”。如果继续走 `WindowProcW -> CallWindowProcA(PrevProcA)`，这些系统 Unicode 文本会被按目标 ACP 压成 ANSI，CP932 等目标代码页无法表示的本机字符会变成 `?`。该例外只覆盖标准对话框标题，不全局拦截所有 `WM_SETTEXT`，以免绕过自定义 A 窗口过程内部状态。后续如果有其它标准窗口有同样的问题可以再加白名单。
+```cpp
+CallWindowProcA(PrevProcA, hwnd, WM_CHAR, 0xD6, lParam);
+CallWindowProcA(PrevProcA, hwnd, WM_CHAR, 0xD0, lParam);
+```
 
-作用：定义 LEP 自己制造的 A/W 窗口过程边界。EDIT 文本位置 thunk、标准对话框标题例外都依赖这个边界。
+双字节 WM_CHAR 交给 EDIT 控件时，EDIT 会在首字节回调期间取得尾字节。原生 USER32 为这类交付准备尾字节缓存；LEP 手工拆字节调用原过程后，由临时 Frame 补上这部分机制：
 
-### 17. EDIT A/W 文本位置消息 thunk
+```cpp
+CallWindowProcA(PrevProcA, hwnd, WM_CHAR, 0xD6, lParam);
+if (!Pending.Consumed) // 首字节处理期间，尾字节还没被取走
+    CallWindowProcA(PrevProcA, hwnd, WM_CHAR, 0xD0, lParam);
+```
 
-时机：`USER32.dll` 加载并安装 user32 hook 后，在两条 LEP 自己制造的 A/W 边界上生效。
+1. LEP 在线程栈上暂存尾字节 D0，并压入关联这份数据的 `lep::ActiveFrame`。
+2. LEP 调用原 ANSI 过程，传入首字节 D6。EDIT 在处理期间调用 PeekMessageA 寻找尾字节。
+3. `LepPeekMessageA()` 检查当前 Frame、窗口和消息范围，返回暂存的 D0。PM_NOREMOVE 可以重复查看，PM_REMOVE 标记为已取走。
+4. 首字节回调返回后，LEP 弹出 Frame。尾字节已取走时交付完成；否则再调用一次原过程，传入 D0。
 
-路径一：`WindowProcW()` 收到消息后，如果窗口类是 `Edit`，且消息是 `EM_GETSEL`、`EM_SETSEL`、`EM_LINEINDEX`、`EM_LINELENGTH`，则不走通用 `MessageTable` 分派，而是进入 `UserfnEDIT_TEXT_POSITION()`。这是 W 语义消息转发到保存的原 ANSI 窗口过程 `PrevProcA` 的路径。
+这个机制保持原生完整字符的交付效果，让 EDIT 配对本次字符的两个字节，保留真实队列中其他字符的顺序。应用安装的 ANSI 子类仍经过保存的原过程；嵌套调用使用各自的 Frame。
 
-路径二：`LepNtUserMessageCall()` 拦到 `WINDOW_FLAG_ANSI` 消息时，如果窗口类是 `Edit` 且窗口已经被 LEP 包装过，即 `GetWindowDataA(hwnd)` 中保存了原 ANSI proc，则进入 `KernelfnEDIT_TEXT_POSITION()`。这是 ANSI API 消息要送入已包装 W 窗口的路径。
+**`WM_IME_CHAR`、`WM_SYSCHAR`、`WM_DEADCHAR`、`WM_SYSDEADCHAR`：打包后交付。** 每条消息调用原过程一次，两个字节合成一个 `wParam` 字符值 `0xD6D0`。消息表内部的 `IMSG_INWPARAMCHAR` 类别也使用这条路径，处理 WM_IME_COMPOSITION、WM_MENUCHAR 等消息。
 
-转换规则：
+打包字符占低 16 位，首字节在第 8～15 位，尾字节在第 0～7 位。第 16 位及以上保持原值，例如 WM_MENUCHAR 在第 16～31 位保存菜单标志：
 
-- `EM_SETSEL`：W->A 时把字符 offset 转成目标 ACP 下的 ANSI byte offset；A->W 时反向把 ANSI byte offset 转成字符 offset。
-- `EM_GETSEL`：W->A 返回后把 ANSI byte offset 转成字符 offset；A->W 返回后把字符 offset 转成 ANSI byte offset。
-- `EM_LINEINDEX`：按同样方向转换行起始位置。
-- `EM_LINELENGTH`：按同样方向转换行内长度。
+```text
+wParam：[第16位及以上：原值] [第8～15位：D6] [第0～7位：D0]
+                           └──── 字符值 D6D0 ────┘
+```
 
-作用：补回 LEP 包装 ANSI 窗口过程时绕过的 user32 `SendMessageWorker`/EDIT 系统类 A/W 位置语义。原生 EDITA 在 DBCS codepage 下会维护自己的字符边界；但 `WindowProcW -> CallWindowProcA(PrevProcA)` 不是原生 `SendMessageA -> SendMessageWorker -> EDITA` 路径，所以必须在 LEP 的边界处显式转换 offset/length。该逻辑只覆盖 `Edit` 控件和已包装窗口，避免影响普通原生 ANSI EDIT 或自定义同号消息。
+上述字符交付均沿用原 lParam。
 
-### 18. `NtUserDefSetText`
+#### EDIT 的文本位置和长度
+
+窗口包装也需要处理 EDIT 的位置单位：W 接口按 UTF-16 字符位置计数，A 接口按目标 ACP 的字节位置计数。例如 CP936 的“中A”占两个 UTF-16 码元、三个 ANSI 字节，A 所在的位置分别为 1 和 2。
+
+LEP 为 EM_GETSEL、EM_SETSEL、EM_LINEINDEX、EM_LINELENGTH 转换输入位置和返回结果：
+
+- `WindowProcW()` 进入 `UserfnEDIT_TEXT_POSITION()`：调用原 ANSI 过程前，把 W 字符位置换成 ANSI 字节位置；返回后，把字节位置或长度换回 W 单位。
+- `LepNtUserMessageCall()` 处理发给已包装 EDIT 的 ANSI 消息时，进入 `KernelfnEDIT_TEXT_POSITION()`，按相反方向转换，使 A 接口的调用方使用字节单位。
+
+这项处理与字符交付一样，用来补齐 LEP 窗口包装后的 A/W 语义，使选择范围、行起始位置和行内长度保持一致。
+
+#### 程序通过 A 接口发送字符
+
+这个方向把 ANSI 字符参数按目标 ACP 解码为 Unicode，再交给系统的 W 路径。对于上述打包格式，低 16 位从 `0xD6D0` 转为 `0x4E2D`，第 16 位及以上和 lParam 保持原值。
+
+`LepNtUserMessageCall()` 在 `IMSG_INWPARAMCHAR` 分支执行这项转换。另外两个入口 hook 也为 WM_IME_CHAR、WM_IME_COMPOSITION 转换参数：
+
+- SendMessageA：目标窗口属于当前线程且满足快速处理条件时，USER32 可以在用户态完成参数转换并直接调用窗口过程。入口 hook 先按目标 ACP 解码，再调用 SendMessageW，使这条直接调用路径也使用正确的 Unicode 参数。
+- PostMessageA：USER32 处理字符参数后，通过 NtUserPostMessage 把消息投递到目标线程的队列。目标线程用 GetMessage/PeekMessage 取出，再由 DispatchMessage 派发到窗口过程。入口 hook 先解码参数再调用 PostMessageW，使入队的字符使用 Unicode 表示。
+
+#### 原过程要求默认 IME 处理
+
+原 ANSI 过程收到 IME 消息后，可以自行处理，也可以调用 DefWindowProcA 请求默认处理。对已包装窗口，LEP 的 DefWindowProcA hook 按消息选择处理方式：
+
+- WM_IME_CHAR：将字符解码为 Unicode，调用 PostMessageW 投递一条 WM_CHAR；这条消息随后按前面的 WM_CHAR 流程交给原 ANSI 过程。
+- WM_IME_COMPOSITION：将字符参数解码为 Unicode，调用 DefWindowProcW，由系统默认 IME 窗口处理组合状态。
+
+#### USER32 的 DBCS 状态
+
+`Hooks/User32Environment.cpp` 根据 CheckDBCSEnabledExt 的机器码操作定位服务信息指针。首次同步时，宿主 DBCS 模式与目标 NLS 模式一致就沿用原映射；不一致则复制原映射中可读的区域尾部（上限 1 MiB），修改副本第一 DWORD 的 DBCS 位，并让本进程 USER32 使用副本。标准 EDIT 内部也会读到目标模式。
+
+GetSystemMetrics/CheckDBCSEnabledExt、窗口创建和相关设置消息会从原映射同步其他数据。卸载时，仍指向 LEP 副本的槽恢复为原指针。已发布的副本保留到进程退出，供并发原生读者继续访问。定位或映射验证失败时沿用原状态，并记录日志。
+
+#### 标准对话框标题
+
+`WindowProcW()` 对 `#32770` 类窗口的 WM_NCCREATE、WM_SETTEXT 调用 DefWindowProcW，使来自系统本地化资源的标题按 Unicode 处理。例如中文系统的“选择计算机”标题，按 CP932 转换可能产生问号，因此这两类消息直接交给 W 默认过程。
+
+### 17. `NtUserDefSetText`
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
@@ -366,7 +413,7 @@ x64 user32 兼容布局：先按 `NtUserCreateWindowEx` 路径找到 internal `C
 
 作用：保证默认窗口标题/文本设置路径遵循目标 ACP。
 
-### 19. user32 DC / BeginPaint charset
+### 18. user32 DC / BeginPaint charset
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
@@ -382,7 +429,7 @@ x64 user32 兼容布局：从 user32 导出 `GetDC`、`GetDCEx`、`GetWindowDC`�
 
  Win7 x86/x64 的 `ECSetFont(nullptr)` 直接读取 `gpsi` 中的默认度量，不调用上述 getter；Win7 x86 虽存在名为 `GetDPIServerInfo` 的内部函数，但 EDIT 不使用它。因此 Win10/Win11 的 getter matcher 在两份 Win7 样本上均不产生候选。Win7 改由第二套消费者语义定位：x86 匹配 `push 0Fh / add esi,gpsi+metric / rep movsd` 的 60 字节 `TEXTMETRICW` 复制，x64 匹配等价的 `memcpy(..., 0x3C)` 序列；再从同一 `ECSetFont` 内后续的 `tmCharSet` load/store 推导 EDIT 私有 charset 字段偏移。仅当函数和偏移都唯一且结构完整时才 hook。原函数完成 `Font == nullptr` 的默认字体初始化后，LEP 把该 EDIT 实例的 charset 缓存改成目标 charset。
 
-### 20. `SetWindowLongA` / `GetWindowLongA` / PtrA 与 `IsWindowUnicode`
+### 19. `SetWindowLongA` / `GetWindowLongA` / PtrA 与 `IsWindowUnicode`
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
@@ -394,7 +441,7 @@ Win7 x64 特例：`SetWindowLongA` 和 `SetWindowLongPtrA` 使用 `LEP_FUNCTION_
 
 作用：包装/恢复 A 窗口过程；`IsWindowUnicode` 对 tracked wrapped A window 返回 `FALSE`，保持外部观察到的 A 窗口语义。
 
-### 21. 剪贴板 ANSI 数据
+### 20. 剪贴板 ANSI 数据
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`。
 
@@ -402,7 +449,7 @@ x86/x64：EAT inline hook `GetClipboardData`、`SetClipboardData`。
 
 作用：让 `CF_TEXT` 和字符串数据按目标 ACP 转换。转换后的 CF_TEXT 使用固定、清零的 GPTR 缓冲，兼容将返回句柄直接当作指针的客户端，同时仍可用 GlobalLock 读取。这是经过运行验证的兼容行为；SetClipboardData 文档要求提交的内存带 GMEM_MOVEABLE，且固定分配不延长 CloseClipboard 之后的对象有效期。
 
-### 22. `SystemParametersInfoA/W`
+### 21. `SystemParametersInfoA/W`
 
 时机：`USER32.dll` 加载后，`HookUser32Routines()`，仅当目标 ANSI codepage 为 `932` 时安装。
 
@@ -410,7 +457,7 @@ x86/x64：EAT inline hook `SystemParametersInfoA/W`。hook 先调用对应的原
 
 作用：让查询默认输入语言的 A/W 路径看到日文默认输入法布局，补齐 CP932 转区下程序读取输入语言状态的 user32 路径。
 
-### 23. `NtGdiHfontCreate`
+### 22. `NtGdiHfontCreate`
 
 时机：`GDI32.dll` 加载后，`HookGdi32Routines()`。
 
@@ -424,7 +471,7 @@ x64 gdi32 兼容布局：从 `gdi32!CreateFontIndirectExW` 开始最多扫 `0xA0
 
 作用：控制/记录字体 charset 创建路径，让字体选择符合目标 locale。
 
-### 24. `QueryFontAssocStatus`
+### 23. `QueryFontAssocStatus`
 
 时机：`GDI32.dll` 加载后，`HookGdi32Routines()`，仅当目标 ANSI codepage 为 `932` 时安装。
 
@@ -432,7 +479,7 @@ x86/x64：对 `QueryFontAssocStatus` 使用普通 inline hook。查找时优先�
 
 作用：模拟日文 Windows 上 GDI font association status 为 `0` 的状态，避免中文系统转日区时 GDI A 文本路径进入 `FontAssocHack`，把 `TextOutA`/度量路径中的单字节半角假名按 `1252` 而不是 `932` 解释。
 
-### 25. gdi32 字体枚举和 DC/对象辅助 hook
+### 24. gdi32 字体枚举和 DC/对象辅助 hook
 
 时机：`GDI32.dll` 加载后，`HookGdi32Routines()`。
 
@@ -442,7 +489,7 @@ x64：inline hook `gdi32.dll` 的 `GetStockObject`、`DeleteObject`、`CreateCom
 
 作用：调整字体枚举、stock font 和兼容 DC 路径中的 charset/font 行为。
 
-### 26. DLL load notification
+### 25. DLL load notification
 
 时机：`LepGlobalData::Initialize()` 注册 `LdrRegisterDllNotification()`。
 
@@ -454,7 +501,7 @@ x64：inline hook `gdi32.dll` 的 `GetStockObject`、`DeleteObject`、`CreateCom
 
 作用：对后加载模块补装 hook 和 locale cache 同步。
 
-### 27. `LoadMemoryDll()` shadow ntdll hook
+### 26. `LoadMemoryDll()` shadow ntdll hook
 
 时机：从内存加载 DLL 的辅助路径中。
 
@@ -462,7 +509,7 @@ x64：inline hook `gdi32.dll` 的 `GetStockObject`、`DeleteObject`、`CreateCom
 
 作用：为内存 DLL 加载辅助逻辑模拟和接管文件、section 相关操作。
 
-### 28. Heap corruption helper
+### 27. Heap corruption helper
 
 时机：调试辅助功能启用时。
 
