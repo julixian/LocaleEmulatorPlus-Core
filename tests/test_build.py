@@ -22,8 +22,8 @@ class BuildTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.config = build.BuildConfig(
-            root=self.root, vc_tools=self.root / "VS tools", sdk_root=self.root / "Windows SDK",
-            sdk_version="test", log_enabled=True, deploy_dir=None,
+            root=self.root, vcTools=self.root / "VS tools", sdkRoot=self.root / "Windows SDK",
+            sdkVersion="test", logEnabled=True, deployDir=None,
         )
         self.output = io.StringIO()
         self.stdout = redirect_stdout(self.output)
@@ -34,7 +34,7 @@ class BuildTests(unittest.TestCase):
         source = self.root / "LocaleEmulatorPlus/support/runtime/Test.cpp"
         source.parent.mkdir(parents=True)
         source.write_text("", encoding="utf-8")
-        config = replace(self.config, dry_run=True)
+        config = replace(self.config, dryRun=True)
         original_environment = os.environ.copy()
         with patch.object(build.subprocess, "run") as run:
             build.NativeBuild(config, "x86").build()
@@ -66,7 +66,7 @@ class BuildTests(unittest.TestCase):
     def test_existing_deploy_directory_receives_both_dlls(self):
         destination = self.root / "部署 path"
         destination.mkdir()
-        driver = build.NativeBuild(replace(self.config, deploy_dir=destination), "x64")
+        driver = build.NativeBuild(replace(self.config, deployDir=destination), "x64")
         driver.output.mkdir(parents=True)
         names = ("LocaleEmulatorPlus_x64.dll", "LoaderDll_x64.dll")
         for name in names:
@@ -77,7 +77,7 @@ class BuildTests(unittest.TestCase):
 
     def test_absent_deploy_directory_is_not_created(self):
         destination = self.root / "missing deployment"
-        driver = build.NativeBuild(replace(self.config, deploy_dir=destination), "x64")
+        driver = build.NativeBuild(replace(self.config, deployDir=destination), "x64")
         driver.deploy(("Core.dll", "Loader.dll"))
         self.assertFalse(destination.exists())
 
@@ -86,19 +86,19 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(build.main(["x64", "--no-deploy", "--no-log", "--diag-init",
                                          "--deploy-dir", str(self.root)]), 0)
         config = driver.call_args.args[0]
-        self.assertIsNone(config.deploy_dir)
-        self.assertFalse(config.log_enabled)
-        self.assertTrue(config.diag_init)
-        flags = build.NativeBuild(config, "x64").compiler_flags
+        self.assertIsNone(config.deployDir)
+        self.assertFalse(config.logEnabled)
+        self.assertTrue(config.diagInit)
+        flags = build.NativeBuild(config, "x64").compilerFlags
         self.assertEqual([flag for flag in flags if flag.startswith('/DENABLE_LOG=')], ['/DENABLE_LOG=0'])
         self.assertIn('/DLEP_DIAG_INIT=1', flags)
 
     def test_cli_paths_override_legacy_environment(self):
         with patch.dict(os.environ, {"VS_ROOT": "old vs", "SDK_VER": "old sdk"}):
-            options = build.parse_options(["X86", "--vs-root", "new vs", "--sdk-version", "new sdk"])
+            options = build.parseOptions(["X86", "--vs-root", "new vs", "--sdk-version", "new sdk"])
         self.assertEqual(options.target, "x86")
-        self.assertEqual(options.vs_root, Path("new vs"))
-        self.assertEqual(options.sdk_version, "new sdk")
+        self.assertEqual(options.vsRoot, Path("new vs"))
+        self.assertEqual(options.sdkVersion, "new sdk")
 
 
 if __name__ == "__main__":
