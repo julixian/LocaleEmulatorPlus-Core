@@ -6,7 +6,7 @@
 
 ### 初始化顺序
 
-`LocaleEmulatorPlus` 初始化时先校验并挂接 `LEP_BOOTSTRAP_PAYLOAD`，从其中读取 Loader 已解析的 `LEP_RUNTIME_ENVIRONMENT` 配置，再构造注册表映射、初始化 HookPort、安装 ntdll hook，随后注册 `LdrRegisterDllNotification()` 处理后加载模块。若 kernel32/kernelbase 已经加载，会主动调用 `HookKernel32Routines()`；USER32/GDI32 则通常由 DLL notification 触发。
+`LocaleEmulatorPlus` 初始化时先校验并挂接 `LEP_BOOTSTRAP_PAYLOAD`，从其中读取 Loader 已解析的 `LEP_RUNTIME_ENVIRONMENT` 配置，再构造注册表映射、初始化 HookPort、安装 ntdll hook，随后注册 `LdrRegisterDllNotification()` 处理后加载模块。若 kernel32/kernelbase 已经加载，会主动调用 `HookKernel32Routines()`；USER32/GDI32 以及 `Windows.Storage.dll`/`shell32.dll` 则由 DLL notification 触发。
 
 ### Inline Hook
 
@@ -138,7 +138,7 @@ broker 启动使用线程级的 `lep::ActiveFrame` 标记，其首成员是标�
 
 注意：代码直接使用当前进程解析出的 `LdrLoadDll` 地址写入 bootstrap 元数据。这隐含假设同架构子进程 ntdll 映射基址与当前进程一致，因此 `ntdll!LdrLoadDll` 地址一致；跨架构 broker 会在自身目标位数上下文中重新解析地址。
 
-作用：让目标进程创建的子进程自动继承 LEP 环境。
+作用：让目标进程创建的子进程自动继承 LEP 环境。经 UAC 提权由 AppInfo 服务代创建的 Shell 子进程另由第 28 项 `AicLaunchAdminProcess` hook 覆盖。
 
 ### 3. `NtContinue`
 
@@ -498,6 +498,8 @@ x64：inline hook `gdi32.dll` 的 `GetStockObject`、`DeleteObject`、`CreateCom
 - `USER32.dll` -> `HookUser32Routines()`
 - `GDI32.dll` -> `HookGdi32Routines()`
 - `KERNELBASE.dll` / `KERNEL32.dll` -> `HookKernel32Routines()`
+- `Windows.Storage.dll` -> `HookWindowsStorageRoutines()`
+- `shell32.dll` -> `HookShell32Routines()`
 
 作用：对后加载模块补装 hook 和 locale cache 同步。
 
@@ -516,3 +518,26 @@ x64：inline hook `gdi32.dll` 的 `GetStockObject`、`DeleteObject`、`CreateCom
 hook：`RtlAllocateHeap`、`RtlReAllocateHeap`、`RtlFreeHeap`、`RtlSizeHeap`。
 
 作用：记录堆分配生命周期，辅助定位 heap corruption。
+
+### 28. 跨 UAC 提权传播：`AicLaunchAdminProcess`
+
+实现位置：`LocaleEmulatorPlus/Hooks/ElevationLocator.cpp`、`LocaleEmulatorPlus/Hooks/ElevationHook.cpp`、`LoaderDll/BrokerProtocol.h`、`LoaderDll/LoaderDll.cpp`（`LepElevationBrokerEntry`）。
+
+时机：`Windows.Storage.dll`（Win10/11）或 `shell32.dll`（Win7）通过 DLL notification 加载后，由 `HookWindowsStorageRoutines()` / `HookShell32Routines()` 安装。仅实际命中目标函数的模块会被 patch，卸载回调按模块基址匹配，避免在 Win10/11 上卸载 `shell32.dll` 时误卸 `Windows.Storage.dll` 的 hook。
+
+查找与调用约定适配：
+
+- 定位器先在只读节查找唯一的 AppInfo RPC 接口 GUID 字符串 `201ef99a-7fa0-444c-9399-19ba84f12a1a`，再扫描可执行节中对该字符串的引用并校验存在直接 `E8` 调用点。
+- x64：借助 PE 异常目录（`IMAGE_DIRECTORY_ENTRY_EXCEPTION`）恢复函数边界，核对 `RBX/RSI/RDI/R12..R15` 保存、`sub rsp` 帧大小及 `R9` 栈保存，排除引用同一 GUID 的 COM 客户端函数。
+- x86：向前回溯 SEH 序言并区分两种机器级参数布局——Win10/11 LTCG 优化将前两个参数放在 `ECX/EDX`（其余走栈、`leave; ret 0x1C`），桥接到 `__fastcall`；Win7 全部走栈（`call __SEH_epilog4; ret 0x24`），桥接到 `__stdcall`。
+
+转交与权限边界：
+
+- `LepAicLaunchAdminProcess*` 将目标启动参数（应用路径、命令行、工作目录、安全 `STARTUPINFOW` 字段与 `CreationFlags`）以及当前 `LEP_BOOTSTRAP_PAYLOAD` 序列化到 `Local\LEP_ELEV_<pid>_<seq>` 共享内存（`LEP_ELEVATION_CONFIG`）。
+- 压入 `LEP_ELEVATION_LAUNCH_CONTEXT` 线程活动帧防重入，然后以 `AicFlags | 1`（显式 `runas` 位，确保 `asInvoker` 的 `rundll32.exe` 在清单提权路径下同样经过 UAC）调用原 `AicLaunchAdminProcess` 启动本架构高权限 `rundll32.exe`（x86 Wow64 显式使用 `SysWOW64\rundll32.exe`）执行 `LoaderDll_*!LepElevationBrokerEntry`。缺少 `LoaderDll` 或准备失败时回退原函数；用户取消 UAC 时原样返回 `ERROR_CANCELLED` 与 `ElevationReason`。
+- 高权限 broker 读取共享内存，清除 `EXTENDED_STARTUPINFO_PRESENT` 与跨进程无效的 `STARTF_USESTDHANDLES`，以 `CREATE_SUSPENDED` 调用 `CreateProcessW` 创建真正目标进程；同架构直接调用 `LepInjectSuspendedProcess()` 注入，跨架构则以当前高权限拉起目标架构 `rundll32.exe` 执行 `LepBrokerEntry` 注入。
+- 注入完成后，broker 打开原调用方进程（`PROCESS_DUP_HANDLE`），以与原版 AppInfo 一致的受限权限（进程 `0x00121101`、线程 `0x00120802`，不含 VM 写/注入权限）将目标进程/线程句柄复制回原调用方并写回 PID/TID；若原调用方未传 `CREATE_SUSPENDED` 则恢复主线程，否则留给上层调用方恢复。
+
+验证：`tests/run-elevation-locator.ps1`（本机及离线 Win7/10/11 样本定位校验）与 `tests/run-elevation.ps1`（`runas`/`manifest` 实测）。
+
+作用：打通普通权限进程经 Shell UAC（显式 `runas` 与 `requireAdministrator` 清单）启动同架构或跨架构管理员进程时的 LEP 传播链，并保持原有 UAC 取消、句柄权限及进程信息返回语义。

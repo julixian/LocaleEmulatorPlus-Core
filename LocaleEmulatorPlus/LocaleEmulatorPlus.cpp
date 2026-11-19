@@ -646,10 +646,12 @@ PDLL_HOOK_ENTRY LookupDllHookEntry(PCUNICODE_STRING BaseDllName)
 {
     static DLL_HOOK_ENTRY DllHookEntries[] =
     {
-        { RTL_CONSTANT_STRING(L"USER32.dll"),       &LepGlobalData::HookUser32Routines,      &LepGlobalData::UnHookUser32Routines },
-        { RTL_CONSTANT_STRING(L"GDI32.dll"),        &LepGlobalData::HookGdi32Routines,       &LepGlobalData::UnHookGdi32Routines },
-        { RTL_CONSTANT_STRING(L"KERNELBASE.dll"),   &LepGlobalData::HookKernel32Routines,    &LepGlobalData::UnHookKernel32Routines },
-        { RTL_CONSTANT_STRING(L"KERNEL32.dll"),     &LepGlobalData::HookKernel32Routines,    &LepGlobalData::UnHookKernel32Routines },
+        { RTL_CONSTANT_STRING(L"USER32.dll"),           &LepGlobalData::HookUser32Routines,          &LepGlobalData::UnHookUser32Routines },
+        { RTL_CONSTANT_STRING(L"GDI32.dll"),            &LepGlobalData::HookGdi32Routines,           &LepGlobalData::UnHookGdi32Routines },
+        { RTL_CONSTANT_STRING(L"KERNELBASE.dll"),       &LepGlobalData::HookKernel32Routines,        &LepGlobalData::UnHookKernel32Routines },
+        { RTL_CONSTANT_STRING(L"KERNEL32.dll"),         &LepGlobalData::HookKernel32Routines,        &LepGlobalData::UnHookKernel32Routines },
+        { RTL_CONSTANT_STRING(L"Windows.Storage.dll"),  &LepGlobalData::HookWindowsStorageRoutines,  &LepGlobalData::UnHookWindowsStorageRoutines },
+        { RTL_CONSTANT_STRING(L"shell32.dll"),          &LepGlobalData::HookShell32Routines,         &LepGlobalData::UnHookShell32Routines },
     };
 
     PDLL_HOOK_ENTRY Entry;
@@ -740,6 +742,7 @@ NTSTATUS LepGlobalData::UnInitialize()
     }
 
 #if !LEP_DIAG_PROCESS_ONLY
+    UnHookElevationRoutines();
     UnHookGdi32Routines();
     UnHookUser32Routines();
     UnHookKernel32Routines();

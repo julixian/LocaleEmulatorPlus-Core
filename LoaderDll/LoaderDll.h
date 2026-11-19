@@ -58,6 +58,11 @@ LEP_API
 void
 CALLBACK
 LepBrokerEntry(HWND Window, HINSTANCE Instance, LPSTR CommandLine, int ShowCommand);
+
+LEP_API
+void
+CALLBACK
+LepElevationBrokerEntry(HWND Window, HINSTANCE Instance, LPSTR CommandLine, int ShowCommand);
 #endif
 
 #endif // _LOADERDLL_H_586bc656_348b_4b12_ba74_d39366b67f23_

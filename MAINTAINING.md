@@ -39,6 +39,8 @@ LEP 的核心是在目标进程内尽早建立一套“伪区域环境”，让�
 
 `LepCreateProcess` 路径（当前进程直接加载 `LocaleEmulatorPlus_*`）无法把 Payload 放在 PE 镜像尾部，因此使用 `lep::ActiveFrame::Data` 传递指针。该封装通过标准 Native 帧头挂入线程活动帧链，LEP 数据存于扩展字段。Payload 由进程堆分配：Loader 初始拥有它，LEP 接受后清空 frame 中的指针并负责释放；如果 LEP 没有接受，Loader 在返回前释放。
 
+普通子进程由 `NtCreateUserProcess` 过滤器挂起后直接注入（跨架构时通过 `LoaderDll_*!LepBrokerEntry` 完成）。经 UAC 提权的 Shell 路径由 AppInfo 服务代创建高权限目标，普通进程既拦不到服务侧创建，收到的受限句柄也无权写入目标内存；因此 Core 在 `Windows.Storage.dll`（Win10/11）或 `shell32.dll`（Win7）中动态定位并 hook 共同客户端入口 `AicLaunchAdminProcess`，把目标启动参数和当前 `LEP_BOOTSTRAP_PAYLOAD` 写入 `Local\LEP_ELEV_*` 共享内存，再经原入口强制走提权启动 `rundll32.exe` 执行 `LoaderDll_*!LepElevationBrokerEntry`。高权限 broker 创建并注入真正目标（目标位数不同时再以同高权限调用 `LepBrokerEntry`），随后将受限权限的目标进程/线程句柄复制回原调用方，保持原 UAC 权限边界和返回契约。
+
 关键点是“早”：如果目标进程在 LEP 初始化前已经加载并初始化 kernel32/kernelbase，NLS 缓存已经按本机区域建立，后续再改 ACP/LCID 往往无效。因此 `LocaleEmulatorPlus.dll` 自身必须尽量只静态依赖 `ntdll.dll`；其他 DLL 只能 delay-load，且 delay helper 也不能依赖 kernel32。
 
 具体 构建/Hook 工作详见[HOOK_INVENTORY.md](HOOK_INVENTORY.md)。
@@ -91,7 +93,7 @@ python .\build.py all --no-log --no-deploy
 
 也可以使用快捷入口 `python .\build-nolog.py all --no-deploy`；它复用 `build.py`，强制关闭日志，其余参数和退出状态保持一致。省略架构时同样构建 x86/x64。
 
-`ENABLE_LOG=1` 会启用 `WriteLog`。日志位于 LEP DLL 同目录下的 `Log` 子目录，普通运行日志形如 `<目标进程模块名>.<pid>.log.txt`，broker 日志记录跨架构注入阶段。日志会改变早期执行路径和时序，定位完问题后可关闭。
+`ENABLE_LOG=1` 会启用 `WriteLog`。日志位于 LEP DLL 同目录下的 `Log` 子目录，普通运行日志形如 `<目标进程模块名>.<pid>.log.txt`，broker 日志（`LocaleEmulatorPlus-broker-<pid>.log`）记录跨架构注入与提权启动转交阶段。日志会改变早期执行路径和时序，定位完问题后可关闭。
 
 如果目标进程在日志建立前失败，可以用 `--diag-init` 启用初始化阶段弹框诊断：
 

@@ -18,6 +18,8 @@ import sys
 kScriptRoot = Path(__file__).resolve().parent
 kCoreSources = (
     "HandleTable.cpp",
+    "Hooks/ElevationHook.cpp",
+    "Hooks/ElevationLocator.cpp",
     "Hooks/Gdi32Hook.cpp",
     "Hooks/Kernel32Hook.cpp",
     "Hooks/NtdllHook.cpp",

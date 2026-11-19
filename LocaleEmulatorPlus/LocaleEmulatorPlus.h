@@ -860,6 +860,7 @@ public:
         API_POINTER(EnumFontFamiliesW)          StubEnumFontFamiliesW;
         API_POINTER(EnumFontFamiliesExA)        StubEnumFontFamiliesExA;
         API_POINTER(EnumFontFamiliesExW)        StubEnumFontFamiliesExW;
+        PVOID                                   StubAicLaunchAdminProcess;
     } HookStub;
 
     ULONG_PTR DefaultEditCharsetOffset;
@@ -916,6 +917,14 @@ public:
 
         } Gdi32;
 
+        struct
+        {
+            PVOID ModuleBase;
+            PVOID TargetRoutine;
+            BOOL  RegisterArguments;
+
+        } Elevation;
+
     } HookRoutineData;
 
 public:
@@ -955,6 +964,11 @@ public:
         return BootstrapPayload == nullptr
             ? nullptr
             : (PCWSTR)PtrAdd(BootstrapPayload, BootstrapPayload->LepDllDirPathOffset);
+    }
+
+    BOOL IsWow64() const
+    {
+        return Wow64 != FALSE;
     }
 
     VOID InitFontCharsetInfo()
@@ -1013,6 +1027,13 @@ public:
 
     NTSTATUS HookKernel32Routines(PVOID Kernel32);
     NTSTATUS UnHookKernel32Routines();
+
+    NTSTATUS HookElevationRoutines(PVOID ModuleBase);
+    NTSTATUS UnHookElevationRoutines(PVOID ModuleBase = nullptr);
+    NTSTATUS HookShell32Routines(PVOID Shell32);
+    NTSTATUS UnHookShell32Routines();
+    NTSTATUS HookWindowsStorageRoutines(PVOID WindowsStorage);
+    NTSTATUS UnHookWindowsStorageRoutines();
 
     NTSTATUS
     LookupRegistryRedirectionEntry(
